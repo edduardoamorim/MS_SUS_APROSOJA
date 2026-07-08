@@ -1,0 +1,29 @@
+# Relatório de Auditoria de UI/UX, Interface e Usabilidade - MS Sustentável
+
+Este documento contém o histórico de bugs, problemas de usabilidade, intuitividade e falhas de interface identificados pelos agentes de teste automatizados no navegador Chrome, com os respectivos carimbos de data/hora, severidades e status de resolução.
+
+## Resumo dos Agentes de Teste
+- **Agente 1 (Gestor Specialist):** Foco no Painel de Governança (`/gestor`).
+- **Agente 2 (Técnico Specialist):** Foco no Painel do Técnico de Campo (`/tecnico`).
+- **Agente 3 (Produtor Specialist):** Foco no Portal do Produtor Rural (`/produtor`).
+
+---
+
+## Log de Inconformidades e Usabilidade
+
+| Data e Hora (Local) | Portal / URL | Severidade | Descrição do Problema | Status de Resolução |
+| :--- | :--- | :--- | :--- | :--- |
+| **2026-06-21T11:56:00-04:00** | Gestor / Técnico (`/gestor`, `/tecnico`) | **Crítica** | **Recursão Infinita de RLS na tabela `propriedades`**: Erro 500 no banco de dados. RLS causava loops de recursão infinita na consulta à tabela `propriedades`, que tentava validar permissões checando `auditorias` e vice-versa, impedindo o carregamento de propriedades e auditorias agendadas no dashboard. | **Resolvido** <br> (Corrigido criando funções `SECURITY DEFINER` na migração `010_fix_rls_recursion.sql` para isolar a validação das tabelas). |
+| **2026-06-21T12:07:00-04:00** | Gestor / Técnico (`/gestor/auditorias`) | **Baixa** | **Divergência de Data por Timezone (Fuso Horário)**: Ao agendar ou cadastrar prazos de auditoria/pendências para datas específicas (ex: 30/06/2026), o sistema exibia a data subtraída de um dia (ex: 29/06/2026) devido a conversões incorretas de fuso horário local/UTC nas rotinas de renderização do front-end. | **Identificado** <br> (Pendente correção fina de parsing de datas na biblioteca de formatação do front-end). |
+| **2026-06-21T11:52:00-04:00** | Técnico (`/tecnico`) | **Alta** | **Bloqueio e Desvio de Fluxo no Técnico**: Ao concluir o preenchimento de uma vistoria, o status era indevidamente atualizado para `'Visita de Campo'` (em vez de `'Em Análise'`), o que travava a auditoria no portal do técnico. Além disso, auditorias em status `'Visita de Campo'` renderizavam o badge estático "Auditada" ocultando o botão de ação "Realizar Visita". | **Resolvido** <br> (Corrigido na lógica do `DashboardTecnico.tsx` para atualizar o status para `'Em Análise'` ao submeter e exibir corretamente o botão "Realizar Visita" quando o status for `'Visita de Campo'`). |
+| **2026-06-21T13:52:00-04:00** | Gestor (`/gestor/questionario`) | **Baixa** | **Falta de Contexto na Adição de Critérios RTRS**: O modal "Novo Critério" não mostrava de forma clara qual seção (ex: "Meio Ambiente", "Trabalhista") estava selecionada ao criar uma nova regra, diminuindo a intuitividade do formulário. | **Identificado** <br> (Pendente melhoria visual de rótulos no modal). |
+| **2026-06-21T14:52:30-04:00** | Técnico / Modal de Inspeção (`/tecnico`) | **Alta** | **Erro de Coluna Inexistente (`criterio`) na Tabela `perguntas_rtrs`**: Falha ao carregar o questionário de perguntas de auditoria RTRS. O código tentava ordenar por `.order('criterio')`, mas no banco PostgreSQL do Supabase a coluna correspondente chama-se `numero_criterio`, disparando erro SQL de coluna inexistente (código `42703`). | **Resolvido** <br> (Corrigido em `QuestionarioRTRS.tsx` mapeando no select `criterio:numero_criterio` e ordenando por `numero_criterio`). |
+| **2026-06-21T16:26:00-04:00** | Produtor (`/produtor`) | **Média** | **Usabilidade de Demarcação de Propriedades**: Ao adicionar uma nova propriedade pelo mapa, a interface de demarcação exige que o usuário clique exatamente no ponto central da fazenda sem dar um feedback explícito imediato de que o clique cadastrou a fazenda no banco. O mapa não renderiza uma animação de "loading" ou "sucesso" clara durante o salvamento da área, forçando um reload manual ou delay de percepção por parte do produtor. | **Identificado** <br> (Sugere-se adicionar um loader circular no mapa e um toast de sucesso após a inserção no banco). |
+| **2026-06-21T17:15:00-04:00** | Técnico (`/tecnico`) e Gestor (`/gestor/auditorias`) | **Alta** | **Simulação de upload e respostas fantasmas no questionário (Não salvava no banco)**: O questionário de vistoria in loco do técnico apenas simulava o salvamento e o upload. As respostas não eram persistidas na tabela `respostas_auditoria` no banco, e no painel de revisão do gestor (`RevisaoAuditoria.tsx`) os dados mostrados eram sempre dados mockados estáticos. | **Resolvido** <br> (Corrigido em `QuestionarioRTRS.tsx` para realizar o insert de respostas e upload real de arquivos na storage do Supabase, e em `RevisaoAuditoria.tsx` para carregar as respostas reais do banco ligadas à `auditoria_id` correspondente). |
+| **2026-06-21T17:15:00-04:00** | Técnico (`/tecnico`) e Produtor (`/produtor`) | **Alta** | **Inexistência de uploader real para arquivos de evidência**: Não era possível fazer upload real de fotos de evidência em vistorias do Técnico ou na resolução de pendências do Produtor. Havia apenas uma simulação em timeout ou caixa de link de texto. | **Resolvido** <br> (Implementado uploader real nos dois portais usando input file integrado à storage do Supabase e com fallback automático para conversão base64 Data URL, garantindo que o envio de imagens funcione em qualquer cenário local/cloud). |
+
+---
+
+## Verificação e Próximos Passos
+1. **Testes Automatizados (E2E):** Todos os fluxos críticos de transição de status (Agendamento -> Execução -> Deliberação/Resolução de Pendências -> Aprovação) foram testados e aprovados pelos 3 agentes de teste no navegador Chrome.
+2. **Homologação:** O sistema agora está estável e compila perfeitamente sem erros de linter ou tipagem TypeScript (`npm run build`).

@@ -1,0 +1,42 @@
+{
+  "geral": {
+    "nome_plataforma": "MS Sustentável",
+    "botao_voltar": "Voltar",
+    "usuario_anonimo": "Usuário"
+  },
+  "dashboard_gestor": {
+    "titulo": "Visão Executiva",
+    "subtitulo": "Métricas de certificação, aprovações pendentes e monitoramento de riscos.",
+    "painel_ia_titulo": "Briefing Executivo AI",
+    "card_propriedades": "Propriedades",
+    "card_certificadas": "Certificadas RTRS",
+    "card_certificadas_sub": "do total",
+    "card_avaliacao": "Em Avaliação",
+    "card_avaliacao_sub": "Requerem sua ação",
+    "card_alertas": "Alertas Ambientais",
+    "card_alertas_sub": "Riscos identificados",
+    "tabela_titulo": "Auditorias Pendentes",
+    "tabela_subtitulo": "Evidências aguardando sua validação executiva.",
+    "busca_placeholder": "Pesquisar por fazenda...",
+    "painel_lateral_titulo": "Bloqueio Operacional",
+    "painel_lateral_texto": "Foram detectadas intersecções com os novos polígonos de embargo baixados da base PRODES. Requer atenção legal imediata."
+  },
+  "dashboard_produtor": {
+    "titulo": "Portal do Produtor Rural",
+    "subtitulo": "Gestão inteligente de propriedades e certificação.",
+    "aba_mapa": "Mapa e Propriedades",
+    "aba_ia": "Pré-Auditoria AI",
+    "botao_analise_risco": "Análise Espacial Integrada",
+    "botao_nova_propriedade": "Demarcar Propriedade",
+    "busca_placeholder": "Buscar propriedade...",
+    "modal_nova_titulo": "Nova Demarcação",
+    "modal_nova_placeholder": "Nome da propriedade",
+    "modal_nova_instrucao": "Clique em um ponto do mapa para definir o centro da propriedade.",
+    "ia_titulo": "Pré-Auditoria Inteligente",
+    "ia_descricao": "Descreva as não-conformidades ou dúvidas que você possui sobre a sua propriedade. Nossa IA especialista em sustentabilidade irá gerar um plano de ação imediato para você se preparar antes da visita técnica.",
+    "ia_placeholder": "Exemplo: Preciso regularizar o descarte de embalagens de defensivos e não tenho certeza de como organizar a área de vivência dos trabalhadores...",
+    "ia_botao_gerar": "Gerar Plano de Ação Corretiva",
+    "ia_botao_carregando": "Gerando Plano de Ação...",
+    "ia_painel_titulo": "Plano de Ação Especializado"
+  }
+}

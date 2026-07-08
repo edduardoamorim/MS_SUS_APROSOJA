@@ -1,0 +1,212 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+  
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+
+  --animate-fade-in-up: fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-shimmer: shimmer 2s infinite linear;
+  --animate-soft-pulse: softPulse 2s infinite ease-in-out;
+
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes shimmer {
+    0% {
+      background-position: -200% 0;
+    }
+    100% {
+      background-position: 200% 0;
+    }
+  }
+  @keyframes softPulse {
+    0%, 100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.85;
+      transform: scale(1.02);
+    }
+  }
+}
+
+@layer base {
+  :root {
+    /* =========================================================
+       ÁREA DE EDIÇÃO PARA LEIGOS: CORES DO SITE
+       =========================================================
+       Para alterar as cores do site, mude apenas o código HEX 
+       (ex: #064e3b) logo após os dois pontos.
+       ========================================================= */
+
+    /* 1. COR DO FUNDO DA PÁGINA (Padrão: off-white quase branco) */
+    --background: #f8fafc; 
+    
+    /* 2. COR DO TEXTO PRINCIPAL (Padrão: azul-ardósia quase preto) */
+    --foreground: #0f172a; 
+
+    /* 3. COR DE FUNDO DOS CARDS BEM COMO A COR DOS TEXTOS DENTRO DELES */
+    --card: #ffffff;
+    --card-foreground: #0f172a;
+
+    --popover: #ffffff;
+    --popover-foreground: #0f172a;
+
+    /* 4. COR PRINCIPAL DA MARCA (Padrão: Verde Corporativo do MS) */
+    /* -> MUDE ISSO PARA MUDAR A COR DOS BOTÕES E MENUS PRINCIPAIS */
+    --primary: #064e3b; 
+    --primary-foreground: #ffffff; /* Cor do texto dentro do botão principal */
+
+    /* 5. COR SECUNDÁRIA (Padrão: Azul Ardósia Escuro) */
+    --secondary: #1e293b; 
+    --secondary-foreground: #ffffff;
+
+    /* 6. COR DE ELEMENTOS SILENCIADOS (Fundos de inputs e menus) */
+    --muted: #f1f5f9; 
+    --muted-foreground: #64748b; 
+
+    /* 7. COR DE DESTAQUE E AVISOS (Padrão: Âmbar/Dourado) */
+    --accent: #d97706; 
+    --accent-foreground: #ffffff;
+
+    /* 8. COR DE ERRO E EXCLUSÃO (Padrão: Vermelho) */
+    --destructive: #ef4444; 
+    --destructive-foreground: #f8fafc; 
+
+    /* 9. CORES DE BORDAS E CAMPOS DE TEXTO */
+    --border: #f1f5f9; 
+    --input: #e2e8f0; 
+    
+    /* 10. COR DO ANEL DE FOCO (Quando você clica num campo de texto) */
+    --ring: #064e3b; 
+
+    /* =========================================================
+       ARREDONDAMENTO DAS CAIXAS (Em pixels ou 'rem')
+       Ex: 0.5rem (suave), 1rem (bastante redondo)
+       ========================================================= */
+    --radius: 1rem; 
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+  
+  /* Smooth transitions and hover states for all interactive elements */
+  button, a, input, select, textarea {
+    @apply transition-all duration-200;
+  }
+  
+  button:active, a:active {
+    transform: scale(0.98);
+  }
+  
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="number"],
+  input[type="date"],
+  select,
+  textarea {
+    @apply bg-white border border-slate-300/85 focus:ring-4 focus:ring-primary/10 focus:border-primary outline-none;
+  }
+}
+
+/* Ocultar botão nativo de revelar senha dos navegadores (Edge, Chrome, Safari) */
+/* Isso evita duplicidade com nosso botão customizado Eye/EyeOff */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none !important;
+}
+
+input[type="password"]::-webkit-credentials-auto-fill-button,
+input[type="password"]::-webkit-textfield-decoration-container {
+  display: none !important;
+}
+
+/* Toast Animations */
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes progress {
+  from {
+    width: 100%;
+  }
+  to {
+    width: 0%;
+  }
+}
+
+.animate-slide-in {
+  animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.shimmer-effect {
+  background: linear-gradient(90deg, var(--color-muted) 25%, var(--color-input) 50%, var(--color-muted) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s infinite linear;
+}
+
+/* Cascade Stagger Delays */
+.delay-100 { animation-delay: 100ms; }
+.delay-150 { animation-delay: 150ms; }
+.delay-200 { animation-delay: 200ms; }
+.delay-300 { animation-delay: 300ms; }
+.delay-400 { animation-delay: 400ms; }
+.delay-500 { animation-delay: 500ms; }
