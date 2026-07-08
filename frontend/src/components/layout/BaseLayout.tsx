@@ -15,8 +15,22 @@ export default function BaseLayout() {
     navigate('/login');
   };
 
-  const isDashboardRoot = ['/produtor', '/tecnico', '/gestor'].includes(location.pathname);
-  const showBackButton = !isDashboardRoot && location.pathname !== '/';
+  const rootPaths = [
+    '/',
+    '/login',
+    '/produtor',
+    '/tecnico',
+    '/gestor',
+    '/gestor/visao-geral',
+    '/gestor/propriedades',
+    '/gestor/usuarios',
+    '/gestor/auditorias',
+    '/gestor/questionario',
+    '/gestor/mapa'
+  ];
+
+  // Mostra o botão Voltar APENAS se a rota atual NÃO for uma das rotas principais de navegação
+  const showBackButton = !rootPaths.includes(location.pathname);
 
   const getHomePath = () => {
     if (!user) return '/';

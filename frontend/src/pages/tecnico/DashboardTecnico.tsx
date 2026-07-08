@@ -116,6 +116,7 @@ export default function DashboardTecnico() {
       fetchAudits();
       fetchAuxiliaryData();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   async function fetchAuxiliaryData() {
@@ -170,80 +171,24 @@ export default function DashboardTecnico() {
 
     setLoading(true);
     try {
-      let finalProdutorId = '';
-      let finalProdutorNome = '';
-
-      if (produtorOption === 'novo') {
-        if (!novoProdutorData.nome.trim()) {
-          warning('Preencha o nome do produtor rural.');
-          setLoading(false);
-          return;
-        }
-
-        // Criar perfil no banco
-        const { data: newProfile, error: profileError } = await supabase
-          .from('perfis')
-          .insert([{
-            nome: novoProdutorData.nome,
-            email: novoProdutorData.email || `${novoProdutorData.nome.toLowerCase().replace(/\s+/g, '')}@produtor.com.br`,
-            role: 'produtor',
-            regiao: novoProdutorData.regiao || 'Geral, MS',
-            status: 'Ativo'
-          }])
-          .select('id, nome')
-          .single();
-
-        if (profileError) throw profileError;
-        if (newProfile) {
-          finalProdutorId = newProfile.id;
-          finalProdutorNome = newProfile.nome;
-        }
-      } else {
-        if (!selectedProdutorId) {
-          warning('Selecione um produtor cadastrado.');
-          setLoading(false);
-          return;
-        }
-        finalProdutorId = selectedProdutorId;
-        finalProdutorNome = producers.find(p => p.id === selectedProdutorId)?.nome || '';
-      }
-
-      // Cadastrar as fazendas
-      for (const p of propertiesList) {
-        const propPayload = {
+      const payload = {
+        produtor_option: produtorOption,
+        produtor_id: produtorOption === 'existente' ? selectedProdutorId : null,
+        novo_produtor: produtorOption === 'novo' ? novoProdutorData : null,
+        propriedades_list: propertiesList.map(p => ({
           nome_fazenda: p.nome_fazenda,
-          nome_produtor: finalProdutorNome,
-          codigo_car: p.origem === 'CAR' ? p.codigo_car : null,
-          codigo_sigef: p.origem === 'SIGEF' ? p.codigo_sigef : null,
-          origem_cadastro: p.origem,
-          geom: p.geom || null,
-          produtor_id: finalProdutorId || null
-        };
+          codigo_car: p.codigo_car,
+          codigo_sigef: p.codigo_sigef,
+          origem: p.origem,
+          geom: p.geom
+        })),
+        tecnico_id: user?.id || null,
+        auto_schedule: autoScheduleAudit
+      };
 
-        const { data: newProp, error: propError } = await supabase
-          .from('propriedades')
-          .insert([propPayload])
-          .select('id')
-          .single();
+      const { error: rpcError } = await supabase.rpc('cadastrar_prospeccao_completa', payload);
 
-        if (propError) throw propError;
-
-        // Auto-agendar vistoria
-        if (autoScheduleAudit && newProp) {
-          const auditPayload = {
-            propriedade_id: newProp.id,
-            tecnico_responsavel_id: user?.id,
-            data_agendamento: new Date().toISOString().split('T')[0],
-            status: 'Visita de Campo'
-          };
-
-          const { error: auditError } = await supabase
-            .from('auditorias')
-            .insert([auditPayload]);
-
-          if (auditError) throw auditError;
-        }
-      }
+      if (rpcError) throw rpcError;
 
       success('Cadastro de prospecção e fazendas realizado com sucesso!');
       setShowCreateFarmModal(false);

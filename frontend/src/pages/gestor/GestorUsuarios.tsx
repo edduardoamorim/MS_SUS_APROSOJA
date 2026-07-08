@@ -81,16 +81,30 @@ export default function GestorUsuarios() {
         const { error } = await supabase.from('perfis').update(payload).eq('id', editingUser.id);
         if (error) throw error;
         setUsuarios(usuarios.map(u => u.id === editingUser.id ? { ...u, ...payload } : u));
+        success('Usuário atualizado com sucesso!');
       } else {
-        const { data, error } = await supabase.from('perfis').insert([payload]).select().single();
+        // Usa a Edge Function para convidar o usuário, o que dispara o envio de email bonitinho do Auth
+        const { data, error } = await supabase.functions.invoke('invite-user', {
+          body: {
+            email: formData.email,
+            nome: formData.nome,
+            role: payload.role,
+            regiao: formData.regiao
+          }
+        });
+
         if (error) throw error;
-        if (data) setUsuarios([data, ...usuarios]);
+        if (data && data.error) throw new Error(data.error);
+
+        // Atualizar lista local: Note que o trigger vai popular a tabela perfis
+        // Para uma atualização limpa, fazemos um leve refetch ou inserimos no state provisoriamente
+        fetchUsuarios();
+        success('Convite enviado com sucesso para o e-mail do usuário!');
       }
       setIsFormOpen(false);
-      success('Usuário salvo com sucesso!');
     } catch (err: any) {
       console.error('Erro ao salvar no Supabase:', err);
-      error('Erro ao salvar usuário: ' + err.message);
+      error('Erro ao processar usuário: ' + err.message);
     }
   };
 
