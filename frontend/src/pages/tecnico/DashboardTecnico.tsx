@@ -558,7 +558,7 @@ export default function DashboardTecnico() {
   };
 
   return (
-    <div className="space-y-8 max-w-5xl mx-auto animate-in fade-in duration-500">
+    <div className="space-y-8 max-w-5xl mx-auto animate-fade-in">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 border-b border-border pb-6">
         <div>
           <h1 className="text-3xl font-extrabold text-foreground tracking-tight">Portal do Técnico</h1>
@@ -604,7 +604,7 @@ export default function DashboardTecnico() {
             return (
               <div 
                 key={auditoria.id} 
-                className="bg-card rounded-xl shadow-sm border border-border overflow-hidden hover:-translate-y-1 hover:shadow-xl hover:border-primary/20 transition-all duration-300 ease-out group flex flex-col justify-between animate-fade-in-up opacity-0"
+                className="bg-card rounded-xl shadow-sm border border-border overflow-hidden hover:-translate-y-1 hover:shadow-xl hover:border-primary/20 transition-all duration-300 ease-out group flex flex-col justify-between animate-fade-in-up"
                 style={{ animationDelay: `${index * 100}ms` }}
               >
                 <div>
@@ -727,7 +727,7 @@ export default function DashboardTecnico() {
             </div>
 
             {isNewPendFormOpen && (
-              <form onSubmit={handleAddPendency} className="p-3 bg-muted/40 border border-border rounded-xl space-y-3 animate-in slide-in-from-top-2 duration-200">
+              <form onSubmit={handleAddPendency} className="p-3 bg-muted/40 border border-border rounded-xl space-y-3 animate-fade-in-down">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Título da Exigência</label>
                   <input
@@ -937,7 +937,7 @@ export default function DashboardTecnico() {
                   </select>
                 </div>
               ) : (
-                <div className="space-y-3 animate-in fade-in duration-250">
+                <div className="space-y-3 animate-fade-in">
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-muted-foreground uppercase">Nome Completo</label>
                     <input

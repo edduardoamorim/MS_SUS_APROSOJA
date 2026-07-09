@@ -559,7 +559,7 @@ export default function DashboardProdutor() {
   }
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 max-w-7xl mx-auto">
+    <div className="space-y-8 animate-fade-in max-w-7xl mx-auto">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 border-b border-border pb-6">
         <div>
           <h1 className="text-3xl font-extrabold text-foreground tracking-tight">{content.titulo}</h1>
@@ -623,7 +623,7 @@ export default function DashboardProdutor() {
       </div>
 
       {activeTab === 'mapa' && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in slide-in-from-bottom-4 duration-500">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-fade-in-up delay-100 opacity-0" style={{ animationFillMode: 'forwards' }}>
           {/* Painel Esquerdo: Lista de Fazendas */}
           <div className="lg:col-span-1 space-y-4">
             <div className="flex flex-col gap-3 w-full mb-6">
@@ -733,7 +733,7 @@ export default function DashboardProdutor() {
           {/* Painel Direito: Mapa Geoespacial */}
           <div className="lg:col-span-2 relative">
             {showNewFarmModal && (
-              <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 bg-card p-6 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-slate-100 w-80 animate-in zoom-in-95 duration-200">
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 bg-card p-6 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-slate-100 w-80 animate-zoom-in">
                 <h4 className="font-bold text-foreground mb-4">{content.modal_nova_titulo}</h4>
                 <input 
                   type="text" 
@@ -800,7 +800,7 @@ export default function DashboardProdutor() {
       )}
 
       {activeTab === 'pendencias' && (
-        <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500 max-w-4xl mx-auto">
+        <div className="space-y-6 animate-fade-in-up delay-150 opacity-0 max-w-4xl mx-auto" style={{ animationFillMode: 'forwards' }}>
           <div className="bg-card p-6 lg:p-8 rounded-2xl border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)]">
             <h2 className="text-2xl font-bold text-foreground mb-2 flex items-center gap-2">
               <ClipboardList className="w-6 h-6 text-primary" />
@@ -991,7 +991,7 @@ export default function DashboardProdutor() {
       )}
 
       {activeTab === 'ia' && (
-        <div className="max-w-4xl mx-auto space-y-6 animate-in slide-in-from-bottom-4 duration-500">
+        <div className="max-w-4xl mx-auto space-y-6 animate-fade-in-up delay-200 opacity-0" style={{ animationFillMode: 'forwards' }}>
           <div className="bg-card p-8 rounded-2xl border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)]">
             <h2 className="text-2xl font-bold text-foreground mb-2 flex items-center gap-2">
               <Sparkles className="w-6 h-6 text-indigo-500" />
@@ -1031,7 +1031,7 @@ export default function DashboardProdutor() {
       )}
 
       {activeTab === 'documentacao' && (
-        <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500 max-w-6xl mx-auto">
+        <div className="space-y-6 animate-fade-in-up delay-300 opacity-0 max-w-6xl mx-auto" style={{ animationFillMode: 'forwards' }}>
           <div className="bg-card p-6 rounded-2xl border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
               <h2 className="text-2xl font-bold text-foreground flex items-center gap-2">
@@ -1151,7 +1151,7 @@ export default function DashboardProdutor() {
           {/* Modal para upload de documentos gerais */}
           {showUploadDocModal && createPortal(
             <div className="fixed inset-0 z-50 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-              <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+              <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden animate-zoom-in">
                 <div className="bg-gradient-to-r from-emerald-800 to-emerald-700 text-white px-6 py-4 flex justify-between items-center">
                   <h3 className="font-bold text-lg">Arquivar Documento</h3>
                   <button onClick={() => setShowUploadDocModal(false)} className="p-1.5 bg-white/10 rounded-full hover:bg-emerald-600/50">

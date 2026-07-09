@@ -13,8 +13,8 @@ export default function Modal({ isOpen, onClose, title, children }: ModalProps) 
   if (!isOpen) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-in fade-in duration-300">
-      <div className="bg-card w-full max-w-lg rounded-2xl shadow-2xl border border-border p-6 relative animate-in zoom-in-95 fade-in slide-in-from-bottom-4 duration-400 m-4 ease-out">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
+      <div className="bg-card w-full max-w-lg rounded-2xl shadow-2xl border border-border p-6 relative animate-zoom-in m-4">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-xl font-bold text-foreground">{title}</h2>
           <button 

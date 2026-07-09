@@ -107,12 +107,12 @@ export default function ProfileSettings() {
           <div className="p-6">
             <form onSubmit={handleUpdatePassword} className="space-y-5">
               {error && (
-                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm font-medium animate-in slide-in-from-top-2">
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm font-medium animate-fade-in-down">
                   {error}
                 </div>
               )}
               {success && (
-                <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-2 animate-in slide-in-from-top-2">
+                <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-2 animate-fade-in-down">
                   <CheckCircle2 className="w-5 h-5" /> {success}
                 </div>
               )}

@@ -28,6 +28,11 @@ export default function GestorQuestionarios() {
   // Form States
   const [formData, setFormData] = useState({ numero_criterio: '', enunciado: '', criterio: '', ponderacao: '', orientacao: '' });
   const [secaoName, setSecaoName] = useState('');
+  const [expandedOrientacoes, setExpandedOrientacoes] = useState<Record<string, boolean>>({});
+
+  const toggleOrientacao = (id: string) => {
+    setExpandedOrientacoes(prev => ({ ...prev, [id]: !prev[id] }));
+  };
 
   useEffect(() => {
     fetchPerguntas();
@@ -253,7 +258,7 @@ export default function GestorQuestionarios() {
   };
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
+    <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-border pb-6">
         <div>
           <h1 className="text-2xl font-bold text-foreground tracking-tight flex items-center gap-2">
@@ -365,13 +370,15 @@ export default function GestorQuestionarios() {
                             <div 
                               ref={provided.innerRef}
                               {...provided.draggableProps}
-                              className={`p-4 bg-white rounded-xl border border-slate-200/80 shadow-xs transition-all flex items-start gap-4 group ${
-                                snapshot.isDragging ? 'shadow-xl ring-2 ring-primary/30 bg-slate-50 scale-[1.02] z-50' : (isAtivo ? 'hover:bg-slate-50/40 hover:shadow-md' : 'bg-slate-50/50 opacity-75')
+                              style={provided.draggableProps.style}
+                              className={`p-4 bg-white rounded-xl border border-slate-200/80 flex items-start gap-4 group ${
+                                snapshot.isDragging ? 'shadow-xl ring-2 ring-primary/30 bg-slate-50 scale-[1.02] z-50' : 'transition-all shadow-xs ' + (isAtivo ? 'hover:bg-slate-50/40 hover:shadow-md' : 'bg-slate-50/50 opacity-75')
                               }`}
                             >
                               <div 
                                 {...provided.dragHandleProps}
-                                className="mt-1 cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-primary transition-colors shrink-0"
+                                title="Reordenar indicador"
+                                className="mt-1 p-1.5 -ml-1.5 rounded-md cursor-grab active:cursor-grabbing text-slate-300 hover:text-primary hover:bg-primary/10 transition-all shrink-0"
                               >
                                 <GripVertical className="w-4 h-4" />
                               </div>
@@ -389,10 +396,22 @@ export default function GestorQuestionarios() {
                               </div>
                               <p className={`text-sm font-bold leading-relaxed ${isAtivo ? 'text-slate-800' : 'text-muted-foreground line-through'}`}>{p.enunciado}</p>
                               {p.orientacao && (
-                                <details className="text-xs text-muted-foreground bg-slate-50/80 p-3 rounded-xl border border-slate-200/60 cursor-pointer">
-                                  <summary className="font-bold select-none text-[10px] text-emerald-800 uppercase tracking-wider">Ver Orientação / Diretrizes</summary>
-                                  <p className="mt-2 leading-relaxed font-medium whitespace-pre-line text-slate-600">{p.orientacao}</p>
-                                </details>
+                                <div className="border border-slate-200/60 rounded-xl overflow-hidden bg-slate-50/80 transition-all duration-300">
+                                  <button 
+                                    type="button"
+                                    onClick={() => toggleOrientacao(p.id)}
+                                    className="w-full flex items-center justify-between text-[10px] font-bold text-emerald-800 uppercase tracking-wider cursor-pointer p-3 hover:bg-slate-100/80 transition-colors"
+                                  >
+                                    <span>{expandedOrientacoes[p.id] ? 'Ocultar Orientação' : 'Ver Orientação / Diretrizes'}</span>
+                                    <Plus className={`w-3.5 h-3.5 text-emerald-600/70 transition-transform duration-300 ${expandedOrientacoes[p.id] ? 'rotate-45' : ''}`} />
+                                  </button>
+                                  {expandedOrientacoes[p.id] && (
+                                    <div className="px-3 pb-3 animate-fade-in-down">
+                                      <div className="h-px w-full bg-slate-200/60 mb-3"></div>
+                                      <p className="leading-relaxed font-medium whitespace-pre-line text-slate-600 text-[11px]">{p.orientacao}</p>
+                                    </div>
+                                  )}
+                                </div>
                               )}
                             </div>
                             

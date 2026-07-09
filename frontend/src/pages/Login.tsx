@@ -140,7 +140,7 @@ export default function Login() {
       </div>
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-        <div className="bg-white py-8 px-4 shadow sm:rounded-lg sm:px-10 border border-gray-100 animate-in fade-in duration-300">
+        <div className="bg-white py-8 px-4 shadow sm:rounded-lg sm:px-10 border border-gray-100 animate-zoom-in">
           <form className="space-y-6" onSubmit={handleLogin}>
             {error && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded text-sm text-center font-medium">
@@ -225,7 +225,7 @@ export default function Login() {
         </div>
 
         {/* Painel de Desenvolvimento/Testes */}
-        <div className="mt-6 bg-slate-50 border border-slate-200 rounded-xl p-5 shadow-sm space-y-4 animate-in slide-in-from-bottom-2 duration-300">
+        <div className="mt-6 bg-slate-50 border border-slate-200 rounded-xl p-5 shadow-sm space-y-4 animate-fade-in-up delay-100" style={{ animationFillMode: 'both' }}>
           <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
             <Users className="w-5 h-5 text-emerald-800" />
             <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wide">

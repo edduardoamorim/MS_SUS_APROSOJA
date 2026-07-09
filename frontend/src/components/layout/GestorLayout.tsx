@@ -51,7 +51,7 @@ export default function GestorLayout() {
       </aside>
 
       {/* Área de Conteúdo */}
-      <main className="flex-1 min-w-0 animate-fade-in-up">
+      <main className="flex-1 min-w-0">
         <div className="bg-card rounded-2xl p-6 lg:p-8 min-h-[calc(100vh-8rem)] border border-border shadow-sm">
           <Outlet />
         </div>

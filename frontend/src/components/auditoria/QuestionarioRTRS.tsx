@@ -433,20 +433,26 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
 
                          {/* Orientação Retrátil */}
                          {pergunta.orientacao && (
-                           <div className="mb-5">
-                             <button
-                               type="button"
-                               onClick={() => toggleOrientacao(pergunta.id)}
-                               className="text-[11px] font-extrabold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 cursor-pointer transition-colors bg-emerald-50 hover:bg-emerald-100/50 px-2.5 py-1 rounded-lg border border-emerald-100/80"
-                             >
-                               <span>{expandedOrientacoes[pergunta.id] ? 'Ocultar Orientação' : 'Ver Orientação / Diretrizes'}</span>
-                             </button>
-                             {expandedOrientacoes[pergunta.id] && (
-                               <div className="mt-2.5 p-4 bg-slate-50 border border-slate-200/60 rounded-xl text-[11px] text-slate-600 leading-relaxed whitespace-pre-line font-medium animate-in fade-in slide-in-from-top-1 duration-200">
-                                 {pergunta.orientacao}
-                               </div>
-                             )}
-                           </div>
+                            <div className="mb-5 border border-slate-200/60 rounded-xl overflow-hidden bg-slate-50/80 transition-all duration-300">
+                              <button
+                                type="button"
+                                onClick={() => toggleOrientacao(pergunta.id)}
+                                className="w-full flex items-center justify-between text-[11px] font-extrabold text-emerald-800 uppercase tracking-wider cursor-pointer p-3 hover:bg-slate-100/80 transition-colors"
+                              >
+                                <span>{expandedOrientacoes[pergunta.id] ? 'Ocultar Orientação' : 'Ver Orientação / Diretrizes'}</span>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`text-emerald-600/70 transition-transform duration-300 ${expandedOrientacoes[pergunta.id] ? 'rotate-45' : ''}`}>
+                                  <path d="M5 12h14"/><path d="M12 5v14"/>
+                                </svg>
+                              </button>
+                              {expandedOrientacoes[pergunta.id] && (
+                                <div className="px-3 pb-3 animate-fade-in-down">
+                                  <div className="h-px w-full bg-slate-200/60 mb-3"></div>
+                                  <div className="text-[11px] text-slate-600 leading-relaxed whitespace-pre-line font-medium">
+                                    {pergunta.orientacao}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                          )}
 
                          <div className="space-y-4">

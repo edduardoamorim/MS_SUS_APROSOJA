@@ -124,7 +124,7 @@ export default function DashboardGestor() {
   };
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500">
+    <div className="space-y-8 animate-fade-in">
       <div className="flex justify-between items-end mb-4 border-b border-border pb-6">
         <div>
           <h1 className="text-3xl font-extrabold text-foreground tracking-tight">{content.titulo}</h1>

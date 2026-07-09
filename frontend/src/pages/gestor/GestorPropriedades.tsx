@@ -280,7 +280,7 @@ export default function GestorPropriedades() {
   );
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
+    <div className="space-y-6 animate-fade-in">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-border pb-6">
         <div>
           <h1 className="text-2xl font-bold text-foreground tracking-tight flex items-center gap-2">
@@ -483,7 +483,7 @@ export default function GestorPropriedades() {
             </div>
 
             {isNewPendFormOpen && (
-              <form onSubmit={handleAddPendency} className="bg-muted/40 p-4 rounded-xl border border-border space-y-3 animate-in slide-in-from-top-2 duration-200">
+              <form onSubmit={handleAddPendency} className="bg-muted/40 p-4 rounded-xl border border-border space-y-3 animate-fade-in-down">
                 <div className="font-bold text-xs text-foreground uppercase tracking-wider">Nova Pendência</div>
                 <div className="space-y-1">
                   <label className="text-[11px] font-bold text-muted-foreground">Título</label>
