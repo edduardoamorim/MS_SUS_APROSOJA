@@ -1,0 +1,16 @@
+nome_fazenda,nome_produtor,area_ha,latitude,longitude,status_rtrs,cenario_simulado
+Fazenda Alvorada,João Batista Silva,1200,-20.4697,-54.6201,Certificada,100% legalizada no centro de Campo Grande
+Sítio Recanto Verde,Maria de Lourdes,350,-22.2211,-54.8056,Em Análise,Fazenda regular próxima a Dourados
+Estância Bela Vista,Carlos Eduardo,4500,-19.0092,-57.6533,Pendente,Grande propriedade em Corumbá (Pantanal)
+Fazenda Fronteira Sul,Pedro Henrique,800,-22.5367,-55.7275,Recusada,Na divisa com o Paraguai (Ponta Porã)
+Sítio das Araras,Ana Julia,150,-20.7511,-51.7022,Certificada,Três Lagoas próximo ao rio Paraná
+Fazenda Esperança,Marcos Vinícius,2100,-21.6111,-55.1667,Em Análise,Região de Maracaju
+Fazenda São Jorge,Roberto Alves,5400,-20.155,-54.001,Pendente,Ribas do Rio Pardo
+Fazenda Rio Claro,Fernanda Costa,320,-21.233,-56.455,Em Análise,Bonito (Atenção ambiental)
+Estância Pantaneira,José Augusto,12500,-18.500,-56.000,Recusada,Área isolada no Pantanal
+Fazenda Nova Era,Lucia Freitas,600,-23.5505,-46.6333,Em Análise,Erro proposital: Coordenadas caindo em São Paulo (fora de MS)
+Sítio do Sol,Paulo Roberto,400,-21.800,-54.200,Certificada,Rio Brilhante
+Fazenda Vale Verde,Ricardo Gomes,1500,-20.450,-54.600,Pendente,Área de risco simulado próxima a Campo Grande
+Fazenda Divisa,Juliana Mendes,850,-19.850,-51.050,Em Análise,Erro proposital: divisa com MG/SP
+Estância Ouro Fino,Antônio Moraes,2200,-21.100,-53.200,Certificada,Nova Andradina
+Fazenda Agro Sustentável,Silvia Helena,450,-22.500,-54.500,Pendente,Caarapó com áreas sensíveis
