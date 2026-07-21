@@ -8,4 +8,11 @@ export default defineConfig({
     tailwindcss(),
     react(),
   ],
+  server: {
+    host: true,
+    allowedHosts: [
+      '.app.github.dev',
+      '.github.dev'
+    ]
+  }
 })
