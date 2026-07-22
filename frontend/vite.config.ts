@@ -9,10 +9,8 @@ export default defineConfig({
     react(),
   ],
   server: {
-    host: true,
-    allowedHosts: [
-      '.app.github.dev',
-      '.github.dev'
-    ]
+    host: '0.0.0.0',
+    port: 5173,
+    allowedHosts: true
   }
 })

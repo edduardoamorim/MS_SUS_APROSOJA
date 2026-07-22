@@ -1,0 +1,13 @@
+{
+  "name": "MS Sustentável APROSOJA",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-20-bullseye",
+  "forwardPorts": [5173],
+  "portsAttributes": {
+    "5173": {
+      "label": "Frontend (Vite Dev Server)",
+      "onAutoForward": "openBrowser",
+      "visibility": "public"
+    }
+  },
+  "postCreateCommand": "cd frontend && npm install"
+}
