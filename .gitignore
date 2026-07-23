@@ -3,3 +3,6 @@ node_modules/
 keys.env
 __pycache__/
 dados_geo/
+supabase/.temp/
+.cache/
+*.tmp
