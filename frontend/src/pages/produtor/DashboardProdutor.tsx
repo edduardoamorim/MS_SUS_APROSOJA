@@ -927,6 +927,21 @@ export default function DashboardProdutor() {
                                 <h4 className="font-bold text-foreground text-base tracking-tight">{pend.titulo}</h4>
                                 <p className="text-sm text-muted-foreground leading-relaxed font-medium">{pend.descricao}</p>
                                 
+                                {pend.motivo_rejeicao && pend.status === 'Pendente' && (
+                                  <div className="mt-3 p-3.5 bg-amber-50/90 rounded-xl border border-amber-200 text-xs text-amber-950 space-y-1.5 shadow-sm">
+                                    <div className="font-bold text-amber-900 flex items-center gap-1.5 text-xs">
+                                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                                      Ajustes Solicitados pelo Técnico / Motivo da Rejeição:
+                                    </div>
+                                    <div className="italic text-amber-950 font-medium bg-amber-100/50 p-2 rounded-lg border border-amber-200/50">
+                                      "{pend.motivo_rejeicao}"
+                                    </div>
+                                    <p className="text-[11px] text-amber-800 font-medium">
+                                      Por favor, realize os ajustes acima e clique em "Resolver" para reenviar a comprovação.
+                                    </p>
+                                  </div>
+                                )}
+
                                 {pend.status === 'Em Análise' && (
                                   <div className="mt-3 p-3 bg-indigo-50/50 rounded-lg border border-indigo-100 text-xs text-indigo-900 space-y-1">
                                     <div className="font-semibold">Resolução Enviada:</div>
