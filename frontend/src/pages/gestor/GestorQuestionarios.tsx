@@ -254,15 +254,20 @@ export default function GestorQuestionarios() {
 
     if (source.index === destination.index) return;
 
-    const groupPerguntas = perguntasDaSecao.filter(p => (p.criterio || 'OUTROS CRITÉRIOS') === droppableId);
-    if (!groupPerguntas.length) return;
+    // Localiza o grupo de critérios correspondente ao safeDroppableId
+    const groupEntries = Object.entries(criteriaGroups);
+    const matchedGroup = groupEntries.find((_, idx) => `droppable-group-${idx}` === droppableId);
+    if (!matchedGroup) return;
+
+    const [criterionName, groupPerguntas] = matchedGroup;
+    if (!groupPerguntas || !groupPerguntas.length) return;
 
     const reorderedGroup = Array.from(groupPerguntas);
     const [movedItem] = reorderedGroup.splice(source.index, 1);
     reorderedGroup.splice(destination.index, 0, movedItem);
 
     const updatedPerguntas = perguntas.map(p => {
-      if ((p.criterio || 'OUTROS CRITÉRIOS') === droppableId) {
+      if ((p.criterio || 'OUTROS CRITÉRIOS') === criterionName) {
         const newIdx = reorderedGroup.findIndex(item => item.id === p.id);
         return { ...p, ordem: newIdx + 1 };
       }
@@ -414,8 +419,8 @@ export default function GestorQuestionarios() {
                   Nenhum critério encontrado nesta seção.
                 </div>
               ) : (
-                Object.entries(criteriaGroups).map(([criterionName, groupPerguntas]) => (
-                  <Droppable droppableId={criterionName} key={criterionName}>
+                Object.entries(criteriaGroups).map(([criterionName, groupPerguntas], groupIdx) => (
+                  <Droppable droppableId={`droppable-group-${groupIdx}`} key={criterionName}>
                     {(provided) => (
                       <div 
                         className="p-5 space-y-4 bg-slate-50/50 rounded-2xl border border-slate-200/60 transition-all hover:bg-slate-50/80"
@@ -453,24 +458,24 @@ export default function GestorQuestionarios() {
                             const isExpanded = expandedOrientacoes[p.id];
 
                             return (
-                              <Draggable key={p.id} draggableId={p.id} index={index}>
+                              <Draggable key={p.id} draggableId={String(p.id)} index={index}>
                                 {(provided, snapshot) => (
                                   <div 
                                     ref={provided.innerRef}
                                     {...provided.draggableProps}
                                     style={provided.draggableProps.style}
-                                    className={`p-4 bg-white rounded-xl border flex items-start gap-3 group transition-all duration-200 ${
+                                    className={`p-4 bg-white rounded-xl border flex items-start gap-3 group ${
                                       snapshot.isDragging 
-                                        ? 'shadow-2xl ring-2 ring-emerald-500/40 bg-slate-50 scale-[1.01] z-50 border-emerald-400' 
-                                        : 'border-slate-200/80 shadow-2xs ' + (isAtivo ? 'hover:border-emerald-300 hover:shadow-md' : 'bg-slate-50/60 opacity-70')
+                                        ? 'transition-none shadow-2xl ring-2 ring-emerald-500/40 bg-emerald-50/30 border-emerald-500 z-50' 
+                                        : 'transition-all duration-200 border-slate-200/80 shadow-2xs ' + (isAtivo ? 'hover:border-emerald-300 hover:shadow-md' : 'bg-slate-50/60 opacity-70')
                                     }`}
                                   >
                                     <div 
                                       {...provided.dragHandleProps}
-                                      title="Arrastar para reordenar"
-                                      className="mt-1 p-1.5 -ml-1 rounded-lg cursor-grab active:cursor-grabbing text-slate-300 hover:text-emerald-700 hover:bg-emerald-50 transition-all shrink-0"
+                                      title="Clique e arraste para reordenar"
+                                      className="mt-0.5 p-2 -ml-1 rounded-lg cursor-grab active:cursor-grabbing text-slate-400 hover:text-emerald-700 hover:bg-emerald-100/70 transition-colors shrink-0 select-none touch-none flex items-center justify-center"
                                     >
-                                      <GripVertical className="w-4 h-4" />
+                                      <GripVertical className="w-5 h-5 pointer-events-none" />
                                     </div>
                                     <div className="flex-1 space-y-2.5 min-w-0">
                                       <div className="flex items-center gap-2 flex-wrap">
