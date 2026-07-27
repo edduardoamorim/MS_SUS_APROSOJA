@@ -44,7 +44,7 @@ export default function BaseLayout() {
     <div className="min-h-screen bg-background flex flex-col font-sans text-foreground selection:bg-primary/20">
       {/* Header Premium Shadcn/Tremor Style */}
       <header className="sticky top-0 z-40 bg-card/80 backdrop-blur-md border-b border-border shadow-sm transition-all h-16 flex items-center">
-        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex justify-between items-center">
+        <div className="w-full max-w-[1920px] mx-auto px-4 sm:px-6 lg:px-8 flex justify-between items-center">
           
           {/* Esquerda: Logo e Controle de Navegação */}
           <div className="flex items-center gap-3">
@@ -124,7 +124,7 @@ export default function BaseLayout() {
       </header>
 
       {/* Conteúdo Principal */}
-      <main className="flex-1 w-full max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
+      <main className="flex-1 w-full max-w-[1920px] mx-auto p-4 sm:p-6 lg:p-8">
         <Outlet />
       </main>
     </div>

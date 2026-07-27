@@ -358,7 +358,7 @@ export default function GestorQuestionarios() {
 
       <div className="flex flex-col lg:flex-row gap-6 items-start">
         {/* Menu Lateral de Seções (Princípios RTRS) */}
-        <div className="w-full lg:w-72 bg-white/80 backdrop-blur-md rounded-2xl border border-slate-200/80 p-3 shadow-xs space-y-1 shrink-0">
+        <div className="w-full lg:w-80 xl:w-96 bg-white/80 backdrop-blur-md rounded-2xl border border-slate-200/80 p-3.5 shadow-xs space-y-1.5 shrink-0">
           <div className="px-3 py-2 text-[11px] font-black text-slate-400 uppercase tracking-wider">
             Seções do Questionário ({secoes.length})
           </div>
