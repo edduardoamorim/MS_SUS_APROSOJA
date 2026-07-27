@@ -255,6 +255,8 @@ export default function GestorQuestionarios() {
     if (source.index === destination.index) return;
 
     const groupPerguntas = perguntasDaSecao.filter(p => (p.criterio || 'OUTROS CRITÉRIOS') === droppableId);
+    if (!groupPerguntas.length) return;
+
     const reorderedGroup = Array.from(groupPerguntas);
     const [movedItem] = reorderedGroup.splice(source.index, 1);
     reorderedGroup.splice(destination.index, 0, movedItem);
@@ -270,16 +272,26 @@ export default function GestorQuestionarios() {
     setPerguntas(updatedPerguntas);
 
     try {
-      const updates = reorderedGroup.map((item, idx) => 
-        supabase
-          .from('perguntas_rtrs')
-          .update({ ordem: idx + 1 })
-          .eq('id', item.id)
+      const results = await Promise.all(
+        reorderedGroup.map((item, idx) => {
+          if (!item?.id) return Promise.resolve({ data: null, error: null });
+          return supabase
+            .from('perguntas_rtrs')
+            .update({ ordem: idx + 1 })
+            .eq('id', item.id);
+        })
       );
-      await Promise.all(updates);
-      success('Ordem dos indicadores atualizada!');
-    } catch (e) {
-      error('Erro ao salvar reordenação no banco de dados.');
+
+      const failedResult = results.find(r => r && r.error);
+      if (failedResult?.error) {
+        console.error('Erro na atualização de ordem:', failedResult.error);
+        error('Erro ao salvar reordenação: ' + (failedResult.error.message || 'Falha de permissão'));
+      } else {
+        success('Ordem dos indicadores atualizada!');
+      }
+    } catch (e: any) {
+      console.error('Exceção ao reordenar:', e);
+      error('Erro ao salvar reordenação: ' + (e.message || 'Falha na conexão'));
     }
   };
 
