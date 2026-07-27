@@ -464,10 +464,10 @@ export default function GestorQuestionarios() {
                                     ref={provided.innerRef}
                                     {...provided.draggableProps}
                                     style={provided.draggableProps.style}
-                                    className={`p-4 bg-white rounded-xl border flex items-start gap-3 group ${
+                                    className={`p-4 bg-white rounded-xl border flex items-start gap-3 group transition-[box-shadow,border-color,background-color] duration-150 ${
                                       snapshot.isDragging 
-                                        ? 'transition-none shadow-2xl ring-2 ring-emerald-500/40 bg-emerald-50/30 border-emerald-500 z-50' 
-                                        : 'transition-all duration-200 border-slate-200/80 shadow-2xs ' + (isAtivo ? 'hover:border-emerald-300 hover:shadow-md' : 'bg-slate-50/60 opacity-70')
+                                        ? 'shadow-2xl ring-2 ring-emerald-500/50 bg-emerald-50/40 border-emerald-600 z-50' 
+                                        : 'border-slate-200/80 shadow-2xs ' + (isAtivo ? 'hover:border-emerald-300 hover:shadow-md' : 'bg-slate-50/60 opacity-70')
                                     }`}
                                   >
                                     <div 
