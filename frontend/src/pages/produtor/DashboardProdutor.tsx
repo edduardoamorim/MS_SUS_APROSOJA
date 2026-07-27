@@ -314,28 +314,68 @@ export default function DashboardProdutor() {
 
       // 3. Gerar FeatureCollection para o mapa baseado no banco
       if (props && props.length > 0) {
-        const features = props.map((p: any, index: number) => {
-          let geom = p.geom;
-          if (!geom) {
-            // Geometria mockada baseada em offsets do index caso esteja vazia
-            const latBase = -20.4 - (index * 0.15);
-            const lngBase = -54.6 - (index * 0.15);
-            geom = {
-              type: 'Polygon',
-              coordinates: [[[lngBase, latBase], [lngBase + 0.05, latBase], [lngBase + 0.05, latBase - 0.05], [lngBase, latBase - 0.05], [lngBase, latBase]]]
+        const features = await Promise.all(
+          props.map(async (p: any, index: number) => {
+            let geom = p.geom;
+            if (typeof geom === 'string') {
+              try {
+                if (geom.trim().startsWith('{')) {
+                  geom = JSON.parse(geom);
+                }
+              } catch (e) {}
+            }
+
+            // Se a geometria continua nula ou string inválida, buscar no banco geoespacial de backup
+            if (!geom || typeof geom === 'string') {
+              try {
+                if (p.codigo_car) {
+                  const carCodeBase = p.codigo_car.split('-')[1] || '';
+                  const { data } = await supabase
+                    .from('imoveis_car')
+                    .select('geom')
+                    .or(`cod_imovel.ilike.${p.codigo_car},cod_imovel.ilike.%${carCodeBase}%`)
+                    .limit(1)
+                    .maybeSingle();
+                  if (data?.geom) {
+                    geom = typeof data.geom === 'string' && data.geom.startsWith('{') ? JSON.parse(data.geom) : data.geom;
+                  }
+                } else if (p.codigo_sigef) {
+                  const { data } = await supabase
+                    .from('imoveis_sigef')
+                    .select('geom')
+                    .or(`parcela_co.ilike.${p.codigo_sigef},codigo_imo.ilike.${p.codigo_sigef}`)
+                    .limit(1)
+                    .maybeSingle();
+                  if (data?.geom) {
+                    geom = typeof data.geom === 'string' && data.geom.startsWith('{') ? JSON.parse(data.geom) : data.geom;
+                  }
+                }
+              } catch (e) {
+                console.warn('Erro ao restaurar geometria do imóvel:', e);
+              }
+            }
+
+            if (!geom || typeof geom === 'string') {
+              const latBase = -20.4 - (index * 0.15);
+              const lngBase = -54.6 - (index * 0.15);
+              geom = {
+                type: 'Polygon',
+                coordinates: [[[lngBase, latBase], [lngBase + 0.05, latBase], [lngBase + 0.05, latBase - 0.05], [lngBase, latBase - 0.05], [lngBase, latBase]]]
+              };
+            }
+
+            const openPendsCount = pends.filter((x: any) => x.propriedade_id === p.id && x.status === 'Pendente').length;
+            return {
+              type: 'Feature' as const,
+              properties: { 
+                id: p.id, 
+                name: p.nome_fazenda, 
+                status: openPendsCount > 0 ? `${openPendsCount} Pendência(s)` : 'Regularizada' 
+              },
+              geometry: geom
             };
-          }
-          const openPendsCount = pends.filter((x: any) => x.propriedade_id === p.id && x.status === 'Pendente').length;
-          return {
-            type: 'Feature' as const,
-            properties: { 
-              id: p.id, 
-              name: p.nome_fazenda, 
-              status: openPendsCount > 0 ? `${openPendsCount} Pendência(s)` : 'Regularizada' 
-            },
-            geometry: geom
-          };
-        });
+          })
+        );
 
         setFarmsData({
           type: 'FeatureCollection',
@@ -691,7 +731,13 @@ export default function DashboardProdutor() {
                       
                       <p className="text-xs text-muted-foreground flex items-center gap-1.5 font-medium mb-3">
                         <MapPin className="w-3.5 h-3.5" /> 
-                        Centroide: {feature.geometry.type === 'Polygon' ? feature.geometry.coordinates[0][0][1].toFixed(2) : ''}, {feature.geometry.type === 'Polygon' ? feature.geometry.coordinates[0][0][0].toFixed(2) : ''}
+                        Centroide: {(() => {
+                          const g = feature.geometry;
+                          if (!g || !g.coordinates) return '';
+                          let c: any = g.coordinates;
+                          while (Array.isArray(c[0])) c = c[0];
+                          return typeof c[1] === 'number' && typeof c[0] === 'number' ? `${c[1].toFixed(2)}, ${c[0].toFixed(2)}` : '';
+                        })()}
                       </p>
 
                       <div className="flex gap-2">

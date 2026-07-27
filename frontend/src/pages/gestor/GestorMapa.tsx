@@ -47,27 +47,63 @@ export default function GestorMapa() {
       // 3. Buscar propriedades reais
       const { data: props, error: propsError } = await supabase.from('propriedades').select('*');
       if (!propsError && props) {
-        const propFeatures = props.map((p: any, index: number) => {
-          let geom = p.geom;
-          if (!geom) {
-            // Geometria mockada se estiver vazia
-            const latBase = -20.4 - (index * 0.15);
-            const lngBase = -54.6 - (index * 0.15);
-            geom = {
-              type: 'Polygon',
-              coordinates: [[[lngBase, latBase], [lngBase + 0.05, latBase], [lngBase + 0.05, latBase - 0.05], [lngBase, latBase - 0.05], [lngBase, latBase]]]
+        const propFeatures = await Promise.all(
+          props.map(async (p: any, index: number) => {
+            let geom = p.geom;
+            if (typeof geom === 'string') {
+              try {
+                if (geom.trim().startsWith('{')) {
+                  geom = JSON.parse(geom);
+                }
+              } catch (e) {}
+            }
+
+            if (!geom || typeof geom === 'string') {
+              try {
+                if (p.codigo_car) {
+                  const carCodeBase = p.codigo_car.split('-')[1] || '';
+                  const { data } = await supabase
+                    .from('imoveis_car')
+                    .select('geom')
+                    .or(`cod_imovel.ilike.${p.codigo_car},cod_imovel.ilike.%${carCodeBase}%`)
+                    .limit(1)
+                    .maybeSingle();
+                  if (data?.geom) {
+                    geom = typeof data.geom === 'string' && data.geom.startsWith('{') ? JSON.parse(data.geom) : data.geom;
+                  }
+                } else if (p.codigo_sigef) {
+                  const { data } = await supabase
+                    .from('imoveis_sigef')
+                    .select('geom')
+                    .or(`parcela_co.ilike.${p.codigo_sigef},codigo_imo.ilike.${p.codigo_sigef}`)
+                    .limit(1)
+                    .maybeSingle();
+                  if (data?.geom) {
+                    geom = typeof data.geom === 'string' && data.geom.startsWith('{') ? JSON.parse(data.geom) : data.geom;
+                  }
+                }
+              } catch (e) {}
+            }
+
+            if (!geom || typeof geom === 'string') {
+              const latBase = -20.4 - (index * 0.15);
+              const lngBase = -54.6 - (index * 0.15);
+              geom = {
+                type: 'Polygon',
+                coordinates: [[[lngBase, latBase], [lngBase + 0.05, latBase], [lngBase + 0.05, latBase - 0.05], [lngBase, latBase - 0.05], [lngBase, latBase]]]
+              };
+            }
+            return {
+              type: 'Feature' as const,
+              properties: {
+                id: p.id,
+                name: p.nome_fazenda,
+                status: p.nome_produtor
+              },
+              geometry: geom
             };
-          }
-          return {
-            type: 'Feature' as const,
-            properties: {
-              id: p.id,
-              name: p.nome_fazenda,
-              status: p.nome_produtor
-            },
-            geometry: geom
-          };
-        });
+          })
+        );
         setFarmsData({
           type: 'FeatureCollection',
           features: propFeatures

@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useEffect } from 'react';
 import Map, { NavigationControl, Source, Layer } from 'react-map-gl/maplibre';
 import type { MapRef } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -14,6 +14,46 @@ interface MapViewProps {
 
 export default function MapView({ farms, embargoes, municipalities, onMapClick, interactive = true }: MapViewProps) {
   const mapRef = useRef<MapRef>(null);
+
+  // Auto-fit bounds when farm polygons are loaded
+  useEffect(() => {
+    if (farms && farms.features && farms.features.length > 0 && mapRef.current) {
+      let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+      let hasValidCoords = false;
+
+      const processCoords = (coords: any[]) => {
+        if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+          const [lng, lat] = coords;
+          if (!isNaN(lng) && !isNaN(lat)) {
+            minLng = Math.min(minLng, lng);
+            minLat = Math.min(minLat, lat);
+            maxLng = Math.max(maxLng, lng);
+            maxLat = Math.max(maxLat, lat);
+            hasValidCoords = true;
+          }
+        } else if (Array.isArray(coords)) {
+          coords.forEach(processCoords);
+        }
+      };
+
+      farms.features.forEach(f => {
+        if (f.geometry && (f.geometry as any).coordinates) {
+          processCoords((f.geometry as any).coordinates);
+        }
+      });
+
+      if (hasValidCoords && isFinite(minLng) && isFinite(minLat)) {
+        try {
+          mapRef.current.fitBounds(
+            [[minLng, minLat], [maxLng, maxLat]],
+            { padding: 80, maxZoom: 14, duration: 1500 }
+          );
+        } catch (e) {
+          console.warn('Erro ao ajustar limites do mapa:', e);
+        }
+      }
+    }
+  }, [farms]);
 
   const handleClick = (e: any) => {
     if (onMapClick && e.lngLat) {
