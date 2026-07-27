@@ -75,6 +75,7 @@ export default function DashboardProdutor() {
   const [showQuestionario, setShowQuestionario] = useState<string | number | null>(null);
   const [newFarmName, setNewFarmName] = useState('');
   const [farmsData, setFarmsData] = useState<FeatureCollection>(MOCK_FARMS);
+  const [selectedFarmId, setSelectedFarmId] = useState<string | null>(null);
 
   // AI States
   const [pendingIssues, setPendingIssues] = useState('');
@@ -370,6 +371,7 @@ export default function DashboardProdutor() {
               properties: { 
                 id: p.id, 
                 name: p.nome_fazenda, 
+                municipio: p.municipio || 'Água Clara, MS',
                 status: openPendsCount > 0 ? `${openPendsCount} Pendência(s)` : 'Regularizada' 
               },
               geometry: geom
@@ -705,16 +707,23 @@ export default function DashboardProdutor() {
               
               <div className="space-y-3">
                 {filteredFarms.map((feature, i) => {
-                  const isMock = typeof feature.properties?.id === 'number' && feature.properties?.id < 10;
+                  const farmId = feature.properties?.id;
+                  const isSelected = selectedFarmId === farmId;
+                  const isMock = typeof farmId === 'number' && farmId < 10;
                   return (
                     <div 
                       key={i} 
-                      className="group relative overflow-hidden bg-background border border-border rounded-xl p-4 hover:-translate-y-1 hover:border-primary/50 hover:shadow-lg transition-all duration-300 ease-out animate-fade-in-up opacity-0"
+                      onClick={() => setSelectedFarmId(farmId)}
+                      className={`group relative overflow-hidden border rounded-xl p-4 hover:-translate-y-1 transition-all duration-300 ease-out animate-fade-in-up cursor-pointer ${
+                        isSelected 
+                          ? 'bg-emerald-50/40 border-emerald-500 shadow-md ring-2 ring-emerald-500/20' 
+                          : 'bg-background border-border hover:border-primary/50 hover:shadow-lg'
+                      }`}
                       style={{ animationDelay: `${i * 100}ms` }}
                     >
-                      <div className="absolute top-0 left-0 w-1 h-full bg-primary/0 group-hover:bg-primary transition-colors"></div>
+                      <div className={`absolute top-0 left-0 w-1.5 h-full transition-colors ${isSelected ? 'bg-emerald-600' : 'bg-primary/0 group-hover:bg-primary'}`}></div>
                       
-                      <div className="flex justify-between items-start mb-3">
+                      <div className="flex justify-between items-start mb-2">
                         <h3 className="font-bold text-foreground text-sm group-hover:text-primary transition-colors pr-2">
                           {feature.properties?.name}
                         </h3>
@@ -729,16 +738,22 @@ export default function DashboardProdutor() {
                         )}
                       </div>
                       
-                      <p className="text-xs text-muted-foreground flex items-center gap-1.5 font-medium mb-3">
-                        <MapPin className="w-3.5 h-3.5" /> 
-                        Centroide: {(() => {
-                          const g = feature.geometry;
-                          if (!g || !g.coordinates) return '';
-                          let c: any = g.coordinates;
-                          while (Array.isArray(c[0])) c = c[0];
-                          return typeof c[1] === 'number' && typeof c[0] === 'number' ? `${c[1].toFixed(2)}, ${c[0].toFixed(2)}` : '';
-                        })()}
-                      </p>
+                      <div className="space-y-1 mb-3">
+                        <p className="text-xs text-foreground font-medium flex items-center gap-1.5">
+                          <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          <span className="font-semibold text-slate-700">Município:</span> 
+                          <span className="text-emerald-900 font-bold">{feature.properties?.municipio || 'Água Clara, MS'}</span>
+                        </p>
+                        <p className="text-[11px] text-muted-foreground pl-5 font-mono">
+                          Centroide: {(() => {
+                            const g = feature.geometry;
+                            if (!g || !g.coordinates) return '-';
+                            let c: any = g.coordinates;
+                            while (Array.isArray(c[0])) c = c[0];
+                            return typeof c[1] === 'number' && typeof c[0] === 'number' ? `${c[1].toFixed(2)}, ${c[0].toFixed(2)}` : '-';
+                          })()}
+                        </p>
+                      </div>
 
                       <div className="flex gap-2">
                         <button
@@ -804,6 +819,7 @@ export default function DashboardProdutor() {
             <div className="h-[600px] w-full rounded-2xl overflow-hidden border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] relative">
               <MapView 
                 farms={farmsData} 
+                selectedFarmId={selectedFarmId}
                 embargoes={showRisk ? MOCK_EMBARGOES : undefined} 
                 onMapClick={handleMapClick}
                 interactive={true}

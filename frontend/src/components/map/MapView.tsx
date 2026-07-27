@@ -8,52 +8,60 @@ interface MapViewProps {
   farms?: FeatureCollection;
   embargoes?: FeatureCollection;
   municipalities?: FeatureCollection;
+  selectedFarmId?: string | null;
   onMapClick?: (lng: number, lat: number) => void;
   interactive?: boolean;
 }
 
-export default function MapView({ farms, embargoes, municipalities, onMapClick, interactive = true }: MapViewProps) {
+export default function MapView({ farms, embargoes, municipalities, selectedFarmId, onMapClick, interactive = true }: MapViewProps) {
   const mapRef = useRef<MapRef>(null);
 
-  // Auto-fit bounds when farm polygons are loaded
+  // Auto-fit bounds when selectedFarmId changes or farm list loads
   useEffect(() => {
-    if (farms && farms.features && farms.features.length > 0 && mapRef.current) {
-      let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
-      let hasValidCoords = false;
+    if (!farms || !farms.features || farms.features.length === 0 || !mapRef.current) return;
 
-      const processCoords = (coords: any[]) => {
-        if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
-          const [lng, lat] = coords;
-          if (!isNaN(lng) && !isNaN(lat)) {
-            minLng = Math.min(minLng, lng);
-            minLat = Math.min(minLat, lat);
-            maxLng = Math.max(maxLng, lng);
-            maxLat = Math.max(maxLat, lat);
-            hasValidCoords = true;
-          }
-        } else if (Array.isArray(coords)) {
-          coords.forEach(processCoords);
-        }
-      };
+    let targetFeatures = farms.features;
+    if (selectedFarmId) {
+      const match = farms.features.filter(f => f.properties?.id === selectedFarmId);
+      if (match.length > 0) targetFeatures = match;
+    }
 
-      farms.features.forEach(f => {
-        if (f.geometry && (f.geometry as any).coordinates) {
-          processCoords((f.geometry as any).coordinates);
-        }
-      });
+    let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+    let hasValidCoords = false;
 
-      if (hasValidCoords && isFinite(minLng) && isFinite(minLat)) {
-        try {
-          mapRef.current.fitBounds(
-            [[minLng, minLat], [maxLng, maxLat]],
-            { padding: 80, maxZoom: 14, duration: 1500 }
-          );
-        } catch (e) {
-          console.warn('Erro ao ajustar limites do mapa:', e);
+    const processCoords = (coords: any[]) => {
+      if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+        const [lng, lat] = coords;
+        if (!isNaN(lng) && !isNaN(lat)) {
+          minLng = Math.min(minLng, lng);
+          minLat = Math.min(minLat, lat);
+          maxLng = Math.max(maxLng, lng);
+          maxLat = Math.max(maxLat, lat);
+          hasValidCoords = true;
         }
+      } else if (Array.isArray(coords)) {
+        coords.forEach(processCoords);
+      }
+    };
+
+    targetFeatures.forEach(f => {
+      if (f.geometry && (f.geometry as any).coordinates) {
+        processCoords((f.geometry as any).coordinates);
+      }
+    });
+
+    if (hasValidCoords && isFinite(minLng) && isFinite(minLat)) {
+      try {
+        const isSingle = !!selectedFarmId;
+        mapRef.current.fitBounds(
+          [[minLng, minLat], [maxLng, maxLat]],
+          { padding: isSingle ? 100 : 80, maxZoom: isSingle ? 15 : 13, duration: 1400 }
+        );
+      } catch (e) {
+        console.warn('Erro ao ajustar limites do mapa:', e);
       }
     }
-  }, [farms]);
+  }, [farms, selectedFarmId]);
 
   const handleClick = (e: any) => {
     if (onMapClick && e.lngLat) {
