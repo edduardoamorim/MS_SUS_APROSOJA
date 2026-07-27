@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
 export default defineConfig({
-    base: '/MS_SUS_APROSOJA/',
+  base: process.env.VITE_BASE_URL || '/',
   plugins: [
     tailwindcss(),
     react(),
@@ -14,6 +14,58 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     cors: true,
-    allowedHosts: true
+    allowedHosts: true,
+    proxy: {
+      '/auth': {
+        target: 'http://127.0.0.1:54321',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            proxyRes.headers['access-control-allow-origin'] = '*';
+            proxyRes.headers['access-control-allow-headers'] = '*';
+            proxyRes.headers['access-control-allow-methods'] = '*';
+          });
+        }
+      },
+      '/rest': {
+        target: 'http://127.0.0.1:54321',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            proxyRes.headers['access-control-allow-origin'] = '*';
+            proxyRes.headers['access-control-allow-headers'] = '*';
+            proxyRes.headers['access-control-allow-methods'] = '*';
+          });
+        }
+      },
+      '/storage': {
+        target: 'http://127.0.0.1:54321',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            proxyRes.headers['access-control-allow-origin'] = '*';
+            proxyRes.headers['access-control-allow-headers'] = '*';
+            proxyRes.headers['access-control-allow-methods'] = '*';
+          });
+        }
+      },
+      '/realtime': {
+        target: 'http://127.0.0.1:54321',
+        changeOrigin: true,
+        secure: false,
+        ws: true,
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            proxyRes.headers['access-control-allow-origin'] = '*';
+            proxyRes.headers['access-control-allow-headers'] = '*';
+            proxyRes.headers['access-control-allow-methods'] = '*';
+          });
+        }
+      }
+    }
   }
 })
+

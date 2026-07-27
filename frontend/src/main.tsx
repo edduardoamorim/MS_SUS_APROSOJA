@@ -72,9 +72,17 @@ VITE_SUPABASE_ANON_KEY=sua-chave-anon-key-aqui`}
   )
 }
 
-createRoot(document.getElementById('root')!).render(
+const rootElement = document.getElementById('root')!;
+const globalContainer = rootElement as any;
+
+if (!globalContainer._reactRoot) {
+  globalContainer._reactRoot = createRoot(rootElement);
+}
+
+globalContainer._reactRoot.render(
   <StrictMode>
     {isSupabaseConfigured ? <App /> : <DevDiagnosticScreen />}
   </StrictMode>,
-)
+);
+
 

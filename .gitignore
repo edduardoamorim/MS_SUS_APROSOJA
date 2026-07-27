@@ -1,8 +1,12 @@
 node_modules/
-.env.local
+# Environment & secret files
+.env
+.env.*
+*.env
 keys.env
+
 __pycache__/
 dados_geo/
 supabase/.temp/
 .cache/
-*.tmp
+*.tmp

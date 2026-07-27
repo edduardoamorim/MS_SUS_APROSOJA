@@ -30,11 +30,127 @@ export default function Login() {
     }
 
     if (data.user) {
-      const role = data.user.user_metadata?.role;
+      let role = data.user.user_metadata?.role;
+      if (!role) {
+        try {
+          const { data: profile } = await supabase.from('perfis').select('role').eq('id', data.user.id).maybeSingle();
+          role = profile?.role;
+        } catch (e) {
+          console.warn('Erro ao buscar perfil:', e);
+        }
+      }
       if (role === 'produtor') navigate('/produtor');
       else if (role === 'tecnico') navigate('/tecnico');
       else if (role === 'gestor') navigate('/gestor');
-      else navigate('/');
+      else navigate('/produtor');
+    }
+  };
+
+  const TEST_USERS: Record<string, { name: string; role: string }> = {
+    'gestor@ms.gov.br': { name: 'Gestor Teste MS', role: 'gestor' },
+    'tecnico@ms.gov.br': { name: 'Técnico Teste MS', role: 'tecnico' },
+    'produtor@ms.gov.br': { name: 'Produtor Teste MS', role: 'produtor' },
+  };
+
+  const withRetry = async <T,>(fn: () => Promise<T>, retries = 3, delayMs = 1000): Promise<T> => {
+    let lastError: any;
+    for (let i = 0; i < retries; i++) {
+      try {
+        return await fn();
+      } catch (err: any) {
+        lastError = err;
+        if (err?.message?.toLowerCase().includes('failed to fetch') && i < retries - 1) {
+          await new Promise((res) => setTimeout(res, delayMs));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastError;
+  };
+
+  const ensureAndSignInTestUser = async (selectedEmail: string) => {
+    const userInfo = TEST_USERS[selectedEmail] || { name: 'Usuário Teste', role: 'produtor' };
+    
+    try {
+      return await withRetry(async () => {
+        // 1. Tenta login com a senha padrao Senha@123
+        let { data, error: signInError } = await supabase.auth.signInWithPassword({
+          email: selectedEmail,
+          password: 'Senha@123',
+        });
+
+        // 2. Se falhar com Senha@123, tenta com a senha legada senha123
+        if (signInError) {
+          if (signInError.message?.toLowerCase().includes('failed to fetch')) {
+            throw signInError;
+          }
+
+          const { data: legacyData, error: legacyError } = await supabase.auth.signInWithPassword({
+            email: selectedEmail,
+            password: 'senha123',
+          });
+
+          if (!legacyError && legacyData.user) {
+            try {
+              await supabase.auth.updateUser({ password: 'Senha@123' });
+            } catch (e) {
+              console.warn('Erro ao atualizar senha legada:', e);
+            }
+            data = legacyData;
+          } else {
+            if (legacyError?.message?.toLowerCase().includes('failed to fetch')) {
+              throw legacyError;
+            }
+
+            // 3. Tenta auto-criar a conta via signUp
+            const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+              email: selectedEmail,
+              password: 'Senha@123',
+              options: {
+                data: { full_name: userInfo.name, role: userInfo.role }
+              }
+            });
+
+            if (signUpError && !signUpError.message.includes('already registered')) {
+              if (signUpError.message?.toLowerCase().includes('failed to fetch')) {
+                throw signUpError;
+              }
+              throw signUpError;
+            }
+
+            // Se o signUp ja retornou uma sessao/usuario ativo
+            if (signUpData?.user && signUpData?.session) {
+              data = signUpData;
+            } else {
+              // Tenta sign in logo apos o signUp
+              const { data: finalSignInData, error: finalError } = await supabase.auth.signInWithPassword({
+                email: selectedEmail,
+                password: 'Senha@123',
+              });
+
+              if (finalError) {
+                if (finalError.message?.toLowerCase().includes('failed to fetch')) {
+                  throw finalError;
+                }
+                if (finalError.message?.toLowerCase().includes('email not confirmed')) {
+                  throw new Error('E-mail de teste não confirmado no Supabase Cloud. Confirme o e-mail ou desative a confirmação no painel do Supabase.');
+                }
+                throw new Error('Conta de teste existe com senha personalizada ou e-mail pendente. Digite a senha manualmente.');
+              }
+
+              data = finalSignInData;
+            }
+          }
+        }
+
+        return data;
+      });
+    } catch (err: any) {
+      if (err?.message?.toLowerCase().includes('failed to fetch')) {
+        throw new Error('Falha de conexão com o Supabase. Verifique se o Docker e os containers do banco de dados estão rodando.');
+      }
+      throw err;
     }
   };
 
@@ -42,42 +158,12 @@ export default function Login() {
     setLoading(true);
     setError('');
     try {
-      const usersToCreate = [
-        { email: 'gestor@ms.gov.br', name: 'Gestor Teste MS', role: 'gestor' },
-        { email: 'tecnico@ms.gov.br', name: 'Técnico Teste MS', role: 'tecnico' },
-        { email: 'produtor@ms.gov.br', name: 'Produtor Teste MS', role: 'produtor' }
-      ];
-
-      for (const u of usersToCreate) {
-        // Tenta criar
-        const { error: signUpError } = await supabase.auth.signUp({
-          email: u.email,
-          password: 'Senha@123',
-          options: { data: { full_name: u.name, role: u.role } }
-        });
-
-        if (signUpError && signUpError.message.includes('already registered')) {
-          // Se já existe, tenta fazer login com a senha antiga para atualizar para a nova
-          try {
-            const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-              email: u.email,
-              password: 'senha123',
-            });
-
-            if (!signInError && signInData.user) {
-              // Se conseguiu entrar com a antiga, atualiza para a nova
-              await supabase.auth.updateUser({ password: 'Senha@123' });
-              await supabase.auth.signOut();
-            }
-          } catch (e) {
-            console.error('Erro ao atualizar senha antiga para:', u.email, e);
-          }
-        } else if (signUpError) {
-          throw signUpError;
-        }
+      for (const email of Object.keys(TEST_USERS)) {
+        await ensureAndSignInTestUser(email);
+        await supabase.auth.signOut();
       }
 
-      info('Contas de teste garantidas no banco local com a nova senha de segurança!\n- gestor@ms.gov.br (Senha@123)\n- tecnico@ms.gov.br (Senha@123)\n- produtor@ms.gov.br (Senha@123)', 6000);
+      info('Contas de teste garantidas no banco local com a senha Senha@123!\n- gestor@ms.gov.br\n- tecnico@ms.gov.br\n- produtor@ms.gov.br', 6000);
     } catch (err: any) {
       console.error(err);
       setError('Erro ao criar/atualizar usuários de teste: ' + err.message);
@@ -93,40 +179,23 @@ export default function Login() {
     setPassword('Senha@123');
 
     try {
-      let { data, error: signInError } = await supabase.auth.signInWithPassword({
-        email: selectedEmail,
-        password: 'Senha@123',
-      });
-
-      // Compatibilidade retroativa se a conta já existia no banco local com a senha antiga
-      if (signInError) {
-        const { data: retryData, error: retryError } = await supabase.auth.signInWithPassword({
-          email: selectedEmail,
-          password: 'senha123',
-        });
-
-        if (retryError) {
-          setError('Conta de teste não encontrada ou senha incorreta. Se você alterou a senha no perfil, digite-a manualmente.');
-          setLoading(false);
-          return;
-        }
-        
-        data = retryData;
-        setPassword('senha123');
-      }
+      const data = await ensureAndSignInTestUser(selectedEmail);
 
       if (data.user) {
-        const role = data.user.user_metadata?.role;
+        const role = data.user.user_metadata?.role || TEST_USERS[selectedEmail]?.role;
         if (role === 'produtor') navigate('/produtor');
         else if (role === 'tecnico') navigate('/tecnico');
         else if (role === 'gestor') navigate('/gestor');
         else navigate('/');
       }
     } catch (err: any) {
-      setError(err.message);
+      console.error(err);
+      setError(err.message || 'Erro ao efetuar login de teste.');
+    } finally {
       setLoading(false);
     }
   };
+
 
   return (
     <div className="min-h-[80vh] flex flex-col justify-center py-12 sm:px-6 lg:px-8">

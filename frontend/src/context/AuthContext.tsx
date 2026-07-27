@@ -25,20 +25,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [role, setRole] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
+  const loadUserRole = async (usr: User | null) => {
+    if (!usr) {
+      setRole(null);
+      return;
+    }
+
+    const metaRole = usr.user_metadata?.role;
+    if (metaRole) {
+      setRole(metaRole);
+      return;
+    }
+
+    try {
+      const { data } = await supabase.from('perfis').select('role').eq('id', usr.id).maybeSingle();
+      if (data?.role) {
+        setRole(data.role);
+      } else {
+        setRole('produtor');
+      }
+    } catch {
+      setRole('produtor');
+    }
+  };
+
   useEffect(() => {
-    // Busca a sessão inicial
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
-      setRole(session?.user?.user_metadata?.role ?? null);
-      setLoading(false);
+      if (session?.user) {
+        loadUserRole(session.user).finally(() => setLoading(false));
+      } else {
+        setRole(null);
+        setLoading(false);
+      }
     });
 
-    // Escuta mudanças de auth (login, logout, etc)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
-      setRole(session?.user?.user_metadata?.role ?? null);
+      if (session?.user) {
+        await loadUserRole(session.user);
+      } else {
+        setRole(null);
+      }
       setLoading(false);
     });
 
