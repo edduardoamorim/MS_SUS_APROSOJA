@@ -1,5 +1,8 @@
 import { useState, useEffect } from 'react';
-import { MapPin, ClipboardList, CheckCircle2, CalendarDays, Clock, Plus, Trash2, Loader2 } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { MapPin, ClipboardList, CheckCircle2, CalendarDays, Clock, Plus, Trash2, Loader2, Search, Map as MapIcon, AlertTriangle, Eye } from 'lucide-react';
+import type { FeatureCollection } from 'geojson';
+import MapView from '../../components/map/MapView';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../context/AuthContext';
 import QuestionarioRTRS from '../../components/auditoria/QuestionarioRTRS';
@@ -14,10 +17,23 @@ import ConfirmAction from '../../components/ui/ConfirmAction';
 export default function DashboardTecnico() {
   const { success, error, warning } = useToast();
   const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTab = searchParams.get('tab');
+  const activeTab = (rawTab === 'mapa' || rawTab === 'auditorias') ? rawTab : 'mapa';
+  const setActiveTab = (tab: 'mapa' | 'auditorias') => setSearchParams({ tab });
+
   const [loading, setLoading] = useState(true);
   const [auditorias, setAuditorias] = useState<any[]>([]);
   const [showQuestionario, setShowQuestionario] = useState(false);
   const [activeAuditoria, setActiveAuditoria] = useState<any>(null);
+
+  // Map & Collaborative States
+  const [farmsData, setFarmsData] = useState<FeatureCollection>({ type: 'FeatureCollection', features: [] });
+  const [selectedFarmId, setSelectedFarmId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [allAuditorias, setAllAuditorias] = useState<any[]>([]);
+  const [filterMode, setFilterMode] = useState<'minhas' | 'todas'>('minhas');
+  const [allTechnicians, setAllTechnicians] = useState<any[]>([]);
 
   // Pendencies States
   const [selectedPropForPends, setSelectedPropForPends] = useState<any>(null);
@@ -115,6 +131,7 @@ export default function DashboardTecnico() {
     if (user) {
       fetchAudits();
       fetchAuxiliaryData();
+      fetchCollaborativeMapData();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
@@ -133,8 +150,128 @@ export default function DashboardTecnico() {
         .select('id, nome')
         .eq('role', 'produtor');
       if (prodsData) setProducers(prodsData);
+
+      // 3. Fetch all technicians
+      const { data: tecsData } = await supabase
+        .from('perfis')
+        .select('id, nome')
+        .eq('role', 'tecnico');
+      if (tecsData) setAllTechnicians(tecsData);
     } catch (err) {
       console.error('Erro ao carregar dados auxiliares:', err);
+    }
+  }
+
+  async function fetchCollaborativeMapData() {
+    try {
+      // Fetch ALL auditorias with property + technician data
+      const { data: auds, error: audsError } = await supabase
+        .from('auditorias')
+        .select(`
+          id,
+          status,
+          data_agendamento,
+          tecnico_responsavel_id,
+          propriedade_id,
+          propriedades (
+            id,
+            nome_fazenda,
+            nome_produtor,
+            codigo_car,
+            municipio,
+            geom
+          )
+        `)
+        .order('created_at', { ascending: false });
+
+      if (audsError) throw audsError;
+      if (!auds) return;
+
+      setAllAuditorias(auds);
+
+      // Fetch technician names
+      const tecIds = [...new Set(auds.map((a: any) => a.tecnico_responsavel_id).filter(Boolean))];
+      let tecMap: Record<string, string> = {};
+      if (tecIds.length > 0) {
+        const { data: tecs } = await supabase
+          .from('perfis')
+          .select('id, nome')
+          .in('id', tecIds);
+        if (tecs) {
+          tecs.forEach((t: any) => { tecMap[t.id] = t.nome; });
+        }
+      }
+
+      // Deduplicate by propriedade_id and build features
+      const propMap = new Map<string, any>();
+      auds.forEach((a: any) => {
+        const prop = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
+        if (!prop) return;
+        const existing = propMap.get(prop.id);
+        if (!existing) {
+          propMap.set(prop.id, {
+            ...prop,
+            auditorias: [a],
+            tecnico_nome: tecMap[a.tecnico_responsavel_id] || 'Sem técnico',
+            tecnico_id: a.tecnico_responsavel_id,
+            audit_status: a.status
+          });
+        } else {
+          existing.auditorias.push(a);
+        }
+      });
+
+      const features = await Promise.all(
+        Array.from(propMap.values()).map(async (p: any, index: number) => {
+          let geom = p.geom;
+          if (typeof geom === 'string') {
+            try { if (geom.trim().startsWith('{')) geom = JSON.parse(geom); } catch (e) {}
+          }
+          if (!geom || typeof geom === 'string') {
+            try {
+              if (p.codigo_car) {
+                const { data } = await supabase
+                  .from('imoveis_car')
+                  .select('geom')
+                  .or(`cod_imovel.ilike.${p.codigo_car},cod_imovel.ilike.%${(p.codigo_car.split('-')[1] || '')}%`)
+                  .limit(1)
+                  .maybeSingle();
+                if (data?.geom) {
+                  geom = typeof data.geom === 'string' && data.geom.startsWith('{') ? JSON.parse(data.geom) : data.geom;
+                }
+              }
+            } catch (e) {}
+          }
+          if (!geom || typeof geom === 'string') {
+            const latBase = -20.4 - (index * 0.15);
+            const lngBase = -54.6 - (index * 0.15);
+            geom = {
+              type: 'Polygon',
+              coordinates: [[[lngBase, latBase], [lngBase + 0.05, latBase], [lngBase + 0.05, latBase - 0.05], [lngBase, latBase - 0.05], [lngBase, latBase]]]
+            };
+          }
+
+          const isMine = p.tecnico_id === user?.id;
+          return {
+            type: 'Feature' as const,
+            properties: {
+              id: p.id,
+              name: p.nome_fazenda,
+              municipio: p.municipio || '',
+              tecnico_nome: p.tecnico_nome,
+              tecnico_id: p.tecnico_id,
+              isMine,
+              status: p.audit_status,
+              produtor: p.nome_produtor || ''
+            },
+            geometry: geom
+          };
+        })
+      );
+
+      setFarmsData({ type: 'FeatureCollection', features });
+    } catch (err) {
+      console.error('Erro ao carregar mapa colaborativo:', err);
     }
   }
 
@@ -557,12 +694,31 @@ export default function DashboardTecnico() {
     }
   };
 
+  const filteredFarms = farmsData.features.filter(f => {
+    const matchSearch = (f.properties?.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (f.properties?.municipio || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (f.properties?.tecnico_nome || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (f.properties?.produtor || '').toLowerCase().includes(searchQuery.toLowerCase());
+    const matchFilter = filterMode === 'todas' || f.properties?.isMine;
+    return matchSearch && matchFilter;
+  });
+
+  const techColorMap: Record<string, string> = {};
+  const techColors = [
+    'hsl(142, 76%, 36%)', 'hsl(217, 91%, 60%)', 'hsl(280, 67%, 55%)', 'hsl(35, 92%, 50%)',
+    'hsl(0, 72%, 51%)', 'hsl(173, 80%, 40%)', 'hsl(340, 82%, 52%)', 'hsl(262, 83%, 58%)'
+  ];
+  allTechnicians.forEach((t, i) => { techColorMap[t.id] = techColors[i % techColors.length]; });
+
+  const filteredFarmsGeoJSON: FeatureCollection = { type: 'FeatureCollection', features: filteredFarms };
+
   return (
-    <div className="space-y-8 max-w-5xl mx-auto animate-fade-in">
+    <div className="space-y-6 max-w-7xl mx-auto animate-fade-in">
+      {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 border-b border-border pb-6">
         <div>
           <h1 className="text-3xl font-extrabold text-foreground tracking-tight">Portal do Técnico</h1>
-          <p className="text-muted-foreground mt-1 text-lg">Suas auditorias agendadas e execução in loco.</p>
+          <p className="text-muted-foreground mt-1 text-lg">Gestão de vistorias, auditorias e acompanhamento de fazendas.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <button
@@ -589,109 +745,286 @@ export default function DashboardTecnico() {
         </div>
       </div>
 
-      {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <ListSkeleton />
-          <ListSkeleton />
-          <ListSkeleton />
-          <ListSkeleton />
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {auditorias.map((auditoria, index) => {
-            const prop = Array.isArray(auditoria.propriedades) ? auditoria.propriedades[0] : auditoria.propriedades;
-            const isMock = auditoria.id.startsWith('mock-');
-            return (
-              <div 
-                key={auditoria.id} 
-                className="bg-card rounded-xl shadow-sm border border-border overflow-hidden hover:-translate-y-1 hover:shadow-xl hover:border-primary/20 transition-all duration-300 ease-out group flex flex-col justify-between animate-fade-in-up"
-                style={{ animationDelay: `${index * 100}ms` }}
+      {/* Tabs */}
+      <div className="bg-muted/50 p-1 rounded-xl inline-flex gap-1 border border-border/50">
+        <button
+          onClick={() => setActiveTab('mapa')}
+          className={`px-6 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
+            activeTab === 'mapa'
+              ? 'bg-card text-foreground shadow-sm font-semibold'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <MapIcon className="w-4 h-4 text-emerald-600" />
+          Mapa & Propriedades
+        </button>
+        <button
+          onClick={() => setActiveTab('auditorias')}
+          className={`px-6 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
+            activeTab === 'auditorias'
+              ? 'bg-card text-foreground shadow-sm font-semibold'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <ClipboardList className="w-4 h-4 text-indigo-600" />
+          Auditorias
+        </button>
+      </div>
+
+      {/* ====== TAB: MAPA & PROPRIEDADES ====== */}
+      {activeTab === 'mapa' && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-fade-in-up delay-100 opacity-0" style={{ animationFillMode: 'forwards' }}>
+          {/* Left Panel: Farm List */}
+          <div className="lg:col-span-1 space-y-4">
+            {/* Filter Toggle */}
+            <div className="flex gap-1 bg-muted/60 p-0.5 rounded-lg border border-border/50">
+              <button
+                onClick={() => setFilterMode('minhas')}
+                className={`flex-1 py-2 px-3 rounded-md text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  filterMode === 'minhas' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                }`}
               >
-                <div>
-                  <div className="px-5 py-4 bg-muted/50 border-b border-border flex justify-between items-center">
-                    <div className="flex items-center gap-2 text-muted-foreground font-medium text-sm">
-                      <MapPin className="w-4 h-4 text-primary" />
-                      <span>{isMock ? 'Maracaju, MS' : 'Geral, MS'}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider border ${
-                        auditoria.status === 'Autoavaliação' ? 'bg-amber-100 text-amber-800 border-amber-200' :
-                        auditoria.status === 'Visita de Campo' ? 'bg-indigo-100 text-indigo-800 border-indigo-200' :
-                        auditoria.status === 'Em Análise' ? 'bg-blue-100 text-blue-800 border-blue-200' :
-                        auditoria.status === 'Acompanhamento' ? 'bg-purple-100 text-purple-800 border-purple-200 font-semibold shadow-sm' :
-                        'bg-emerald-100 text-emerald-800 border-emerald-200'
-                      }`}>
-                        {auditoria.status}
-                      </span>
-                      {isMock && (
-                        <span className="text-[9px] font-bold bg-slate-100 text-slate-800 border border-slate-200 px-1.5 py-0.5 rounded uppercase">
-                          Demo
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  
-                  <div className="p-6">
-                    <h3 className="font-bold text-xl text-foreground mb-1">{prop?.nome_fazenda || 'Fazenda'}</h3>
-                    <p className="text-sm text-muted-foreground mb-3">Produtor: {prop?.nome_produtor || 'N/A'}</p>
-                    <p className="text-xs text-muted-foreground font-mono bg-muted/50 py-1 px-2.5 rounded border border-border/60 inline-block">
-                      CAR: {prop?.codigo_car || 'Não informado'}
-                    </p>
-                  </div>
-                </div>
+                <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+                Minhas Fazendas
+              </button>
+              <button
+                onClick={() => setFilterMode('todas')}
+                className={`flex-1 py-2 px-3 rounded-md text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  filterMode === 'todas' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <Eye className="w-3.5 h-3.5 text-indigo-600" />
+                Todas as Fazendas
+              </button>
+            </div>
 
-                <div className="p-6 pt-0 border-t border-border/30 mt-4 flex flex-col gap-2">
-                  <div className="flex flex-col gap-2">
-                    <div className="flex gap-2">
-                      <button 
-                        onClick={() => handleOpenPendencias(prop)}
-                        className="flex-1 py-2 bg-amber-50 hover:bg-amber-100/80 text-amber-950 border border-amber-200 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-sm"
-                      >
-                        <ClipboardList className="w-4 h-4 text-amber-800" />
-                        Pendências
-                      </button>
+            {/* Search */}
+            <div className="bg-card p-5 rounded-2xl shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] border border-slate-100">
+              <div className="relative mb-5">
+                <Search className="w-4 h-4 text-muted-foreground absolute left-3 top-3" />
+                <input
+                  type="text"
+                  placeholder="Buscar por fazenda, município, técnico..."
+                  className="w-full pl-10 pr-4 py-2.5 bg-background border border-input rounded-xl text-sm focus:ring-2 focus:ring-primary/30 focus:border-primary focus:outline-none text-foreground transition-all placeholder:text-muted-foreground/60"
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                />
+              </div>
 
-                      {auditoria.status === 'Visita de Campo' ? (
-                        <button 
-                          onClick={() => handleStartAuditoria(auditoria)}
-                          className="flex-1 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-sm active:scale-[0.98]"
-                        >
-                          <ClipboardList className="w-4 h-4" />
-                          Realizar Visita
-                        </button>
-                      ) : auditoria.status === 'Acompanhamento' ? (
-                        <div className="flex-1 py-2 bg-purple-50 border border-purple-200 text-purple-800 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm shadow-sm">
-                          <Clock className="w-4 h-4 text-purple-600 animate-pulse" />
-                          Acompanhamento de Pendência
-                        </div>
-                      ) : auditoria.status === 'Certificada' ? (
-                        <div className="flex-1 py-2 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm shadow-sm">
-                          <CheckCircle2 className="w-4 h-4" />
-                          Certificada
-                        </div>
-                      ) : (
-                        <div className="flex-1 py-2 bg-slate-50 border border-slate-200 text-slate-500 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm shadow-sm">
-                          <Clock className="w-4 h-4 text-slate-400 animate-pulse" />
-                          {auditoria.status === 'Autoavaliação' ? 'Autoavaliação' : 'Em Análise'}
-                        </div>
-                      )}
-                    </div>
-
-                    {(auditoria.status === 'Visita de Campo' || auditoria.status === 'Em Análise') && (
-                      <button 
-                        onClick={() => handleLiberarAuditoria(auditoria.id)}
-                        className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-sm active:scale-[0.98]"
-                      >
-                        <CheckCircle2 className="w-4 h-4" />
-                        Liberar (Certificar)
-                      </button>
-                    )}
+              {/* Farm List */}
+              <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1 scrollbar-thin">
+                {filteredFarms.length === 0 && (
+                  <div className="text-center py-10 text-muted-foreground">
+                    <AlertTriangle className="w-8 h-8 mx-auto mb-2 text-amber-400" />
+                    <p className="text-sm font-medium">Nenhuma propriedade encontrada</p>
+                    <p className="text-xs mt-1">Cadastre ou altere o filtro</p>
                   </div>
+                )}
+                {filteredFarms.map((farm, idx) => {
+                  const props = farm.properties!;
+                  const isSelected = selectedFarmId === props.id;
+                  const tecColor = techColorMap[props.tecnico_id] || 'hsl(0, 0%, 60%)';
+                  const statusBadge = props.status === 'Certificada'
+                    ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                    : props.status === 'Visita de Campo'
+                    ? 'bg-indigo-100 text-indigo-800 border-indigo-200'
+                    : props.status === 'Acompanhamento'
+                    ? 'bg-purple-100 text-purple-800 border-purple-200'
+                    : 'bg-amber-100 text-amber-800 border-amber-200';
+
+                  return (
+                    <div
+                      key={props.id}
+                      onClick={() => setSelectedFarmId(isSelected ? null : props.id)}
+                      className={`relative group cursor-pointer rounded-xl border transition-all duration-200 overflow-hidden animate-fade-in-up ${
+                        isSelected
+                          ? 'border-primary bg-primary/5 shadow-lg ring-2 ring-primary/20'
+                          : 'border-border bg-card hover:border-primary/30 hover:shadow-md hover:-translate-y-0.5'
+                      }`}
+                      style={{ animationDelay: `${idx * 40}ms` }}
+                    >
+                      {/* Color bar indicating technician */}
+                      <div
+                        className="absolute left-0 top-0 bottom-0 w-1 rounded-l-xl"
+                        style={{ backgroundColor: tecColor }}
+                      />
+                      <div className="pl-4 pr-3 py-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <h4 className="font-bold text-sm text-foreground truncate">{props.name}</h4>
+                            {props.municipio && (
+                              <p className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-1">
+                                <MapPin className="w-3 h-3 text-primary/70" />
+                                {props.municipio}
+                              </p>
+                            )}
+                            <p className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1">
+                              <span className="w-2 h-2 rounded-full inline-block flex-shrink-0" style={{ backgroundColor: tecColor }} />
+                              {props.tecnico_nome}
+                              {props.isMine && (
+                                <span className="text-[8px] font-bold bg-emerald-100 text-emerald-700 px-1 py-0.5 rounded uppercase ml-1">Você</span>
+                              )}
+                            </p>
+                            {props.produtor && (
+                              <p className="text-[10px] text-muted-foreground mt-0.5">Produtor: {props.produtor}</p>
+                            )}
+                          </div>
+                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border whitespace-nowrap ${statusBadge}`}>
+                            {props.status}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Technician Legend */}
+            {filterMode === 'todas' && allTechnicians.length > 0 && (
+              <div className="bg-card p-4 rounded-2xl shadow-sm border border-slate-100">
+                <h4 className="text-xs font-bold text-muted-foreground uppercase mb-3 tracking-wider">Legenda — Técnicos</h4>
+                <div className="space-y-2">
+                  {allTechnicians.map(t => {
+                    const color = techColorMap[t.id] || 'hsl(0,0%,60%)';
+                    const count = farmsData.features.filter(f => f.properties?.tecnico_id === t.id).length;
+                    return (
+                      <div key={t.id} className="flex items-center gap-2.5">
+                        <span className="w-3 h-3 rounded-full flex-shrink-0 shadow-sm" style={{ backgroundColor: color }} />
+                        <span className="text-xs font-semibold text-foreground truncate">{t.nome}</span>
+                        <span className="ml-auto text-[10px] text-muted-foreground font-bold bg-muted px-2 py-0.5 rounded-full">{count}</span>
+                        {t.id === user?.id && (
+                          <span className="text-[8px] font-bold bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded uppercase">Você</span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
-            );
-          })}
+            )}
+          </div>
+
+          {/* Right Panel: Map */}
+          <div className="lg:col-span-2">
+            <div className="bg-card rounded-2xl shadow-lg border border-slate-100 overflow-hidden h-[75vh] min-h-[500px]">
+              <MapView
+                farmsData={filteredFarmsGeoJSON}
+                selectedFarmId={selectedFarmId}
+                onSelectFarm={setSelectedFarmId}
+              />
+            </div>
+          </div>
         </div>
+      )}
+
+      {/* ====== TAB: AUDITORIAS ====== */}
+      {activeTab === 'auditorias' && (
+        <>
+          {loading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <ListSkeleton />
+              <ListSkeleton />
+              <ListSkeleton />
+              <ListSkeleton />
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {auditorias.map((auditoria, index) => {
+                const prop = Array.isArray(auditoria.propriedades) ? auditoria.propriedades[0] : auditoria.propriedades;
+                const isMock = auditoria.id.startsWith('mock-');
+                return (
+                  <div
+                    key={auditoria.id}
+                    className="bg-card rounded-xl shadow-sm border border-border overflow-hidden hover:-translate-y-1 hover:shadow-xl hover:border-primary/20 transition-all duration-300 ease-out group flex flex-col justify-between animate-fade-in-up"
+                    style={{ animationDelay: `${index * 100}ms` }}
+                  >
+                    <div>
+                      <div className="px-5 py-4 bg-muted/50 border-b border-border flex justify-between items-center">
+                        <div className="flex items-center gap-2 text-muted-foreground font-medium text-sm">
+                          <MapPin className="w-4 h-4 text-primary" />
+                          <span>{isMock ? 'Maracaju, MS' : (prop?.municipio || 'Geral, MS')}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider border ${
+                            auditoria.status === 'Autoavaliação' ? 'bg-amber-100 text-amber-800 border-amber-200' :
+                            auditoria.status === 'Visita de Campo' ? 'bg-indigo-100 text-indigo-800 border-indigo-200' :
+                            auditoria.status === 'Em Análise' ? 'bg-blue-100 text-blue-800 border-blue-200' :
+                            auditoria.status === 'Acompanhamento' ? 'bg-purple-100 text-purple-800 border-purple-200 font-semibold shadow-sm' :
+                            'bg-emerald-100 text-emerald-800 border-emerald-200'
+                          }`}>
+                            {auditoria.status}
+                          </span>
+                          {isMock && (
+                            <span className="text-[9px] font-bold bg-slate-100 text-slate-800 border border-slate-200 px-1.5 py-0.5 rounded uppercase">
+                              Demo
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="p-6">
+                        <h3 className="font-bold text-xl text-foreground mb-1">{prop?.nome_fazenda || 'Fazenda'}</h3>
+                        <p className="text-sm text-muted-foreground mb-3">Produtor: {prop?.nome_produtor || 'N/A'}</p>
+                        <p className="text-xs text-muted-foreground font-mono bg-muted/50 py-1 px-2.5 rounded border border-border/60 inline-block">
+                          CAR: {prop?.codigo_car || 'Não informado'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="p-6 pt-0 border-t border-border/30 mt-4 flex flex-col gap-2">
+                      <div className="flex flex-col gap-2">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleOpenPendencias(prop)}
+                            className="flex-1 py-2 bg-amber-50 hover:bg-amber-100/80 text-amber-950 border border-amber-200 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-sm"
+                          >
+                            <ClipboardList className="w-4 h-4 text-amber-800" />
+                            Pendências
+                          </button>
+
+                          {auditoria.status === 'Visita de Campo' ? (
+                            <button
+                              onClick={() => handleStartAuditoria(auditoria)}
+                              className="flex-1 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-sm active:scale-[0.98]"
+                            >
+                              <ClipboardList className="w-4 h-4" />
+                              Realizar Visita
+                            </button>
+                          ) : auditoria.status === 'Acompanhamento' ? (
+                            <div className="flex-1 py-2 bg-purple-50 border border-purple-200 text-purple-800 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm shadow-sm">
+                              <Clock className="w-4 h-4 text-purple-600 animate-pulse" />
+                              Acompanhamento de Pendência
+                            </div>
+                          ) : auditoria.status === 'Certificada' ? (
+                            <div className="flex-1 py-2 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm shadow-sm">
+                              <CheckCircle2 className="w-4 h-4" />
+                              Certificada
+                            </div>
+                          ) : (
+                            <div className="flex-1 py-2 bg-slate-50 border border-slate-200 text-slate-500 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm shadow-sm">
+                              <Clock className="w-4 h-4 text-slate-400 animate-pulse" />
+                              {auditoria.status === 'Autoavaliação' ? 'Autoavaliação' : 'Em Análise'}
+                            </div>
+                          )}
+                        </div>
+
+                        {(auditoria.status === 'Visita de Campo' || auditoria.status === 'Em Análise') && (
+                          <button
+                            onClick={() => handleLiberarAuditoria(auditoria.id)}
+                            className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-sm active:scale-[0.98]"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            Liberar (Certificar)
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
 
       {showQuestionario && activeAuditoria && (
