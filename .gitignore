@@ -1,4 +1,5 @@
 node_modules/
+
 # Environment & secret files
 .env
 .env.*
@@ -6,7 +7,4 @@ node_modules/
 keys.env
 
 __pycache__/
-dados_geo/
-supabase/.temp/
-.cache/
-*.tmp
+supabase/.temp/
