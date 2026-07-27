@@ -152,22 +152,22 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
       geom: null
     });
 
-    // Se temos UF (2) + IBGE (7) = 9+ chars, buscar sugestões usando o código formatado completo
-    if (clean.length >= 9) {
-      fetchCarSuggestions(formatted);
+    // Se temos 3+ caracteres alfanuméricos, buscar sugestões usando o código formatado completo ou limpo
+    if (clean.length >= 3) {
+      fetchCarSuggestions(formatted, clean);
     } else {
       setCarSuggestions([]);
       setShowCarDropdown(false);
     }
   };
 
-  const fetchCarSuggestions = async (prefix: string) => {
+  const fetchCarSuggestions = async (formatted: string, clean: string) => {
     setLoadingCar(true);
     try {
       const { data, error } = await supabase
         .from('imoveis_car')
         .select('cod_imovel')
-        .ilike('cod_imovel', `${prefix}%`)
+        .or(`cod_imovel.ilike.${formatted}%,cod_imovel.ilike.%${clean}%`)
         .limit(15);
 
       if (error) throw error;
@@ -229,7 +229,7 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
 
   const handleSigefSearch = async () => {
     const clean = sigefQuery.replace(/[^a-zA-Z0-9]/g, '');
-    if (clean.length < 5) return;
+    if (clean.length < 3) return;
     setLoadingSigef(true);
     setSelectedSigef(null);
 
@@ -237,7 +237,7 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
       const { data, error } = await supabase
         .from('imoveis_sigef')
         .select('parcela_co, codigo_imo, nome_area, status, situacao_i')
-        .ilike('parcela_co', `${sigefQuery}%`)
+        .or(`parcela_co.ilike.%${clean}%,nome_area.ilike.%${clean}%,codigo_imo.ilike.%${clean}%`)
         .limit(15);
 
       if (error) throw error;
@@ -252,8 +252,8 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
 
   useEffect(() => {
     const clean = sigefQuery.replace(/[^a-zA-Z0-9]/g, '');
-    if (clean.length >= 5) {
-      const timer = setTimeout(handleSigefSearch, 400);
+    if (clean.length >= 3) {
+      const timer = setTimeout(handleSigefSearch, 300);
       return () => clearTimeout(timer);
     } else {
       setSigefResults([]);
@@ -495,7 +495,7 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
             )}
           </div>
           <span className="text-[9px] text-muted-foreground block">
-            Digite pelo menos 5 caracteres do código da parcela SIGEF para buscar
+            Digite pelo menos 3 caracteres do código ou nome da parcela SIGEF para buscar
           </span>
 
           {/* Resultados SIGEF */}
