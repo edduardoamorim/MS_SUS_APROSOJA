@@ -318,29 +318,54 @@ export default function DashboardProdutor() {
         const features = await Promise.all(
           props.map(async (p: any, index: number) => {
             let geom = p.geom;
+
+            // --- BLINDAGEM DE GEOMETRIA ---
+            // Passo 1: Parse de geom se for string JSON
             if (typeof geom === 'string') {
               try {
-                if (geom.trim().startsWith('{')) {
-                  geom = JSON.parse(geom);
+                const trimmed = geom.trim();
+                if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                  geom = JSON.parse(trimmed);
+                } else {
+                  // É uma string WKB hex ou formato desconhecido — tratar como nulo
+                  geom = null;
                 }
-              } catch (e) {}
+              } catch (e) {
+                console.warn(`Geom parse fallback para propriedade ${p.id}:`, e);
+                geom = null;
+              }
             }
 
-            // Se a geometria continua nula ou string inválida, buscar no banco geoespacial de backup
-            if (!geom || typeof geom === 'string') {
+            // Passo 2: Validar que é um GeoJSON válido
+            if (geom && typeof geom === 'object') {
+              if (!geom.type || !geom.coordinates) {
+                geom = null;
+              }
+            }
+
+            // Passo 3: Converter MultiPolygon → Polygon (pegar o primeiro polígono)
+            if (geom && geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+              geom = {
+                type: 'Polygon',
+                coordinates: geom.coordinates[0] || []
+              };
+            }
+
+            // Passo 4: Se a geometria continua nula, buscar no banco geoespacial de backup
+            if (!geom) {
               try {
                 if (p.codigo_car) {
-                  const carCodeBase = p.codigo_car.split('-')[1] || '';
                   const { data } = await supabase
                     .from('imoveis_car')
                     .select('geom')
-                    .or(`cod_imovel.ilike.${p.codigo_car},cod_imovel.ilike.%${carCodeBase}%`)
+                    .ilike('cod_imovel', p.codigo_car)
                     .limit(1)
                     .maybeSingle();
                   if (data?.geom) {
-                    geom = typeof data.geom === 'string' && data.geom.startsWith('{') ? JSON.parse(data.geom) : data.geom;
+                    geom = typeof data.geom === 'string' && data.geom.trim().startsWith('{') ? JSON.parse(data.geom) : data.geom;
                   }
-                } else if (p.codigo_sigef) {
+                }
+                if (!geom && p.codigo_sigef) {
                   const { data } = await supabase
                     .from('imoveis_sigef')
                     .select('geom')
@@ -348,7 +373,7 @@ export default function DashboardProdutor() {
                     .limit(1)
                     .maybeSingle();
                   if (data?.geom) {
-                    geom = typeof data.geom === 'string' && data.geom.startsWith('{') ? JSON.parse(data.geom) : data.geom;
+                    geom = typeof data.geom === 'string' && data.geom.trim().startsWith('{') ? JSON.parse(data.geom) : data.geom;
                   }
                 }
               } catch (e) {
@@ -356,7 +381,16 @@ export default function DashboardProdutor() {
               }
             }
 
-            if (!geom || typeof geom === 'string') {
+            // Passo 5: MultiPolygon → Polygon novamente (caso veio do backup)
+            if (geom && geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+              geom = {
+                type: 'Polygon',
+                coordinates: geom.coordinates[0] || []
+              };
+            }
+
+            // Passo 6: Fallback absoluto — gerar polígono placeholder
+            if (!geom || typeof geom !== 'object' || !geom.type || !geom.coordinates) {
               const latBase = -20.4 - (index * 0.15);
               const lngBase = -54.6 - (index * 0.15);
               geom = {
@@ -371,7 +405,7 @@ export default function DashboardProdutor() {
               properties: { 
                 id: p.id, 
                 name: p.nome_fazenda, 
-                municipio: p.municipio || 'Água Clara, MS',
+                municipio: p.municipio || '',
                 status: openPendsCount > 0 ? `${openPendsCount} Pendência(s)` : 'Regularizada' 
               },
               geometry: geom
@@ -392,6 +426,7 @@ export default function DashboardProdutor() {
       setLoading(false);
     }
   }
+
 
   const runRiskAnalysis = () => {
     setIsSimulating(true);

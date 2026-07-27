@@ -166,8 +166,8 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
     try {
       const { data, error } = await supabase
         .from('imoveis_car')
-        .select('cod_imovel')
-        .or(`cod_imovel.ilike.${formatted}%,cod_imovel.ilike.%${clean}%`)
+        .select('cod_imovel, nome_imovel, municipio, situacao_cadastral, area_total_ha')
+        .or(`cod_imovel.ilike.${formatted}%,cod_imovel.ilike.%${clean}%,nome_imovel.ilike.%${clean}%,numerocar.ilike.%${clean}%`)
         .limit(15);
 
       if (error) throw error;
@@ -181,11 +181,17 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
     }
   };
 
-  const selectCarSuggestion = async (cod_imovel: string) => {
+  const selectCarSuggestion = async (suggestion: any) => {
+    const cod_imovel = suggestion.cod_imovel;
     const clean = stripNonAlphanumeric(cod_imovel);
     setCarRaw(clean);
     setCarFormatted(cod_imovel);
     setShowCarDropdown(false);
+
+    // Auto-preencher nome da fazenda se disponível no banco
+    if (suggestion.nome_imovel && !nomeFazenda) {
+      setNomeFazenda(suggestion.nome_imovel);
+    }
 
     // Buscar geometria
     try {
@@ -197,7 +203,7 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
         .single();
 
       onChange({
-        nome_fazenda: nomeFazenda,
+        nome_fazenda: suggestion.nome_imovel || nomeFazenda,
         codigo_car: cod_imovel,
         codigo_sigef: '',
         origem: 'CAR',
@@ -205,7 +211,7 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
       });
     } catch {
       onChange({
-        nome_fazenda: nomeFazenda,
+        nome_fazenda: suggestion.nome_imovel || nomeFazenda,
         codigo_car: cod_imovel,
         codigo_sigef: '',
         origem: 'CAR',
@@ -454,21 +460,41 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
 
           {/* Dropdown de sugestões */}
           {showCarDropdown && carSuggestions.length > 0 && (
-            <div className="absolute z-50 w-full mt-1 bg-card border border-border rounded-xl shadow-lg max-h-48 overflow-y-auto animate-in slide-in-from-top-1 duration-150">
+            <div className="absolute z-50 w-full mt-1 bg-card border border-border rounded-xl shadow-lg max-h-64 overflow-y-auto animate-in slide-in-from-top-1 duration-150">
               <div className="p-2 border-b border-border/50">
                 <span className="text-[9px] text-muted-foreground font-bold uppercase">
-                  {carSuggestions.length} imóvel(is) encontrado(s) no município
+                  {carSuggestions.length} imóvel(is) encontrado(s)
                 </span>
               </div>
               {carSuggestions.map((s, i) => (
                 <button
                   key={i}
                   type="button"
-                  onClick={() => selectCarSuggestion(s.cod_imovel)}
-                  className="w-full px-3 py-2 text-left text-xs font-mono hover:bg-primary/10 transition-colors cursor-pointer flex items-center gap-2 border-b border-border/30 last:border-0"
+                  onClick={() => selectCarSuggestion(s)}
+                  className="w-full px-3 py-2.5 text-left hover:bg-primary/10 transition-colors cursor-pointer border-b border-border/30 last:border-0"
                 >
-                  <MapPin className="w-3 h-3 text-emerald-600 shrink-0" />
-                  <span className="text-foreground">{s.cod_imovel}</span>
+                  <div className="flex items-center gap-2">
+                    <MapPin className="w-3 h-3 text-emerald-600 shrink-0" />
+                    <span className="text-xs font-mono text-foreground truncate">{s.cod_imovel}</span>
+                  </div>
+                  {s.nome_imovel && (
+                    <div className="text-[10px] text-emerald-700 font-semibold mt-0.5 ml-5 truncate">
+                      🏠 {s.nome_imovel}
+                    </div>
+                  )}
+                  <div className="text-[9px] text-muted-foreground mt-0.5 ml-5 flex gap-2 flex-wrap">
+                    {s.municipio && <span>📍 {s.municipio}</span>}
+                    {s.area_total_ha && <span>📐 {Number(s.area_total_ha).toLocaleString('pt-BR')} ha</span>}
+                    {s.situacao_cadastral && (
+                      <span className={`px-1 rounded text-[8px] font-bold ${
+                        s.situacao_cadastral === 'Aprovado' ? 'bg-emerald-100 text-emerald-800' :
+                        s.situacao_cadastral === 'Inscrito' ? 'bg-blue-100 text-blue-800' :
+                        'bg-amber-100 text-amber-800'
+                      }`}>
+                        {s.situacao_cadastral}
+                      </span>
+                    )}
+                  </div>
                 </button>
               ))}
             </div>

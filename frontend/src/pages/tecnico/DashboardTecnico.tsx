@@ -226,25 +226,56 @@ export default function DashboardTecnico() {
       const features = await Promise.all(
         Array.from(propMap.values()).map(async (p: any, index: number) => {
           let geom = p.geom;
+
+          // --- BLINDAGEM DE GEOMETRIA ---
+          // Passo 1: Parse de geom se for string JSON
           if (typeof geom === 'string') {
-            try { if (geom.trim().startsWith('{')) geom = JSON.parse(geom); } catch (e) {}
+            try {
+              const trimmed = geom.trim();
+              if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                geom = JSON.parse(trimmed);
+              } else {
+                geom = null;
+              }
+            } catch (e) {
+              geom = null;
+            }
           }
-          if (!geom || typeof geom === 'string') {
+
+          // Passo 2: Validar GeoJSON
+          if (geom && typeof geom === 'object' && (!geom.type || !geom.coordinates)) {
+            geom = null;
+          }
+
+          // Passo 3: MultiPolygon → Polygon
+          if (geom && geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+            geom = { type: 'Polygon', coordinates: geom.coordinates[0] || [] };
+          }
+
+          // Passo 4: Buscar no banco geoespacial de backup
+          if (!geom) {
             try {
               if (p.codigo_car) {
                 const { data } = await supabase
                   .from('imoveis_car')
                   .select('geom')
-                  .or(`cod_imovel.ilike.${p.codigo_car},cod_imovel.ilike.%${(p.codigo_car.split('-')[1] || '')}%`)
+                  .ilike('cod_imovel', p.codigo_car)
                   .limit(1)
                   .maybeSingle();
                 if (data?.geom) {
-                  geom = typeof data.geom === 'string' && data.geom.startsWith('{') ? JSON.parse(data.geom) : data.geom;
+                  geom = typeof data.geom === 'string' && data.geom.trim().startsWith('{') ? JSON.parse(data.geom) : data.geom;
                 }
               }
             } catch (e) {}
           }
-          if (!geom || typeof geom === 'string') {
+
+          // Passo 5: MultiPolygon → Polygon (backup result)
+          if (geom && geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+            geom = { type: 'Polygon', coordinates: geom.coordinates[0] || [] };
+          }
+
+          // Passo 6: Fallback placeholder
+          if (!geom || typeof geom !== 'object' || !geom.type || !geom.coordinates) {
             const latBase = -20.4 - (index * 0.15);
             const lngBase = -54.6 - (index * 0.15);
             geom = {
@@ -270,6 +301,7 @@ export default function DashboardTecnico() {
           };
         })
       );
+
 
       setFarmsData({ type: 'FeatureCollection', features });
     } catch (err) {

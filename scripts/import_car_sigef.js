@@ -12,10 +12,11 @@ const connectionString = 'postgresql://postgres:postgres@127.0.0.1:54322/postgre
 async function importCAR(client) {
   console.log('\n========================================');
   console.log('  Importando Imóveis CAR (SICAR)...');
+  console.log('  Shapefile: CAR-SHP-2026 (enriquecido)');
   console.log('========================================\n');
 
-  const shpPath = join(__dirname, '../dados_geo/shp_fazendas_car_federal_02-07-26/AREA_IMOVEL_1.shp');
-  const dbfPath = join(__dirname, '../dados_geo/shp_fazendas_car_federal_02-07-26/AREA_IMOVEL_1.dbf');
+  const shpPath = join(__dirname, '../dados_geo/shp_fazendas_car_federal_02-07-26/CAR-SHP-2026.shp');
+  const dbfPath = join(__dirname, '../dados_geo/shp_fazendas_car_federal_02-07-26/CAR-SHP-2026.dbf');
 
   try {
     // Limpar tabela antes de importar
@@ -26,8 +27,9 @@ async function importCAR(client) {
     const source = await shapefile.open(shpPath, dbfPath, { encoding: 'utf-8' });
 
     let count = 0;
+    let skipped = 0;
     let batch = [];
-    const BATCH_SIZE = 500;
+    const BATCH_SIZE = 300; // Batch menor para evitar estouro de memória com 18 colunas
 
     while (true) {
       const result = await source.read();
@@ -36,15 +38,42 @@ async function importCAR(client) {
       const feature = result.value;
       const props = feature.properties || {};
 
-      const cod_imovel = props.cod_imovel || props.COD_IMOVEL || null;
-      const cod_tema = props.cod_tema || props.COD_TEMA || null;
-      const nom_tema = props.nom_tema || props.NOM_TEMA || null;
+      // Mapear colunas do novo shapefile CAR-SHP-2026
+      // cod_imovel ← codigosica (mantém compatibilidade com autocomplete e triggers)
+      const cod_imovel = props.codigosica || props.cod_imovel || props.COD_IMOVEL || null;
+      const cod_tema = null; // Não existe mais no novo shapefile
+      const nom_tema = props.descricao || null; // "Área Total do Imóvel"
 
-      if (!feature.geometry) continue;
+      // Novas colunas enriquecidas
+      const numerocar = props.numerocar || null;
+      const municipio = props.municipio || null;
+      const nome_imovel = props.nomeprop_1 || null; // Nome da fazenda
+      const nome_proprietario = props.nomepropri || null; // Nome do proprietário pessoa
+      const cpf_cnpj_proprietario = props.cpfoucnpjp || null;
+      const situacao_cadastral = props.situcaocad || null; // Inscrito, Pendente, Aprovado
+      const area_total_ha = props.areatotalc || null;
+      const coordenadas_texto = props.coordenada || null;
+      const data_criacao = props.datacriaca || null;
+      const data_sicar = props.datasicar || null;
+      const ativo = props.ativo != null ? props.ativo : 1;
+      const responsavel_cpf_cnpj = props.CPF_CNPJ || null;
+      const responsavel_nome = props.Nome___Raz || null;
+      const responsavel_papel = props.Papel || null;
+
+      if (!feature.geometry) {
+        skipped++;
+        continue;
+      }
 
       const geomJson = JSON.stringify(feature.geometry);
 
-      batch.push({ cod_imovel, cod_tema, nom_tema, geomJson });
+      batch.push({
+        cod_imovel, cod_tema, nom_tema, geomJson,
+        numerocar, municipio, nome_imovel, nome_proprietario,
+        cpf_cnpj_proprietario, situacao_cadastral, area_total_ha,
+        coordenadas_texto, data_criacao, data_sicar, ativo,
+        responsavel_cpf_cnpj, responsavel_nome, responsavel_papel
+      });
       count++;
 
       if (batch.length >= BATCH_SIZE) {
@@ -61,9 +90,10 @@ async function importCAR(client) {
       await insertCARBatch(client, batch);
     }
 
-    console.log(`✅ CAR concluído: ${count} imóveis importados.`);
+    console.log(`✅ CAR concluído: ${count} imóveis importados. (${skipped} sem geometria ignorados)`);
   } catch (err) {
     console.error('❌ Erro ao importar CAR:', err.message);
+    console.error(err.stack);
   }
 }
 
@@ -71,14 +101,38 @@ async function insertCARBatch(client, batch) {
   const values = [];
   const params = [];
   let idx = 1;
+  const COLS_PER_ROW = 18;
 
   for (const row of batch) {
-    values.push(`($${idx}, $${idx + 1}, $${idx + 2}, ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON($${idx + 3}), 4326)))`);
-    params.push(row.cod_imovel, row.cod_tema, row.nom_tema, row.geomJson);
-    idx += 4;
+    const placeholders = [];
+    for (let i = 0; i < COLS_PER_ROW - 1; i++) {
+      placeholders.push(`$${idx + i}`);
+    }
+    // Último placeholder é a geometria com ST_Multi wrapper
+    placeholders.push(`ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON($${idx + COLS_PER_ROW - 1}), 4326))`);
+
+    values.push(`(${placeholders.join(', ')})`);
+    params.push(
+      row.cod_imovel, row.cod_tema, row.nom_tema,
+      row.numerocar, row.municipio, row.nome_imovel,
+      row.nome_proprietario, row.cpf_cnpj_proprietario,
+      row.situacao_cadastral, row.area_total_ha,
+      row.coordenadas_texto, row.data_criacao, row.data_sicar,
+      row.ativo, row.responsavel_cpf_cnpj, row.responsavel_nome,
+      row.responsavel_papel, row.geomJson
+    );
+    idx += COLS_PER_ROW;
   }
 
-  const query = `INSERT INTO imoveis_car (cod_imovel, cod_tema, nom_tema, geom) VALUES ${values.join(', ')}`;
+  const query = `INSERT INTO imoveis_car (
+    cod_imovel, cod_tema, nom_tema,
+    numerocar, municipio, nome_imovel,
+    nome_proprietario, cpf_cnpj_proprietario,
+    situacao_cadastral, area_total_ha,
+    coordenadas_texto, data_criacao, data_sicar,
+    ativo, responsavel_cpf_cnpj, responsavel_nome,
+    responsavel_papel, geom
+  ) VALUES ${values.join(', ')}`;
   await client.query(query, params);
 }
 
