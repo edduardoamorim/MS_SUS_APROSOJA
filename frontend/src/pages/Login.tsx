@@ -13,6 +13,14 @@ export default function Login() {
   const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
+  const redirectByRole = (user: any, fallbackRole?: string) => {
+    const role = user?.user_metadata?.role || fallbackRole;
+    if (role === 'produtor') navigate('/produtor');
+    else if (role === 'tecnico') navigate('/tecnico');
+    else if (role === 'gestor') navigate('/gestor');
+    else navigate('/produtor');
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -24,7 +32,11 @@ export default function Login() {
     });
 
     if (signInError) {
-      setError('E-mail ou senha inválidos.');
+      if (signInError.message?.toLowerCase().includes('rate limit') || signInError.message?.toLowerCase().includes('rate_limit')) {
+        setError('Limite de envio de e-mails/requisições do Supabase atingido. Tente novamente em alguns minutos.');
+      } else {
+        setError('E-mail ou senha inválidos.');
+      }
       setLoading(false);
       return;
     }
@@ -39,10 +51,7 @@ export default function Login() {
           console.warn('Erro ao buscar perfil:', e);
         }
       }
-      if (role === 'produtor') navigate('/produtor');
-      else if (role === 'tecnico') navigate('/tecnico');
-      else if (role === 'gestor') navigate('/gestor');
-      else navigate('/produtor');
+      redirectByRole(data.user, role);
     }
   };
 
@@ -52,121 +61,120 @@ export default function Login() {
     'produtor@ms.gov.br': { name: 'Produtor Teste MS', role: 'produtor' },
   };
 
-  const withRetry = async <T,>(fn: () => Promise<T>, retries = 3, delayMs = 1000): Promise<T> => {
-    let lastError: any;
-    for (let i = 0; i < retries; i++) {
-      try {
-        return await fn();
-      } catch (err: any) {
-        lastError = err;
-        if (err?.message?.toLowerCase().includes('failed to fetch') && i < retries - 1) {
-          await new Promise((res) => setTimeout(res, delayMs));
-          continue;
-        }
-        throw err;
-      }
-    }
-    throw lastError;
-  };
-
+  // Tenta realizar o login com a conta de teste PRIMEIRO.
+  // Evita disparar signUp repetidamente para não estourar a cota de e-mails do Supabase Cloud (rate limit exceeded).
   const ensureAndSignInTestUser = async (selectedEmail: string) => {
     const userInfo = TEST_USERS[selectedEmail] || { name: 'Usuário Teste', role: 'produtor' };
-    
+
+    // 1. Tenta login direto com 'Senha@123'
+    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+      email: selectedEmail,
+      password: 'Senha@123',
+    });
+
+    if (!signInError && signInData?.user) {
+      return signInData;
+    }
+
+    // Se o erro for rate limit no login, tenta re-retornar a sessão atual se já estiver logado
+    if (signInError?.message?.toLowerCase().includes('rate limit')) {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData?.session?.user) {
+        return { user: sessionData.session.user, session: sessionData.session };
+      }
+      throw new Error('Limite de e-mails do Supabase atingido temporariamente. Tente o acesso digitando e-mail e senha.');
+    }
+
+    // 2. Tenta login com senha legada 'senha123'
+    const { data: legacyData, error: legacyError } = await supabase.auth.signInWithPassword({
+      email: selectedEmail,
+      password: 'senha123',
+    });
+
+    if (!legacyError && legacyData?.user) {
+      try {
+        await supabase.auth.updateUser({ password: 'Senha@123' });
+      } catch (e) {
+        console.warn('Erro ao atualizar senha legada:', e);
+      }
+      return legacyData;
+    }
+
+    // 3. Tenta signUp APENAS se a conta realmente não existir
     try {
-      return await withRetry(async () => {
-        // 1. Tenta login com a senha padrao Senha@123
-        let { data, error: signInError } = await supabase.auth.signInWithPassword({
-          email: selectedEmail,
-          password: 'Senha@123',
-        });
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: selectedEmail,
+        password: 'Senha@123',
+        options: {
+          data: { full_name: userInfo.name, role: userInfo.role }
+        }
+      });
 
-        // 2. Se falhar com Senha@123, tenta com a senha legada senha123
-        if (signInError) {
-          if (signInError.message?.toLowerCase().includes('failed to fetch')) {
-            throw signInError;
-          }
-
-          const { data: legacyData, error: legacyError } = await supabase.auth.signInWithPassword({
+      if (signUpError) {
+        if (signUpError.message?.toLowerCase().includes('rate limit')) {
+          const { data: lastTryData } = await supabase.auth.signInWithPassword({
             email: selectedEmail,
-            password: 'senha123',
+            password: 'Senha@123',
           });
-
-          if (!legacyError && legacyData.user) {
-            try {
-              await supabase.auth.updateUser({ password: 'Senha@123' });
-            } catch (e) {
-              console.warn('Erro ao atualizar senha legada:', e);
-            }
-            data = legacyData;
-          } else {
-            if (legacyError?.message?.toLowerCase().includes('failed to fetch')) {
-              throw legacyError;
-            }
-
-            // 3. Tenta auto-criar a conta via signUp
-            const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-              email: selectedEmail,
-              password: 'Senha@123',
-              options: {
-                data: { full_name: userInfo.name, role: userInfo.role }
-              }
-            });
-
-            if (signUpError && !signUpError.message.includes('already registered')) {
-              if (signUpError.message?.toLowerCase().includes('failed to fetch')) {
-                throw signUpError;
-              }
-              throw signUpError;
-            }
-
-            // Se o signUp ja retornou uma sessao/usuario ativo
-            if (signUpData?.user && signUpData?.session) {
-              data = signUpData;
-            } else {
-              // Tenta sign in logo apos o signUp
-              const { data: finalSignInData, error: finalError } = await supabase.auth.signInWithPassword({
-                email: selectedEmail,
-                password: 'Senha@123',
-              });
-
-              if (finalError) {
-                if (finalError.message?.toLowerCase().includes('failed to fetch')) {
-                  throw finalError;
-                }
-                if (finalError.message?.toLowerCase().includes('email not confirmed')) {
-                  throw new Error('E-mail de teste não confirmado no Supabase Cloud. Confirme o e-mail ou desative a confirmação no painel do Supabase.');
-                }
-                throw new Error('Conta de teste existe com senha personalizada ou e-mail pendente. Digite a senha manualmente.');
-              }
-
-              data = finalSignInData;
-            }
-          }
+          if (lastTryData?.user) return lastTryData;
+          throw new Error('Limite de e-mails do Supabase atingido no ambiente Cloud. Tente o acesso direto.');
         }
 
-        return data;
+        if (signUpError.message.includes('already registered') || signUpError.message.includes('User already registered')) {
+          const { data: retryData, error: retryErr } = await supabase.auth.signInWithPassword({
+            email: selectedEmail,
+            password: 'Senha@123',
+          });
+          if (retryData?.user) return retryData;
+          if (retryErr) throw retryErr;
+        }
+
+        throw signUpError;
+      }
+
+      if (signUpData?.user && signUpData?.session) {
+        return signUpData;
+      }
+
+      const { data: postSignUpData } = await supabase.auth.signInWithPassword({
+        email: selectedEmail,
+        password: 'Senha@123',
       });
+      if (postSignUpData?.user) return postSignUpData;
+
     } catch (err: any) {
-      if (err?.message?.toLowerCase().includes('failed to fetch')) {
-        throw new Error('Falha de conexão com o Supabase. Verifique se o Docker e os containers do banco de dados estão rodando.');
+      if (err.message?.toLowerCase().includes('rate limit')) {
+        throw new Error('Limite de envio de e-mails do Supabase excedido.');
       }
       throw err;
     }
+
+    throw new Error('Não foi possível entrar com a conta de teste.');
   };
 
   const handleCreateTestUsers = async () => {
     setLoading(true);
     setError('');
+    let successCount = 0;
     try {
-      for (const email of Object.keys(TEST_USERS)) {
-        await ensureAndSignInTestUser(email);
-        await supabase.auth.signOut();
+      for (const testEmail of Object.keys(TEST_USERS)) {
+        try {
+          const data = await ensureAndSignInTestUser(testEmail);
+          if (data?.user) successCount++;
+          await supabase.auth.signOut();
+        } catch (e: any) {
+          console.warn(`Aviso para ${testEmail}:`, e.message);
+        }
       }
 
-      info('Contas de teste garantidas no banco local com a senha Senha@123!\n- gestor@ms.gov.br\n- tecnico@ms.gov.br\n- produtor@ms.gov.br', 6000);
+      if (successCount > 0) {
+        info('Contas de teste verificadas e prontas!\n- gestor@ms.gov.br\n- tecnico@ms.gov.br\n- produtor@ms.gov.br', 5000);
+      } else {
+        setError('Não foi possível verificar as contas de teste no Supabase Cloud devido ao limite de e-mails. Clique diretamente nos botões de Gestor, Técnico ou Produtor para entrar.');
+      }
     } catch (err: any) {
       console.error(err);
-      setError('Erro ao criar/atualizar usuários de teste: ' + err.message);
+      setError('Erro ao verificar contas de teste: ' + err.message);
     } finally {
       setLoading(false);
     }
@@ -181,12 +189,8 @@ export default function Login() {
     try {
       const data = await ensureAndSignInTestUser(selectedEmail);
 
-      if (data.user) {
-        const role = data.user.user_metadata?.role || TEST_USERS[selectedEmail]?.role;
-        if (role === 'produtor') navigate('/produtor');
-        else if (role === 'tecnico') navigate('/tecnico');
-        else if (role === 'gestor') navigate('/gestor');
-        else navigate('/');
+      if (data?.user) {
+        redirectByRole(data.user, TEST_USERS[selectedEmail]?.role);
       }
     } catch (err: any) {
       console.error(err);
