@@ -62,12 +62,68 @@ export default function GestorPropriedades() {
 
   async function fetchPropriedades() {
     setLoading(true);
-    const { data, error } = await supabase.from('propriedades').select('*');
-    if (!error && data) {
-      setPropriedades(data);
+    try {
+      const { data: propsData, error: propsErr } = await supabase.from('propriedades').select('*').order('created_at', { ascending: false });
+      const { data: auditsData } = await supabase.from('auditorias').select('id, propriedade_id, tecnico_responsavel_id, status');
+
+      if (!propsErr && propsData) {
+        const auditMap = new Map();
+        (auditsData || []).forEach(a => {
+          if (a.propriedade_id) auditMap.set(a.propriedade_id, a);
+        });
+
+        const merged = propsData.map(p => ({
+          ...p,
+          auditId: auditMap.get(p.id)?.id || null,
+          tecnico_id: auditMap.get(p.id)?.tecnico_responsavel_id || null,
+          audit_status: auditMap.get(p.id)?.status || 'Autoavaliação'
+        }));
+        setPropriedades(merged);
+      }
+    } catch (e) {
+      console.error('Erro ao buscar propriedades:', e);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
+
+  const handleAssignTechnician = async (propId: string, auditId: string | null, newTechId: string) => {
+    try {
+      if (auditId) {
+        const { error: err } = await supabase
+          .from('auditorias')
+          .update({ tecnico_responsavel_id: newTechId || null })
+          .eq('id', auditId);
+        if (err) throw err;
+      } else if (newTechId) {
+        const { data: newAudit, error: err } = await supabase
+          .from('auditorias')
+          .insert([{
+            propriedade_id: propId,
+            tecnico_responsavel_id: newTechId,
+            status: 'Visita de Campo',
+            data_agendamento: new Date().toISOString()
+          }])
+          .select()
+          .single();
+        if (err) throw err;
+        auditId = newAudit?.id || null;
+      }
+
+      setPropriedades(prev => prev.map(p => {
+        if (p.id === propId) {
+          return { ...p, tecnico_id: newTechId || null, auditId };
+        }
+        return p;
+      }));
+
+      const techName = technicians.find(t => t.id === newTechId)?.nome || 'Nenhum';
+      success(`Técnico "${techName}" atribuído a esta fazenda!`);
+    } catch (err: any) {
+      console.error('Erro ao atribuir técnico:', err);
+      error('Erro ao atribuir técnico: ' + err.message);
+    }
+  };
 
   const handleOpenCreate = () => {
     setEditingProp(null);
@@ -349,7 +405,8 @@ export default function GestorPropriedades() {
                 <tr>
                   <th className="px-5 py-3 font-semibold text-muted-foreground">Fazenda</th>
                   <th className="px-5 py-3 font-semibold text-muted-foreground">Produtor Responsável</th>
-                  <th className="px-5 py-3 font-semibold text-muted-foreground">CAR</th>
+                  <th className="px-5 py-3 font-semibold text-muted-foreground">CAR / SIGEF</th>
+                  <th className="px-5 py-3 font-semibold text-muted-foreground">Técnico Vistoriador</th>
                   <th className="px-5 py-3 font-semibold text-muted-foreground text-right">Ações</th>
                 </tr>
               </thead>
@@ -369,20 +426,21 @@ export default function GestorPropriedades() {
                 <tr>
                   <th className="px-5 py-3 font-semibold text-muted-foreground">Fazenda</th>
                   <th className="px-5 py-3 font-semibold text-muted-foreground">Produtor Responsável</th>
-                  <th className="px-5 py-3 font-semibold text-muted-foreground">CAR</th>
+                  <th className="px-5 py-3 font-semibold text-muted-foreground">CAR / SIGEF</th>
+                  <th className="px-5 py-3 font-semibold text-muted-foreground">Técnico Vistoriador</th>
                   <th className="px-5 py-3 font-semibold text-muted-foreground text-right">Ações</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {filteredProperties.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="px-5 py-8 text-center text-muted-foreground">
+                    <td colSpan={5} className="px-5 py-8 text-center text-muted-foreground">
                       Nenhuma propriedade encontrada.
                     </td>
                   </tr>
                 ) : (
                   filteredProperties.map((prop: any) => (
-                    <tr key={prop.id} className="hover:bg-primary/[0.03] transition-colors group cursor-pointer">
+                    <tr key={prop.id} className="hover:bg-primary/[0.03] transition-colors group">
                       <td className="px-5 py-3 font-medium text-foreground">{prop.nome_fazenda}</td>
                       <td className="px-5 py-3 text-muted-foreground">{prop.nome_produtor}</td>
                       <td className="px-5 py-3 text-muted-foreground font-mono text-xs">
@@ -397,6 +455,20 @@ export default function GestorPropriedades() {
                         ) : (
                           prop.codigo_car || 'N/A'
                         )}
+                      </td>
+                      <td className="px-5 py-3">
+                        <select
+                          value={prop.tecnico_id || ''}
+                          onChange={(e) => handleAssignTechnician(prop.id, prop.auditId, e.target.value)}
+                          className="px-2.5 py-1 bg-background border border-input rounded-md text-xs font-medium focus:ring-2 focus:ring-primary focus:border-transparent cursor-pointer hover:border-primary/50 transition-colors"
+                        >
+                          <option value="">-- Sem Técnico --</option>
+                          {technicians.map(t => (
+                            <option key={t.id} value={t.id}>
+                              {t.nome}
+                            </option>
+                          ))}
+                        </select>
                       </td>
                       <td className="px-5 py-3 text-right">
                         <div className="flex items-center justify-end gap-2">

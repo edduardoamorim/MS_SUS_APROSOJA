@@ -330,12 +330,15 @@ export default function GestorUsuarios() {
           
           {activeTab === 'tecnicos' ? (
             <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">Região / Cidade</label>
+              <label className="text-sm font-medium text-foreground">Região / Atuação (Opcional)</label>
               <CityInput 
                 value={formData.regiao}
                 onChange={val => setFormData({...formData, regiao: val})}
                 className="w-full px-3 py-2 bg-background border border-input rounded-md focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
               />
+              <p className="text-xs text-muted-foreground mt-1">
+                💡 Nota: Os técnicos atendem o estado. A distribuição de quais fazendas cada técnico vai vistoriar é controlada pelo gestor no painel de Propriedades/Auditorias.
+              </p>
             </div>
           ) : (
             <div className="space-y-2">
