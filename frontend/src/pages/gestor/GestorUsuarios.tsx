@@ -248,7 +248,7 @@ export default function GestorUsuarios() {
                 <th className="px-5 py-3 font-semibold text-muted-foreground">Nome</th>
                 <th className="px-5 py-3 font-semibold text-muted-foreground">Email</th>
                 <th className="px-5 py-3 font-semibold text-muted-foreground">
-                  {activeTab === 'tecnicos' ? 'Região Atendida' : 'Fazendas Vinculadas'}
+                  {activeTab === 'tecnicos' ? 'Perfil' : 'Fazendas Vinculadas'}
                 </th>
                 <th className="px-5 py-3 font-semibold text-muted-foreground">Status</th>
                 <th className="px-5 py-3 font-semibold text-muted-foreground text-right">Ações</th>
@@ -267,7 +267,7 @@ export default function GestorUsuarios() {
                     <td className="px-5 py-3 font-medium text-foreground">{user.nome}</td>
                     <td className="px-5 py-3 text-muted-foreground">{user.email}</td>
                     <td className="px-5 py-3 text-muted-foreground">
-                      {activeTab === 'tecnicos' ? user.regiao : `${user.fazendas_vinculadas} fazenda(s)`}
+                      {activeTab === 'tecnicos' ? 'Técnico de Campo' : `${user.fazendas_vinculadas || 0} fazenda(s)`}
                     </td>
                     <td className="px-5 py-3">
                       <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-semibold uppercase tracking-wider border ${
@@ -328,19 +328,7 @@ export default function GestorUsuarios() {
             />
           </div>
           
-          {activeTab === 'tecnicos' ? (
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">Região / Atuação (Opcional)</label>
-              <CityInput 
-                value={formData.regiao}
-                onChange={val => setFormData({...formData, regiao: val})}
-                className="w-full px-3 py-2 bg-background border border-input rounded-md focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                💡 Nota: Os técnicos atendem o estado. A distribuição de quais fazendas cada técnico vai vistoriar é controlada pelo gestor no painel de Propriedades/Auditorias.
-              </p>
-            </div>
-          ) : (
+          {activeTab === 'produtores' && (
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">Quantidade de Fazendas</label>
               <input 
