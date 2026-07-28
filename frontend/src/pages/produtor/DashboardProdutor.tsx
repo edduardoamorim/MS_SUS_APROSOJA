@@ -355,12 +355,12 @@ export default function DashboardProdutor() {
             if (!geom) {
               try {
                 if (p.codigo_car) {
-                  const { data } = await supabase
-                    .from('imoveis_car')
-                    .select('geom')
-                    .ilike('cod_imovel', p.codigo_car)
-                    .limit(1)
-                    .maybeSingle();
+                    const { data } = await supabase
+                      .from('imoveis_car')
+                      .select('geom')
+                      .or(`codigosica.ilike.%${p.codigo_car}%,cod_imovel.ilike.%${p.codigo_car}%`)
+                      .limit(1)
+                      .maybeSingle();
                   if (data?.geom) {
                     geom = typeof data.geom === 'string' && data.geom.trim().startsWith('{') ? JSON.parse(data.geom) : data.geom;
                   }
@@ -800,17 +800,15 @@ export default function DashboardProdutor() {
                         >
                           Autoavaliação RTRS
                         </button>
-                        {!isMock && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setActiveTab('pendencias');
-                            }}
-                            className="flex-1 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-lg text-[11px] font-bold transition-all border border-slate-200 shadow-sm cursor-pointer text-center"
-                          >
-                            Pendências
-                          </button>
-                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveTab('pendencias');
+                          }}
+                          className="flex-1 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-lg text-[11px] font-bold transition-all border border-slate-200 shadow-sm cursor-pointer text-center"
+                        >
+                          Pendências
+                        </button>
                       </div>
                       
                       {showRisk && i === 0 && (

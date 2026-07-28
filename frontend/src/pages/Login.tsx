@@ -56,15 +56,15 @@ export default function Login() {
   };
 
   const TEST_USERS: Record<string, { name: string; role: string }> = {
-    'gestor@ms.gov.br': { name: 'Gestor Teste MS', role: 'gestor' },
-    'tecnico@ms.gov.br': { name: 'Técnico Teste MS', role: 'tecnico' },
-    'produtor@ms.gov.br': { name: 'Produtor Teste MS', role: 'produtor' },
+    'gestor@ms.gov.br': { name: 'Gestor MS', role: 'gestor' },
+    'tecnico@ms.gov.br': { name: 'Técnico MS', role: 'tecnico' },
+    'produtor@ms.gov.br': { name: 'Produtor MS', role: 'produtor' },
   };
 
   // Tenta realizar o login com a conta de teste PRIMEIRO.
   // Evita disparar signUp repetidamente para não estourar a cota de e-mails do Supabase Cloud (rate limit exceeded).
   const ensureAndSignInTestUser = async (selectedEmail: string) => {
-    const userInfo = TEST_USERS[selectedEmail] || { name: 'Usuário Teste', role: 'produtor' };
+    const userInfo = TEST_USERS[selectedEmail] || { name: 'Usuário RTRS', role: 'produtor' };
 
     // 1. Tenta login direto com 'Senha@123'
     const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({

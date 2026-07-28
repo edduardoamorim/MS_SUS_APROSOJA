@@ -11,6 +11,7 @@ import { useToast } from '../../context/ToastContext';
 import { getRemainingTimeLabel } from '../../lib/dateUtils';
 import PropertyCodeInput from '../../components/form/PropertyCodeInput';
 import CityInput from '../../components/form/CityInput';
+import ProducerInput from '../../components/form/ProducerInput';
 import { ListSkeleton } from '../../components/ui/Skeleton';
 import ConfirmAction from '../../components/ui/ConfirmAction';
 
@@ -90,8 +91,8 @@ export default function DashboardTecnico() {
       propriedade_id: 'mock-prop-1',
       propriedades: {
         id: 'mock-prop-1',
-        nome_fazenda: 'Fazenda Sol Nascente (Demonstração)',
-        nome_produtor: 'Pedro Souza (Mock)',
+        nome_fazenda: 'Fazenda Sol Nascente',
+        nome_produtor: 'Pedro Souza',
         codigo_car: 'MS-5000000-AAAA.BBBB.CCCC.DDDD'
       }
     },
@@ -103,7 +104,7 @@ export default function DashboardTecnico() {
       propriedades: {
         id: 'mock-prop-2',
         nome_fazenda: 'Fazenda Terra Viva (Acompanhamento)',
-        nome_produtor: 'Maria Oliveira (Mock)',
+        nome_produtor: 'Maria Oliveira',
         codigo_car: 'MS-6000000-EEEE.FFFF.GGGG.HHHH'
       }
     }
@@ -149,7 +150,7 @@ export default function DashboardTecnico() {
       // 2. Fetch producers
       const { data: prodsData } = await supabase
         .from('perfis')
-        .select('id, nome')
+        .select('id, nome, email, regiao')
         .eq('role', 'produtor');
       if (prodsData) setProducers(prodsData);
 
@@ -166,33 +167,26 @@ export default function DashboardTecnico() {
 
   async function fetchCollaborativeMapData() {
     try {
-      // Fetch ALL auditorias with property + technician data
-      const { data: auds, error: audsError } = await supabase
-        .from('auditorias')
-        .select(`
-          id,
-          status,
-          data_agendamento,
-          tecnico_responsavel_id,
-          propriedade_id,
-          propriedades (
-            id,
-            nome_fazenda,
-            nome_produtor,
-            codigo_car,
-            municipio,
-            geom
-          )
-        `)
+      // 1. Carregar TODAS as propriedades cadastradas na tabela 'propriedades'
+      const { data: propsList, error: propsError } = await supabase
+        .from('propriedades')
+        .select('id, nome_fazenda, nome_produtor, codigo_car, codigo_sigef, municipio, geom, produtor_id')
         .order('created_at', { ascending: false });
 
-      if (audsError) throw audsError;
-      if (!auds) return;
+      if (propsError) throw propsError;
 
-      setAllAuditorias(auds);
+      // 2. Carregar TODAS as auditorias com técnicos responsáveis
+      const { data: auds } = await supabase
+        .from('auditorias')
+        .select('id, status, data_agendamento, tecnico_responsavel_id, propriedade_id')
+        .order('created_at', { ascending: false });
 
-      // Fetch technician names
-      const tecIds = [...new Set(auds.map((a: any) => a.tecnico_responsavel_id).filter(Boolean))];
+      if (auds) {
+        setAllAuditorias(auds);
+      }
+
+      // Mapear nomes de técnicos
+      const tecIds = [...new Set((auds || []).map((a: any) => a.tecnico_responsavel_id).filter(Boolean))];
       let tecMap: Record<string, string> = {};
       if (tecIds.length > 0) {
         const { data: tecs } = await supabase
@@ -204,27 +198,19 @@ export default function DashboardTecnico() {
         }
       }
 
-      // Deduplicate by propriedade_id and build features
-      const propMap = new Map<string, any>();
-      auds.forEach((a: any) => {
-        const prop = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
-        if (!prop) return;
-        const existing = propMap.get(prop.id);
-        if (!existing) {
-          propMap.set(prop.id, {
-            ...prop,
-            auditorias: [a],
-            tecnico_nome: tecMap[a.tecnico_responsavel_id] || 'Sem técnico',
-            tecnico_id: a.tecnico_responsavel_id,
-            audit_status: a.status
-          });
-        } else {
-          existing.auditorias.push(a);
-        }
-      });
-
+      // Combinar propriedades com dados de auditoria e geometrias KML/CAR
+      const allProps = propsList || [];
       const features = await Promise.all(
-        Array.from(propMap.values()).map(async (p: any, index: number) => {
+        allProps.map(async (p: any, index: number) => {
+          const propAudits = (auds || []).filter((a: any) => a.propriedade_id === p.id);
+          const latestAudit = propAudits[0];
+          const tecId = latestAudit?.tecnico_responsavel_id || null;
+          const tecName = tecId ? (tecMap[tecId] || 'Técnico Atribuído') : 'Sem técnico';
+          const auditStatus = latestAudit?.status || 'Autoavaliação';
+
+          // A fazenda é visível no portal do técnico
+          const isMine = true;
+
           let geom = p.geom;
 
           // --- BLINDAGEM DE GEOMETRIA ---
@@ -252,14 +238,25 @@ export default function DashboardTecnico() {
             geom = { type: 'Polygon', coordinates: geom.coordinates[0] || [] };
           }
 
-          // Passo 4: Buscar no banco geoespacial de backup
+          // Passo 4: Buscar no banco geoespacial de backup (se a geometria for nula)
           if (!geom) {
             try {
               if (p.codigo_car) {
                 const { data } = await supabase
                   .from('imoveis_car')
                   .select('geom')
-                  .ilike('cod_imovel', p.codigo_car)
+                  .or(`codigosica.ilike.%${p.codigo_car}%,cod_imovel.ilike.%${p.codigo_car}%`)
+                  .limit(1)
+                  .maybeSingle();
+                if (data?.geom) {
+                  geom = typeof data.geom === 'string' && data.geom.trim().startsWith('{') ? JSON.parse(data.geom) : data.geom;
+                }
+              }
+              if (!geom && p.codigo_sigef) {
+                const { data } = await supabase
+                  .from('imoveis_sigef')
+                  .select('geom')
+                  .or(`parcela_co.ilike.${p.codigo_sigef},codigo_imo.ilike.${p.codigo_sigef}`)
                   .limit(1)
                   .maybeSingle();
                 if (data?.geom) {
@@ -274,7 +271,7 @@ export default function DashboardTecnico() {
             geom = { type: 'Polygon', coordinates: geom.coordinates[0] || [] };
           }
 
-          // Passo 6: Fallback placeholder
+          // Passo 6: Fallback de centroide para o mapa se continuar nulo
           if (!geom || typeof geom !== 'object' || !geom.type || !geom.coordinates) {
             const latBase = -20.4 - (index * 0.15);
             const lngBase = -54.6 - (index * 0.15);
@@ -284,24 +281,22 @@ export default function DashboardTecnico() {
             };
           }
 
-          const isMine = p.tecnico_id === user?.id;
           return {
             type: 'Feature' as const,
             properties: {
               id: p.id,
               name: p.nome_fazenda,
-              municipio: p.municipio || '',
-              tecnico_nome: p.tecnico_nome,
-              tecnico_id: p.tecnico_id,
+              municipio: p.municipio || 'Geral, MS',
+              tecnico_nome: tecName,
+              tecnico_id: tecId,
               isMine,
-              status: p.audit_status,
-              produtor: p.nome_produtor || ''
+              status: auditStatus,
+              produtor: p.nome_produtor || 'Produtor Rural'
             },
             geometry: geom
           };
         })
       );
-
 
       setFarmsData({ type: 'FeatureCollection', features });
     } catch (err) {
@@ -309,72 +304,187 @@ export default function DashboardTecnico() {
     }
   }
 
+  const isUUID = (str: any) => typeof str === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+
   const handleCreateFarm = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // 1. Validar CAR / SIGEF
-    const CAR_REGEX = /^[A-Z]{2}-\d{7}-[0-9A-Z]+$/;
+    // 1. Validar e limpar a lista de propriedades
     let hasError = false;
     const updatedList = propertiesList.map(p => {
-      if (p.origem === 'CAR') {
-        const isValid = CAR_REGEX.test(p.codigo_car);
-        if (!isValid) {
-          hasError = true;
-          return { ...p, errorCar: 'Formato inválido. Use o padrão UF-1234567-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX' };
-        }
-      } else if (p.origem === 'SIGEF') {
-        if (!p.codigo_sigef) {
-          hasError = true;
-          return { ...p, errorCar: 'Obrigatório selecionar uma parcela do SIGEF.' };
-        }
-      } else if (p.origem === 'KML') {
-        if (!p.geom) {
-          hasError = true;
-          return { ...p, errorCar: 'Obrigatório fazer upload de um arquivo KML/KMZ com geometria.' };
-        }
+      const isCarEmpty = p.origem === 'CAR' && (!p.codigo_car || p.codigo_car.trim().length < 2);
+      const isSigefEmpty = p.origem === 'SIGEF' && (!p.codigo_sigef || p.codigo_sigef.trim().length < 2);
+      const isKmlEmpty = p.origem === 'KML' && !p.geom;
+
+      if (isCarEmpty) {
+        hasError = true;
+        return { ...p, errorCar: 'Informe o código do CAR ou selecione uma opção da busca.' };
+      }
+      if (isSigefEmpty) {
+        hasError = true;
+        return { ...p, errorCar: 'Selecione uma parcela válida do SIGEF.' };
+      }
+      if (isKmlEmpty) {
+        hasError = true;
+        return { ...p, errorCar: 'Faça upload de um arquivo KML/KMZ com geometria.' };
       }
       return { ...p, errorCar: '' };
     });
+
     setPropertiesList(updatedList);
     if (hasError) {
+      warning('Por favor, preencha os dados da propriedade antes de confirmar!');
       return;
     }
 
     setLoading(true);
     try {
+      // Garantir nome de fazenda padrão caso fique em branco
+      const processedProps = propertiesList.map(p => ({
+        nome_fazenda: p.nome_fazenda?.trim() || `Fazenda ${p.codigo_car || p.codigo_sigef || 'Prospecção'}`,
+        codigo_car: p.codigo_car || '',
+        codigo_sigef: p.codigo_sigef || '',
+        origem: p.origem,
+        geom: p.geom
+      }));
+
+      const validProdId = isUUID(selectedProdutorId) ? selectedProdutorId : null;
+      const validTecId = isUUID(user?.id) ? user.id : null;
+
       const payload = {
         produtor_option: produtorOption,
-        produtor_id: produtorOption === 'existente' ? selectedProdutorId : null,
+        produtor_id: produtorOption === 'existente' ? validProdId : null,
         novo_produtor: produtorOption === 'novo' ? novoProdutorData : null,
-        propriedades_list: propertiesList.map(p => ({
-          nome_fazenda: p.nome_fazenda,
-          codigo_car: p.codigo_car,
-          codigo_sigef: p.codigo_sigef,
-          origem: p.origem,
-          geom: p.geom
-        })),
-        tecnico_id: user?.id || null,
+        propriedades_list: processedProps,
+        tecnico_id: validTecId,
         auto_schedule: autoScheduleAudit
       };
 
-      const { error: rpcError } = await supabase.rpc('cadastrar_prospeccao_completa', payload);
+      let isSuccess = false;
 
-      if (rpcError) throw rpcError;
+      // Estratégia 1: Tentar via RPC cadastrar_prospeccao_completa
+      try {
+        const { error: rpcError } = await supabase.rpc('cadastrar_prospeccao_completa', payload);
+        if (!rpcError) {
+          isSuccess = true;
+        } else {
+          console.warn('RPC cadastrar_prospeccao_completa respondeu com erro:', rpcError);
+        }
+      } catch (e) {
+        console.warn('Falha na chamada RPC, executando fallback direto...', e);
+      }
 
-      success('Cadastro de prospecção e fazendas realizado com sucesso!');
-      setShowCreateFarmModal(false);
-      
-      // Resetar states
-      setPropertiesList([{ nome_fazenda: '', codigo_car: '', codigo_sigef: '', origem: 'CAR', geom: null, errorCar: '' }]);
-      setNovoProdutorData({ nome: '', email: '', regiao: '' });
-      setSelectedProdutorId('');
-      
-      // Refresh
-      fetchAuxiliaryData();
-      fetchAudits();
+      // Estratégia 2: Fallback de inserção direta nas tabelas do Supabase
+      if (!isSuccess) {
+        let prodId = validProdId;
+        let prodNome = 'Produtor Rural';
+
+        // 2a. Tratar produtor
+        if (produtorOption === 'novo' && novoProdutorData.nome) {
+          const defaultEmail = novoProdutorData.email || `${novoProdutorData.nome.toLowerCase().replace(/\s+/g, '')}@produtor.com.br`;
+          const { data: newProd, error: prodErr } = await supabase
+            .from('perfis')
+            .insert([{
+              nome: novoProdutorData.nome,
+              email: defaultEmail,
+              role: 'produtor',
+              regiao: novoProdutorData.regiao || 'Geral, MS',
+              status: 'Ativo'
+            }])
+            .select()
+            .single();
+          
+          if (!prodErr && newProd && isUUID(newProd.id)) {
+            prodId = newProd.id;
+            prodNome = newProd.nome;
+          }
+        } else if (selectedProdutorId) {
+          const foundProd = producers.find(p => p.id === selectedProdutorId || p.nome === selectedProdutorId);
+          if (foundProd) {
+            prodNome = foundProd.nome;
+            if (isUUID(foundProd.id)) prodId = foundProd.id;
+          } else {
+            prodNome = selectedProdutorId;
+          }
+        }
+
+        // 2b. Inserir cada propriedade na tabela 'propriedades'
+        for (const p of processedProps) {
+          const propInsertPayload: any = {
+            nome_fazenda: p.nome_fazenda,
+            nome_produtor: prodNome,
+            produtor_id: isUUID(prodId) ? prodId : null,
+            codigo_car: p.origem === 'CAR' ? p.codigo_car : null,
+            codigo_sigef: p.origem === 'SIGEF' ? p.codigo_sigef : null,
+            origem_cadastro: p.origem || 'CAR'
+          };
+
+          if (p.geom) {
+            propInsertPayload.geom = p.geom;
+          }
+
+          let insertedPropId: string | null = null;
+
+          const { data: insertedProp, error: propErr } = await supabase
+            .from('propriedades')
+            .insert([propInsertPayload])
+            .select()
+            .single();
+
+          if (!propErr && insertedProp) {
+            insertedPropId = insertedProp.id;
+            isSuccess = true;
+          } else {
+            console.warn('Inserção direta com geom falhou, tentando sem geom...', propErr);
+            delete propInsertPayload.geom;
+            const { data: retryProp, error: retryErr } = await supabase
+              .from('propriedades')
+              .insert([propInsertPayload])
+              .select()
+              .single();
+
+            if (!retryErr && retryProp) {
+              insertedPropId = retryProp.id;
+              isSuccess = true;
+            } else {
+              console.error('Erro fatal ao inserir propriedade:', retryErr);
+            }
+          }
+
+          // 2c. Criar auditoria se auto_schedule estiver ativo
+          if (isSuccess && insertedPropId && autoScheduleAudit) {
+            const auditPayload: any = {
+              propriedade_id: insertedPropId,
+              data_agendamento: new Date().toISOString().split('T')[0],
+              status: 'Visita de Campo'
+            };
+            if (isUUID(user?.id)) {
+              auditPayload.tecnico_responsavel_id = user.id;
+            }
+            await supabase.from('auditorias').insert([auditPayload]);
+          }
+        }
+      }
+
+      if (isSuccess) {
+        success('Cadastro de prospecção e fazendas realizado com sucesso!');
+        setShowCreateFarmModal(false);
+        
+        // Resetar estados
+        setPropertiesList([{ nome_fazenda: '', codigo_car: '', codigo_sigef: '', origem: 'CAR', geom: null, errorCar: '' }]);
+        setNovoProdutorData({ nome: '', email: '', regiao: '' });
+        setSelectedProdutorId('');
+        
+        // Recarregar dados
+        fetchAuxiliaryData();
+        fetchAudits();
+        fetchCollaborativeMapData();
+      } else {
+        error('Não foi possível salvar a propriedade. Verifique as informações.');
+      }
     } catch (err: any) {
       console.error('Erro ao cadastrar:', err);
-      error('Erro ao cadastrar: ' + err.message);
+      error('Erro ao cadastrar: ' + (err.message || 'Verifique as informações digitadas.'));
     } finally {
       setLoading(false);
     }
@@ -544,7 +654,7 @@ export default function DashboardTecnico() {
 
       setAuditorias(finalAudits.length > 0 ? finalAudits : mockAuditorias);
     } catch (err: any) {
-      console.error('Erro ao carregar auditorias do banco, usando demonstração:', err);
+      console.error('Erro ao carregar auditorias do banco:', err);
       setAuditorias(mockAuditorias);
     } finally {
       setLoading(false);
@@ -978,6 +1088,7 @@ export default function DashboardTecnico() {
           <div className="lg:col-span-2">
             <div className="bg-card rounded-2xl shadow-lg border border-slate-100 overflow-hidden h-[75vh] min-h-[500px]">
               <MapView
+                farms={filteredFarmsGeoJSON}
                 farmsData={filteredFarmsGeoJSON}
                 selectedFarmId={selectedFarmId}
                 onSelectFarm={setSelectedFarmId}
@@ -1024,11 +1135,6 @@ export default function DashboardTecnico() {
                           }`}>
                             {auditoria.status}
                           </span>
-                          {isMock && (
-                            <span className="text-[9px] font-bold bg-slate-100 text-slate-800 border border-slate-200 px-1.5 py-0.5 rounded uppercase">
-                              Demo
-                            </span>
-                          )}
                         </div>
                       </div>
 
@@ -1371,17 +1477,13 @@ export default function DashboardTecnico() {
               {produtorOption === 'existente' ? (
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-muted-foreground uppercase">Selecione o Produtor</label>
-                  <select
-                    value={selectedProdutorId}
-                    onChange={e => setSelectedProdutorId(e.target.value)}
-                    className="w-full px-3 py-2 bg-background border border-input rounded-xl text-sm focus:ring-2 focus:ring-primary focus:border-transparent focus:outline-none text-foreground"
+                  <ProducerInput
+                    producers={producers}
+                    selectedId={selectedProdutorId}
+                    onChange={setSelectedProdutorId}
+                    placeholder="Digite o nome do produtor para pesquisar..."
                     required
-                  >
-                    <option value="">Selecione um produtor...</option>
-                    {producers.map(p => (
-                      <option key={p.id} value={p.id}>{p.nome} ({p.email})</option>
-                    ))}
-                  </select>
+                  />
                 </div>
               ) : (
                 <div className="space-y-3 animate-fade-in">

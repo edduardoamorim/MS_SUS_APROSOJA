@@ -6,15 +6,18 @@ import type { FeatureCollection } from 'geojson';
 
 interface MapViewProps {
   farms?: FeatureCollection;
+  farmsData?: FeatureCollection;
   embargoes?: FeatureCollection;
   municipalities?: FeatureCollection;
   selectedFarmId?: string | null;
   onMapClick?: (lng: number, lat: number) => void;
+  onSelectFarm?: (id: string | null) => void;
   interactive?: boolean;
 }
 
-export default function MapView({ farms, embargoes, municipalities, selectedFarmId, onMapClick, interactive = true }: MapViewProps) {
+export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, embargoes, municipalities, selectedFarmId, onMapClick, onSelectFarm, interactive = true }: MapViewProps) {
   const mapRef = useRef<MapRef>(null);
+  const farms = farmsProp || farmsDataProp;
 
   // Auto-fit bounds when selectedFarmId changes or farm list loads
   useEffect(() => {

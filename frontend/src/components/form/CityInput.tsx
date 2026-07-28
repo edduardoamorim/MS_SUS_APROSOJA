@@ -81,8 +81,8 @@ export default function CityInput({ value, onChange, placeholder = 'Ex: Sidrolâ
       setSuggestions(filtered);
       setShowDropdown(filtered.length > 0);
     } else {
-      setSuggestions([]);
-      setShowDropdown(false);
+      setSuggestions(citiesList);
+      setShowDropdown(true);
     }
   };
 
@@ -108,6 +108,9 @@ export default function CityInput({ value, onChange, placeholder = 'Ex: Sidrolâ
             );
             setSuggestions(filtered);
             setShowDropdown(filtered.length > 0);
+          } else {
+            setSuggestions(citiesList);
+            setShowDropdown(true);
           }
         }}
         className={className}
