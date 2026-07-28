@@ -242,25 +242,45 @@ export default function DashboardTecnico() {
           if (!geom) {
             try {
               if (p.codigo_car) {
-                const { data } = await supabase
+                const cleanCar = p.codigo_car.trim();
+                let { data: carGeomData } = await supabase
                   .from('imoveis_car')
                   .select('geom')
-                  .or(`codigosica.ilike.%${p.codigo_car}%,cod_imovel.ilike.%${p.codigo_car}%`)
+                  .eq('cod_imovel', cleanCar)
                   .limit(1)
                   .maybeSingle();
-                if (data?.geom) {
-                  geom = typeof data.geom === 'string' && data.geom.trim().startsWith('{') ? JSON.parse(data.geom) : data.geom;
+                if (!carGeomData?.geom) {
+                  const { data: carGeomData2 } = await supabase
+                    .from('imoveis_car')
+                    .select('geom')
+                    .eq('codigosica', cleanCar)
+                    .limit(1)
+                    .maybeSingle();
+                  carGeomData = carGeomData2;
+                }
+                if (carGeomData?.geom) {
+                  geom = typeof carGeomData.geom === 'string' && carGeomData.geom.trim().startsWith('{') ? JSON.parse(carGeomData.geom) : carGeomData.geom;
                 }
               }
               if (!geom && p.codigo_sigef) {
-                const { data } = await supabase
+                const cleanSigef = p.codigo_sigef.trim();
+                let { data: sigefGeomData } = await supabase
                   .from('imoveis_sigef')
                   .select('geom')
-                  .or(`parcela_co.ilike.${p.codigo_sigef},codigo_imo.ilike.${p.codigo_sigef}`)
+                  .eq('parcela_co', cleanSigef)
                   .limit(1)
                   .maybeSingle();
-                if (data?.geom) {
-                  geom = typeof data.geom === 'string' && data.geom.trim().startsWith('{') ? JSON.parse(data.geom) : data.geom;
+                if (!sigefGeomData?.geom) {
+                  const { data: sigefGeomData2 } = await supabase
+                    .from('imoveis_sigef')
+                    .select('geom')
+                    .eq('codigo_imo', cleanSigef)
+                    .limit(1)
+                    .maybeSingle();
+                  sigefGeomData = sigefGeomData2;
+                }
+                if (sigefGeomData?.geom) {
+                  geom = typeof sigefGeomData.geom === 'string' && sigefGeomData.geom.trim().startsWith('{') ? JSON.parse(sigefGeomData.geom) : sigefGeomData.geom;
                 }
               }
             } catch (e) {}

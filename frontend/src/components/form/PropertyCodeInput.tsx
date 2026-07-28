@@ -268,16 +268,25 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
     // Usar geometria direta se disponível
     let geom = suggestion.geom || null;
 
-    if (!geom) {
+    if (!geom && cod_imovel) {
       try {
-        const { data } = await supabase
+        let { data: carGeomData } = await supabase
           .from('imoveis_car')
           .select('geom')
-          .or(`codigosica.eq.${cod_imovel},cod_imovel.eq.${cod_imovel}`)
+          .eq('cod_imovel', cod_imovel)
           .limit(1)
           .maybeSingle();
-        if (data?.geom) {
-          geom = typeof data.geom === 'string' && data.geom.trim().startsWith('{') ? JSON.parse(data.geom) : data.geom;
+        if (!carGeomData?.geom) {
+          const { data: carGeomData2 } = await supabase
+            .from('imoveis_car')
+            .select('geom')
+            .eq('codigosica', cod_imovel)
+            .limit(1)
+            .maybeSingle();
+          carGeomData = carGeomData2;
+        }
+        if (carGeomData?.geom) {
+          geom = typeof carGeomData.geom === 'string' && carGeomData.geom.trim().startsWith('{') ? JSON.parse(carGeomData.geom) : carGeomData.geom;
         }
       } catch (e) {}
     }
