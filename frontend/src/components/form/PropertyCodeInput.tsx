@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Upload, Loader2, MapPin, FileText, X } from 'lucide-react';
+import { Search, Upload, Loader2, MapPin, FileText, X, Building2 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 
 export type PropertyOrigin = 'CAR' | 'SIGEF' | 'KML' | 'Manual';
@@ -18,6 +18,27 @@ interface Props {
   initialCodigoCar?: string;
 }
 
+// Sanitização e higienização de acentuação e caracteres corrompidos
+function cleanEncoding(str: string | null | undefined): string {
+  if (!str) return '';
+  let cleaned = str;
+  cleaned = cleaned
+    .replace(/CAMPAN[\uFFFD]RIO|CAMPAN.RIO/gi, 'CAMPANÁRIO')
+    .replace(/[\uFFFD]rea|.rea/gi, 'Área')
+    .replace(/S[\uFFFD]O|S.O/gi, 'SÃO')
+    .replace(/JO[\uFFFD]O|JO.O/gi, 'JOÃO')
+    .replace(/TR[\uFFFD]S|TR.S/gi, 'TRÊS')
+    .replace(/CONCEI[\uFFFD][\uFFFD]O|CONCEI[\uFFFD]O/gi, 'CONCEIÇÃO')
+    .replace(/UNI[\uFFFD]O/gi, 'UNIÃO')
+    .replace(/EST[\uFFFD]NCIA/gi, 'ESTÂNCIA')
+    .replace(/PATRIM[\uFFFD]NIO/gi, 'PATRIMÔNIO')
+    .replace(/[\uFFFD]GUA/gi, 'ÁGUA')
+    .replace(/ITAIP[\uFFFD]/gi, 'ITAIPÚ')
+    .replace(/[\uFFFD]/g, '');
+
+  return cleaned.trim();
+}
+
 // ============================================================================
 // FORMATAÇÃO DO CAR
 // ============================================================================
@@ -30,11 +51,13 @@ function stripNonAlphanumeric(s: string): string {
 /** Formata um código CAR cru para o padrão UF-1234567-AAAA.BBBB.CCCC.DDDD */
 function formatCarCode(raw: string): string {
   const clean = stripNonAlphanumeric(raw);
+  if (!clean) return '';
   let result = '';
 
   for (let i = 0; i < clean.length && i < 41; i++) {
-    if (i === 2) result += '-';       // Após UF
-    if (i === 9) result += '-';       // Após código IBGE
+    if (i === 2) result += '-';       // Após UF (ex: MS-)
+    if (i === 9) result += '-';       // Após código IBGE de 7 dígitos (ex: MS-5006606-)
+    if (i > 9 && (i - 9) % 4 === 0) result += '.'; // A cada bloco de 4 caracteres hexadecimais (ex: .D581.3C88)
     result += clean[i];
   }
 
@@ -142,8 +165,8 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
     const clean = stripNonAlphanumeric(value);
     setCarRaw(clean);
     
-    // Se o usuário está digitando com hífen/ponto ou apagando, respeita a entrada. Se for entrada limpa, formata
-    const formatted = value.includes('-') ? value.toUpperCase() : formatCarCode(clean);
+    // Sempre aplicar a formatação canônica do CAR (ex: MS-5006606-D581.3C88.A7F6...)
+    const formatted = formatCarCode(clean);
     setCarFormatted(formatted);
 
     // Emitir mudança para o pai
@@ -155,7 +178,9 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
       geom: null
     });
 
-    if (value.trim().length >= 2) {
+    // REGRA DE BUSCA DO CAR:
+    // Apenas pesquisar se o usuário tiver digitado a UF + o código de 7 dígitos do município do IBGE + pelo menos mais 1 caractere (clean.length >= 10, ex: MS-5006606D...)
+    if (clean.length >= 10) {
       fetchCarSuggestions(value, formatted, clean);
     } else {
       setCarSuggestions([]);
@@ -164,16 +189,15 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
   };
 
   const fetchCarSuggestions = async (rawInput: string, formatted: string, clean: string) => {
-    const trimmed = rawInput.trim();
-    if (!trimmed || trimmed.length < 2) {
+    if (!clean || clean.length < 10) {
       setCarSuggestions([]);
       setShowCarDropdown(false);
       return;
     }
     setLoadingCar(true);
     try {
-      // Criar lista de termos de busca únicos (com hífen, formatado e sem hífen)
-      const searchTerms = Array.from(new Set([trimmed, formatted, clean])).filter(t => t && t.length >= 2);
+      // Criar lista de termos de busca únicos (formatado e limpo com tamanho mínimo >= 10)
+      const searchTerms = Array.from(new Set([formatted, clean, rawInput.trim()])).filter(t => t && t.length >= 10);
 
       let results: any[] = [];
 
@@ -317,7 +341,7 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
 
   const handleSigefSearch = async (userInput: string) => {
     const trimmed = userInput.trim();
-    if (!trimmed || trimmed.length < 2) {
+    if (!trimmed || trimmed.length < 3) {
       setSigefResults([]);
       return;
     }
@@ -326,7 +350,7 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
 
     try {
       const clean = trimmed.replace(/[^a-zA-Z0-9]/g, '');
-      const searchTerms = Array.from(new Set([trimmed, clean])).filter(t => t && t.length >= 2);
+      const searchTerms = Array.from(new Set([trimmed, clean])).filter(t => t && t.length >= 3);
 
       let results: any[] = [];
 
@@ -394,9 +418,15 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
   }, [sigefQuery]);
 
   const selectSigefResult = async (item: any) => {
-    setSelectedSigef(item);
+    const cleanName = cleanEncoding(item.nome_area);
+    setSelectedSigef({ ...item, nome_area_clean: cleanName });
     setSigefQuery(item.parcela_co);
+    setSigefResults([]); // Fechar menu de sugestões imediatamente ao selecionar
     
+    if (cleanName) {
+      setNomeFazenda(cleanName);
+    }
+
     // Buscar geometria
     try {
       const { data } = await supabase
@@ -406,15 +436,11 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
         .limit(1)
         .single();
         
-      if (item.nome_area) {
-        setNomeFazenda(item.nome_area);
-      }
-
       const geom = data?.geom || null;
       setActiveGeom(geom);
 
       onChange({
-        nome_fazenda: item.nome_area || nomeFazenda,
+        nome_fazenda: cleanName || nomeFazenda,
         codigo_car: '',
         codigo_sigef: item.parcela_co,
         origem: 'SIGEF',
@@ -423,7 +449,7 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
     } catch {
       setActiveGeom(null);
       onChange({
-        nome_fazenda: item.nome_area || nomeFazenda,
+        nome_fazenda: cleanName || nomeFazenda,
         codigo_car: '',
         codigo_sigef: item.parcela_co,
         origem: 'SIGEF',
@@ -673,58 +699,52 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
 
           {/* Resultados SIGEF */}
           {sigefResults.length > 0 && (
-            <div className="bg-card border border-border rounded-xl shadow-lg max-h-52 overflow-y-auto">
-              <div className="p-2 border-b border-border/50">
-                <span className="text-[9px] text-muted-foreground font-bold uppercase">
-                  {sigefResults.length} parcela(s) encontrada(s)
+            <div className="bg-card border border-border rounded-xl shadow-lg max-h-60 overflow-y-auto">
+              <div className="p-2.5 bg-muted/40 border-b border-border/50">
+                <span className="text-[9px] text-muted-foreground font-bold uppercase tracking-wider">
+                  {sigefResults.length} parcela(s) encontrada(s) no SIGEF
                 </span>
               </div>
-              {sigefResults.map((r, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => selectSigefResult(r)}
-                  className="w-full px-3 py-2.5 text-left hover:bg-primary/10 transition-colors cursor-pointer border-b border-border/30 last:border-0"
-                >
-                  <div className="text-xs font-mono text-foreground truncate">{r.parcela_co}</div>
-                  {r.nome_area && (
-                    <div className="text-[10px] text-emerald-700 font-semibold mt-0.5 truncate">
-                      📌 {r.nome_area}
+              {sigefResults.map((r, i) => {
+                const cleanName = cleanEncoding(r.nome_area);
+                const statusName = r.situacao_i || r.status || 'REGISTRADA';
+
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => selectSigefResult(r)}
+                    className="w-full px-3.5 py-3 text-left hover:bg-purple-500/10 transition-colors cursor-pointer border-b border-border/30 last:border-0 group"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <h4 className="font-bold text-xs text-foreground group-hover:text-purple-700 transition-colors truncate flex items-center gap-1.5">
+                          <Building2 className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                          {cleanName || 'Imóvel SIGEF'}
+                        </h4>
+                        <p className="text-[11px] font-mono text-muted-foreground mt-0.5 truncate">
+                          Parcela: <span className="text-foreground/80">{r.parcela_co}</span>
+                        </p>
+                        <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground font-medium">
+                          {r.codigo_imo && (
+                            <span>Cód. Imóvel: <strong className="font-mono text-foreground">{r.codigo_imo}</strong></span>
+                          )}
+                          {r.municipio_ && (
+                            <span>• {cleanEncoding(r.municipio_)}</span>
+                          )}
+                        </div>
+                      </div>
+                      <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-purple-100/70 text-purple-800 border border-purple-200 uppercase tracking-wider shrink-0 mt-0.5">
+                        {statusName}
+                      </span>
                     </div>
-                  )}
-                  <div className="text-[9px] text-muted-foreground mt-0.5">
-                    {r.status || 'N/A'} • Cód. Imóvel: {r.codigo_imo || 'N/A'}
-                  </div>
-                </button>
-              ))}
+                  </button>
+                );
+              })}
             </div>
           )}
 
-          {/* Selecionado */}
-          {selectedSigef && (
-            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1 animate-in fade-in duration-200">
-              <div className="flex justify-between items-start">
-                <div className="text-[10px] font-bold text-emerald-800 uppercase">Parcela Selecionada</div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedSigef(null);
-                    setSigefQuery('');
-                    setNomeFazenda('');
-                    onChange({ nome_fazenda: '', codigo_car: '', codigo_sigef: '', origem: 'SIGEF', geom: null });
-                  }}
-                  className="p-0.5 text-emerald-600 hover:text-red-600 transition-colors cursor-pointer"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-              <div className="text-xs font-mono text-emerald-900 truncate">{selectedSigef.parcela_co}</div>
-              {selectedSigef.nome_area && (
-                <div className="text-xs text-emerald-800 font-semibold">Nome: {selectedSigef.nome_area}</div>
-              )}
-              <div className="text-[9px] text-emerald-700">Status: {selectedSigef.status || 'N/A'}</div>
-            </div>
-          )}
+          {/* Fim Modo SIGEF */}
         </div>
       )}
 

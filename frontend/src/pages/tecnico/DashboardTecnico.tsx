@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { MapPin, ClipboardList, CheckCircle2, CalendarDays, Clock, Plus, Trash2, Loader2, Search, Map as MapIcon, AlertTriangle, Eye } from 'lucide-react';
+import { MapPin, ClipboardList, CheckCircle2, CalendarDays, Clock, Plus, Trash2, Loader2, Search, Map as MapIcon, AlertTriangle, Eye, FileText, ChevronRight } from 'lucide-react';
 import type { FeatureCollection } from 'geojson';
 import MapView from '../../components/map/MapView';
-import { supabase } from '../../lib/supabase';
+import { supabase, createIsolatedAuthClient } from '../../lib/supabase';
 import { useAuth } from '../../context/AuthContext';
 import QuestionarioRTRS from '../../components/auditoria/QuestionarioRTRS';
 import Modal from '../../components/ui/Modal';
@@ -14,10 +14,12 @@ import CityInput from '../../components/form/CityInput';
 import ProducerInput from '../../components/form/ProducerInput';
 import { ListSkeleton } from '../../components/ui/Skeleton';
 import ConfirmAction from '../../components/ui/ConfirmAction';
+import AuditDetailModal from '../../components/auditoria/AuditDetailModal';
 
 export default function DashboardTecnico() {
   const { success, error, warning } = useToast();
   const { user } = useAuth();
+  const [selectedAuditForDetail, setSelectedAuditForDetail] = useState<any>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const rawTab = searchParams.get('tab');
   const activeTab = (rawTab === 'mapa' || rawTab === 'auditorias') ? rawTab : 'mapa';
@@ -301,15 +303,49 @@ export default function DashboardTecnico() {
             };
           }
 
+          let resolvedMunicipio = p.municipio;
+          if (!resolvedMunicipio || resolvedMunicipio === 'Geral, MS') {
+            try {
+              if (p.codigo_car) {
+                const cleanCar = p.codigo_car.trim();
+                const { data: carMuni } = await supabase
+                  .from('imoveis_car')
+                  .select('municipio')
+                  .eq('cod_imovel', cleanCar)
+                  .limit(1)
+                  .maybeSingle();
+                if (carMuni?.municipio) resolvedMunicipio = carMuni.municipio;
+              }
+              if (!resolvedMunicipio && p.codigo_sigef) {
+                const cleanSigef = p.codigo_sigef.trim();
+                const { data: sigefMuni } = await supabase
+                  .from('imoveis_sigef')
+                  .select('municipio_')
+                  .eq('parcela_co', cleanSigef)
+                  .limit(1)
+                  .maybeSingle();
+                if (sigefMuni?.municipio_) resolvedMunicipio = sigefMuni.municipio_;
+              }
+            } catch (e) {}
+          }
+
+          const finalMunicipio = resolvedMunicipio && resolvedMunicipio !== 'Geral, MS'
+            ? (resolvedMunicipio.includes(', MS') ? resolvedMunicipio : `${resolvedMunicipio}, MS`)
+            : (p.nome_fazenda?.toLowerCase().includes('chapad') ? 'Chapadão do Sul, MS' : 'Maracaju, MS');
+
+          const featureColor = tecId ? (techColorMap[tecId] || '#059669') : '#94a3b8';
+          const isMineFarm = tecId ? (user?.id && tecId === user.id) : true;
+
           return {
             type: 'Feature' as const,
             properties: {
               id: p.id,
               name: p.nome_fazenda,
-              municipio: p.municipio || 'Geral, MS',
+              municipio: finalMunicipio,
               tecnico_nome: tecName,
               tecnico_id: tecId,
-              isMine,
+              color: featureColor,
+              isMine: isMineFarm,
               status: auditStatus,
               produtor: p.nome_produtor || 'Produtor Rural'
             },
@@ -405,7 +441,8 @@ export default function DashboardTecnico() {
           let authUserId: string | null = null;
           
           try {
-            const { data: signUpData } = await supabase.auth.signUp({
+            const isolatedAuth = createIsolatedAuthClient();
+            const { data: signUpData } = await isolatedAuth.auth.signUp({
               email: defaultEmail,
               password: 'Senha@123',
               options: {
@@ -997,8 +1034,8 @@ export default function DashboardTecnico() {
       </div>
 
       {/* ====== TAB: MAPA & PROPRIEDADES ====== */}
-      {activeTab === 'mapa' && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-fade-in-up delay-100 opacity-0" style={{ animationFillMode: 'forwards' }}>
+      <div className={activeTab === 'mapa' ? 'block' : 'hidden'}>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left Panel: Farm List */}
           <div className="lg:col-span-1 space-y-4">
             {/* Filter Toggle */}
@@ -1083,11 +1120,13 @@ export default function DashboardTecnico() {
                                 {props.municipio}
                               </p>
                             )}
-                            <p className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1">
-                              <span className="w-2 h-2 rounded-full inline-block flex-shrink-0" style={{ backgroundColor: tecColor }} />
-                              {props.tecnico_nome}
-                              {props.isMine && (
-                                <span className="text-[8px] font-bold bg-emerald-100 text-emerald-700 px-1 py-0.5 rounded uppercase ml-1">Você</span>
+                            <p className="text-[11px] text-muted-foreground mt-1 flex items-center gap-1.5 font-medium">
+                              <span className="w-2.5 h-2.5 rounded-full inline-block flex-shrink-0 shadow-sm" style={{ backgroundColor: tecColor }} />
+                              <span>{props.tecnico_id ? props.tecnico_nome : 'Sem técnico atribuído'}</span>
+                              {props.tecnico_id && props.tecnico_id === user?.id && (
+                                <span className="text-[9px] font-bold bg-emerald-500/10 text-emerald-700 border border-emerald-500/20 px-1.5 py-0.2 rounded-md uppercase tracking-wider ml-0.5">
+                                  Você
+                                </span>
                               )}
                             </p>
                             {props.produtor && (
@@ -1107,20 +1146,35 @@ export default function DashboardTecnico() {
 
             {/* Technician Legend */}
             {filterMode === 'todas' && allTechnicians.length > 0 && (
-              <div className="bg-card p-4 rounded-2xl shadow-sm border border-slate-100">
-                <h4 className="text-xs font-bold text-muted-foreground uppercase mb-3 tracking-wider">Legenda — Técnicos</h4>
-                <div className="space-y-2">
+              <div className="bg-card p-4 rounded-2xl shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] border border-slate-100">
+                <div className="flex items-center justify-between mb-3 border-b border-border/40 pb-2">
+                  <h4 className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+                    Legenda — Técnicos
+                  </h4>
+                  <span className="text-[10px] text-muted-foreground font-semibold">
+                    {allTechnicians.length} técnicos
+                  </span>
+                </div>
+                <div className="space-y-1.5">
                   {allTechnicians.map(t => {
-                    const color = techColorMap[t.id] || 'hsl(0,0%,60%)';
+                    const color = techColorMap[t.id] || '#94a3b8';
                     const count = farmsData.features.filter(f => f.properties?.tecnico_id === t.id).length;
+                    const isCurrentUser = t.id === user?.id;
+
                     return (
-                      <div key={t.id} className="flex items-center gap-2.5">
-                        <span className="w-3 h-3 rounded-full flex-shrink-0 shadow-sm" style={{ backgroundColor: color }} />
-                        <span className="text-xs font-semibold text-foreground truncate">{t.nome}</span>
-                        <span className="ml-auto text-[10px] text-muted-foreground font-bold bg-muted px-2 py-0.5 rounded-full">{count}</span>
-                        {t.id === user?.id && (
-                          <span className="text-[8px] font-bold bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded uppercase">Você</span>
-                        )}
+                      <div key={t.id} className="flex items-center justify-between py-1.5 px-2.5 rounded-xl hover:bg-muted/50 transition-colors">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-3 h-3 rounded-full flex-shrink-0 shadow-sm border border-black/10" style={{ backgroundColor: color }} />
+                          <span className="text-xs font-semibold text-foreground truncate">{t.nome}</span>
+                          {isCurrentUser && (
+                            <span className="text-[9px] font-bold bg-emerald-500/10 text-emerald-700 border border-emerald-500/20 px-1.5 py-0.2 rounded-md uppercase tracking-wider flex-shrink-0">
+                              Você
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[11px] font-bold text-slate-700 bg-slate-100 border border-slate-200 px-3 py-0.5 rounded-full">
+                          {count} {count === 1 ? 'fazenda' : 'fazendas'}
+                        </span>
                       </div>
                     );
                   })}
@@ -1137,116 +1191,149 @@ export default function DashboardTecnico() {
                 farmsData={filteredFarmsGeoJSON}
                 selectedFarmId={selectedFarmId}
                 onSelectFarm={setSelectedFarmId}
+                activeTab={activeTab}
               />
             </div>
           </div>
         </div>
-      )}
+      </div>
 
       {/* ====== TAB: AUDITORIAS ====== */}
-      {activeTab === 'auditorias' && (
-        <>
-          {loading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <ListSkeleton />
-              <ListSkeleton />
-              <ListSkeleton />
-              <ListSkeleton />
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {auditorias.map((auditoria, index) => {
-                const prop = Array.isArray(auditoria.propriedades) ? auditoria.propriedades[0] : auditoria.propriedades;
-                const isMock = auditoria.id.startsWith('mock-');
-                return (
-                  <div
-                    key={auditoria.id}
-                    className="bg-card rounded-xl shadow-sm border border-border overflow-hidden hover:-translate-y-1 hover:shadow-xl hover:border-primary/20 transition-all duration-300 ease-out group flex flex-col justify-between animate-fade-in-up"
-                    style={{ animationDelay: `${index * 100}ms` }}
-                  >
-                    <div>
-                      <div className="px-5 py-4 bg-muted/50 border-b border-border flex justify-between items-center">
-                        <div className="flex items-center gap-2 text-muted-foreground font-medium text-sm">
-                          <MapPin className="w-4 h-4 text-primary" />
-                          <span>{isMock ? 'Maracaju, MS' : (prop?.municipio || 'Geral, MS')}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider border ${
-                            auditoria.status === 'Autoavaliação' ? 'bg-amber-100 text-amber-800 border-amber-200' :
-                            auditoria.status === 'Visita de Campo' ? 'bg-indigo-100 text-indigo-800 border-indigo-200' :
-                            auditoria.status === 'Em Análise' ? 'bg-blue-100 text-blue-800 border-blue-200' :
-                            auditoria.status === 'Acompanhamento' ? 'bg-purple-100 text-purple-800 border-purple-200 font-semibold shadow-sm' :
-                            'bg-emerald-100 text-emerald-800 border-emerald-200'
-                          }`}>
-                            {auditoria.status}
-                          </span>
-                        </div>
-                      </div>
+      <div className={activeTab === 'auditorias' ? 'block' : 'hidden'}>
+        {loading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <ListSkeleton />
+            <ListSkeleton />
+            <ListSkeleton />
+            <ListSkeleton />
+          </div>
+        ) : !auditorias || auditorias.length === 0 ? (
+          <div className="bg-card p-12 rounded-2xl border border-border text-center space-y-3">
+            <ClipboardList className="w-12 h-12 text-muted-foreground mx-auto opacity-50" />
+            <h3 className="text-lg font-bold text-foreground">Nenhuma auditoria cadastrada</h3>
+            <p className="text-sm text-muted-foreground">Cadastre uma nova fazenda ou agende auditorias para visualizar nesta aba.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {auditorias.map((auditoria, index) => {
+              if (!auditoria) return null;
+              const prop = Array.isArray(auditoria?.propriedades) ? auditoria.propriedades[0] : auditoria?.propriedades;
+              const isMock = typeof auditoria?.id === 'string' && auditoria.id.startsWith('mock-');
+              const auditId = auditoria?.id || `audit-${index}`;
 
-                      <div className="p-6">
-                        <h3 className="font-bold text-xl text-foreground mb-1">{prop?.nome_fazenda || 'Fazenda'}</h3>
-                        <p className="text-sm text-muted-foreground mb-3">Produtor: {prop?.nome_produtor || 'N/A'}</p>
-                        <p className="text-xs text-muted-foreground font-mono bg-muted/50 py-1 px-2.5 rounded border border-border/60 inline-block">
-                          CAR: {prop?.codigo_car || 'Não informado'}
-                        </p>
+              return (
+                <div
+                  key={auditId}
+                  className="bg-card rounded-xl shadow-xs border border-border overflow-hidden hover:-translate-y-1 hover:shadow-xl hover:border-primary/20 transition-all duration-300 ease-out group flex flex-col justify-between animate-fade-in-up"
+                  style={{ animationDelay: `${index * 100}ms` }}
+                >
+                  <div>
+                    <div className="px-5 py-4 bg-muted/50 border-b border-border flex justify-between items-center">
+                      <div className="flex items-center gap-2 text-muted-foreground font-medium text-sm">
+                        <MapPin className="w-4 h-4 text-primary" />
+                        <span>{prop?.municipio && prop.municipio !== 'Geral, MS' ? prop.municipio : (prop?.nome_fazenda?.toLowerCase().includes('chapad') ? 'Chapadão do Sul, MS' : 'Maracaju, MS')}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider border ${
+                          auditoria.status === 'Autoavaliação' ? 'bg-amber-100 text-amber-800 border-amber-200' :
+                          auditoria.status === 'Visita de Campo' ? 'bg-indigo-100 text-indigo-800 border-indigo-200' :
+                          auditoria.status === 'Em Análise' ? 'bg-blue-100 text-blue-800 border-blue-200' :
+                          auditoria.status === 'Acompanhamento' ? 'bg-purple-100 text-purple-800 border-purple-200 font-semibold shadow-sm' :
+                          'bg-emerald-100 text-emerald-800 border-emerald-200'
+                        }`}>
+                          {auditoria.status}
+                        </span>
                       </div>
                     </div>
 
-                    <div className="p-6 pt-0 border-t border-border/30 mt-4 flex flex-col gap-2">
-                      <div className="flex flex-col gap-2">
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => handleOpenPendencias(prop)}
-                            className="flex-1 py-2 bg-amber-50 hover:bg-amber-100/80 text-amber-950 border border-amber-200 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-sm"
-                          >
-                            <ClipboardList className="w-4 h-4 text-amber-800" />
-                            Pendências
-                          </button>
-
-                          {auditoria.status === 'Visita de Campo' ? (
-                            <button
-                              onClick={() => handleStartAuditoria(auditoria)}
-                              className="flex-1 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-sm active:scale-[0.98]"
-                            >
-                              <ClipboardList className="w-4 h-4" />
-                              Realizar Visita
-                            </button>
-                          ) : auditoria.status === 'Acompanhamento' ? (
-                            <div className="flex-1 py-2 bg-purple-50 border border-purple-200 text-purple-800 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm shadow-sm">
-                              <Clock className="w-4 h-4 text-purple-600 animate-pulse" />
-                              Acompanhamento de Pendência
-                            </div>
-                          ) : auditoria.status === 'Certificada' ? (
-                            <div className="flex-1 py-2 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm shadow-sm">
-                              <CheckCircle2 className="w-4 h-4" />
-                              Certificada
-                            </div>
-                          ) : (
-                            <div className="flex-1 py-2 bg-slate-50 border border-slate-200 text-slate-500 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm shadow-sm">
-                              <Clock className="w-4 h-4 text-slate-400 animate-pulse" />
-                              {auditoria.status === 'Autoavaliação' ? 'Autoavaliação' : 'Em Análise'}
-                            </div>
-                          )}
+                    <div
+                      className="p-6 cursor-pointer group/card transition-all duration-300 relative hover:bg-gradient-to-br hover:from-card hover:to-primary/5"
+                      onClick={() => setSelectedAuditForDetail(auditoria)}
+                      title="Clique para visualizar Ficha Técnica Completa"
+                    >
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0 flex-1">
+                          <h3 className="font-extrabold text-xl text-foreground group-hover/card:text-primary transition-colors tracking-tight truncate">
+                            {prop?.nome_fazenda || 'Fazenda'}
+                          </h3>
+                          <p className="text-sm font-medium text-muted-foreground mt-1.5 flex items-center gap-1.5">
+                            Produtor: <strong className="text-foreground font-semibold">{prop?.nome_produtor || 'Não informado'}</strong>
+                          </p>
                         </div>
 
-                        {(auditoria.status === 'Visita de Campo' || auditoria.status === 'Em Análise') && (
+                        <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0 group-hover/card:bg-primary group-hover/card:text-white group-hover/card:scale-110 group-hover/card:shadow-md transition-all duration-300">
+                          <ChevronRight className="w-5 h-5 transition-transform duration-300 group-hover/card:translate-x-0.5" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-6 pt-0 border-t border-border/30 mt-2 flex flex-col gap-2">
+                    <div className="flex flex-col gap-2">
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleOpenPendencias(prop)}
+                          className="flex-1 py-2 bg-amber-50 hover:bg-amber-100/80 text-amber-950 border border-amber-200 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-xs"
+                        >
+                          <ClipboardList className="w-4 h-4 text-amber-800" />
+                          Pendências
+                        </button>
+
+                        {auditoria.status === 'Visita de Campo' || auditoria.status === 'Autoavaliação' ? (
                           <button
-                            onClick={() => handleLiberarAuditoria(auditoria.id)}
-                            className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-sm active:scale-[0.98]"
+                            onClick={() => handleStartAuditoria(auditoria)}
+                            className="flex-1 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-xs active:scale-[0.98]"
                           >
+                            <ClipboardList className="w-4 h-4" />
+                            Realizar Visita
+                          </button>
+                        ) : auditoria.status === 'Em Análise' ? (
+                          <button
+                            onClick={() => handleStartAuditoria(auditoria)}
+                            className="flex-1 py-2 bg-indigo-50 border border-indigo-200 text-indigo-800 hover:bg-indigo-100 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-xs"
+                          >
+                            <Clock className="w-4 h-4 text-indigo-600" />
+                            Em Análise do Gestor
+                          </button>
+                        ) : auditoria.status === 'Acompanhamento' ? (
+                          <div className="flex-1 py-2 bg-purple-50 border border-purple-200 text-purple-800 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm shadow-xs">
+                            <Clock className="w-4 h-4 text-purple-600 animate-pulse" />
+                            Acompanhamento
+                          </div>
+                        ) : auditoria.status === 'Certificada' ? (
+                          <div className="flex-1 py-2 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm shadow-xs">
                             <CheckCircle2 className="w-4 h-4" />
-                            Liberar (Certificar)
+                            Certificada
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => handleStartAuditoria(auditoria)}
+                            className="flex-1 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-xs"
+                          >
+                            <ClipboardList className="w-4 h-4" />
+                            Realizar Visita
                           </button>
                         )}
                       </div>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </>
-      )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Modal de Ficha Técnica Completa da Auditoria */}
+        {selectedAuditForDetail && (
+          <AuditDetailModal
+            isOpen={!!selectedAuditForDetail}
+            onClose={() => setSelectedAuditForDetail(null)}
+            auditoria={selectedAuditForDetail}
+            onStartVisita={handleStartAuditoria}
+            onOpenPendencias={handleOpenPendencias}
+          />
+        )}
+      </div>
 
       {showQuestionario && activeAuditoria && (
         <QuestionarioRTRS 

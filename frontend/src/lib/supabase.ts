@@ -52,6 +52,16 @@ export const supabase = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey) 
   : null as any;
 
+export const createIsolatedAuthClient = () => {
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false
+    }
+  });
+};
+
 // Log para debug (apenas em dev)
 if (import.meta.env.DEV) {
   console.log('[Supabase] URL:', supabaseUrl);

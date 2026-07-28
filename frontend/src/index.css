@@ -82,16 +82,18 @@
 @layer base {
   :root {
     /* =========================================================
-       ÁREA DE EDIÇÃO PARA LEIGOS: CORES DO SITE
+       IDENTIDADE VISUAL DA MARCA - MS SUSTENTÁVEL (APROSOJA/MS)
        =========================================================
-       Para alterar as cores do site, mude apenas o código HEX 
-       (ex: #064e3b) logo após os dois pontos.
+       Cores oficiais extraídas do logotipo oficial:
+       - Primária: Verde Floresta MS Sustentável (#1B7547)
+       - Secundária: Dourado Safra/Grão APROSOJA/MS (#C59B27)
+       - Destaque: Verde Folha / ECO (#7CB324)
        ========================================================= */
 
-    /* 1. COR DO FUNDO DA PÁGINA (Padrão: off-white quase branco) */
+    /* 1. COR DO FUNDO DA PÁGINA (Padrão: Off-white neutro) */
     --background: #f8fafc; 
     
-    /* 2. COR DO TEXTO PRINCIPAL (Padrão: azul-ardósia quase preto) */
+    /* 2. COR DO TEXTO PRINCIPAL (Padrão: Azul-ardósia escuro) */
     --foreground: #0f172a; 
 
     /* 3. COR DE FUNDO DOS CARDS BEM COMO A COR DOS TEXTOS DENTRO DELES */
@@ -101,33 +103,32 @@
     --popover: #ffffff;
     --popover-foreground: #0f172a;
 
-    /* 4. COR PRINCIPAL DA MARCA (Padrão: Verde Corporativo do MS) */
-    /* -> MUDE ISSO PARA MUDAR A COR DOS BOTÕES E MENUS PRINCIPAIS */
-    --primary: #064e3b; 
-    --primary-foreground: #ffffff; /* Cor do texto dentro do botão principal */
+    /* 4. COR PRINCIPAL DA MARCA (Verde Floresta MS Sustentável #1B7547) */
+    --primary: #1b7547; 
+    --primary-foreground: #ffffff; 
 
-    /* 5. COR SECUNDÁRIA (Padrão: Azul Ardósia Escuro) */
-    --secondary: #1e293b; 
+    /* 5. COR SECUNDÁRIA (Dourado Safra/Grão APROSOJA/MS #C59B27) */
+    --secondary: #c59b27; 
     --secondary-foreground: #ffffff;
 
     /* 6. COR DE ELEMENTOS SILENCIADOS (Fundos de inputs e menus) */
     --muted: #f1f5f9; 
     --muted-foreground: #64748b; 
 
-    /* 7. COR DE DESTAQUE E AVISOS (Padrão: Âmbar/Dourado) */
-    --accent: #d97706; 
+    /* 7. COR DE DESTAQUE E AVISOS (Verde Folha / ECO #7CB324) */
+    --accent: #7cb324; 
     --accent-foreground: #ffffff;
 
-    /* 8. COR DE ERRO E EXCLUSÃO (Padrão: Vermelho) */
+    /* 8. COR DE ERRO E EXCLUSÃO (Vermelho Alerta) */
     --destructive: #ef4444; 
     --destructive-foreground: #f8fafc; 
 
     /* 9. CORES DE BORDAS E CAMPOS DE TEXTO */
-    --border: #f1f5f9; 
+    --border: #e2e8f0; 
     --input: #e2e8f0; 
     
-    /* 10. COR DO ANEL DE FOCO (Quando você clica num campo de texto) */
-    --ring: #064e3b; 
+    /* 10. COR DO ANEL DE FOCO (Verde Floresta MS Sustentável) */
+    --ring: #1b7547; 
 
     /* =========================================================
        ARREDONDAMENTO DAS CAIXAS (Em pixels ou 'rem')

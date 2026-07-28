@@ -69,22 +69,8 @@ export default function BaseLayout() {
             )}
           </div>
           
-          {/* Direita: Status e Perfil */}
+          {/* Direita: Perfil do Usuário */}
           <div className="flex items-center gap-4">
-            
-            {/* Status Indicators */}
-            <div className="hidden sm:flex items-center gap-3 bg-secondary/50 px-3 py-1.5 rounded-full border border-border">
-              <div className="flex items-center gap-1.5" title="Supabase Database">
-                <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)] animate-pulse"></div>
-                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">DB</span>
-              </div>
-              <div className="w-px h-3 bg-border"></div>
-              <div className="flex items-center gap-1.5" title="Google Gemini AI Studio">
-                <div className="w-2 h-2 rounded-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.8)] animate-pulse"></div>
-                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">AI</span>
-              </div>
-            </div>
-
             {user && (
               <div className="flex items-center gap-3 ml-2">
                 {/* Badges de Identificação */}

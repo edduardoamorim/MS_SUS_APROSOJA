@@ -3,7 +3,7 @@ import { Users, Search, Plus, Shield, UserCog, UserCheck, Edit3, Trash2 } from '
 import Modal from '../../components/ui/Modal';
 import ConfirmDelete from '../../components/ui/ConfirmDelete';
 import { TableRowSkeleton } from '../../components/ui/Skeleton';
-import { supabase } from '../../lib/supabase';
+import { supabase, createIsolatedAuthClient } from '../../lib/supabase';
 import { useToast } from '../../context/ToastContext';
 import CityInput from '../../components/form/CityInput';
 import { useSearchParams } from 'react-router-dom';
@@ -83,10 +83,11 @@ export default function GestorUsuarios() {
         setUsuarios(usuarios.map(u => u.id === editingUser.id ? { ...u, ...payload } : u));
         success('Usuário atualizado com sucesso!');
       } else {
-        // Criar usuário no Supabase Auth com a senha padrão 'Senha@123'
+        // Criar usuário no Supabase Auth usando cliente isolado (sem sobrescrever a sessão ativa do gestor)
         let authUserId: string | null = null;
         try {
-          const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
+          const isolatedAuth = createIsolatedAuthClient();
+          const { data: signUpData, error: signUpErr } = await isolatedAuth.auth.signUp({
             email: formData.email,
             password: 'Senha@123',
             options: {
