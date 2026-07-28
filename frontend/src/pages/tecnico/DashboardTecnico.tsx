@@ -401,16 +401,41 @@ export default function DashboardTecnico() {
 
         // 2a. Tratar produtor
         if (produtorOption === 'novo' && novoProdutorData.nome) {
-          const defaultEmail = novoProdutorData.email || `${novoProdutorData.nome.toLowerCase().replace(/\s+/g, '')}@produtor.com.br`;
+          const defaultEmail = novoProdutorData.email?.trim() || `${novoProdutorData.nome.toLowerCase().replace(/\s+/g, '')}@produtor.com.br`;
+          let authUserId: string | null = null;
+          
+          try {
+            const { data: signUpData } = await supabase.auth.signUp({
+              email: defaultEmail,
+              password: 'Senha@123',
+              options: {
+                data: {
+                  full_name: novoProdutorData.nome,
+                  role: 'produtor'
+                }
+              }
+            });
+            if (signUpData?.user?.id && isUUID(signUpData.user.id)) {
+              authUserId = signUpData.user.id;
+            }
+          } catch (e) {
+            console.warn('Aviso ao criar conta Auth do produtor:', e);
+          }
+
+          const profileInsert: any = {
+            nome: novoProdutorData.nome,
+            email: defaultEmail,
+            role: 'produtor',
+            regiao: novoProdutorData.regiao || 'Geral, MS',
+            status: 'Ativo'
+          };
+          if (authUserId) {
+            profileInsert.id = authUserId;
+          }
+
           const { data: newProd, error: prodErr } = await supabase
             .from('perfis')
-            .insert([{
-              nome: novoProdutorData.nome,
-              email: defaultEmail,
-              role: 'produtor',
-              regiao: novoProdutorData.regiao || 'Geral, MS',
-              status: 'Ativo'
-            }])
+            .upsert([profileInsert])
             .select()
             .single();
           

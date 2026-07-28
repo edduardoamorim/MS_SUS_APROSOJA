@@ -83,23 +83,61 @@ export default function GestorUsuarios() {
         setUsuarios(usuarios.map(u => u.id === editingUser.id ? { ...u, ...payload } : u));
         success('Usuário atualizado com sucesso!');
       } else {
-        // Usa a Edge Function para convidar o usuário, o que dispara o envio de email bonitinho do Auth
-        const { data, error } = await supabase.functions.invoke('invite-user', {
-          body: {
+        // Criar usuário no Supabase Auth com a senha padrão 'Senha@123'
+        let authUserId: string | null = null;
+        try {
+          const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
             email: formData.email,
-            nome: formData.nome,
-            role: payload.role,
-            regiao: formData.regiao
+            password: 'Senha@123',
+            options: {
+              data: {
+                full_name: formData.nome,
+                role: payload.role
+              }
+            }
+          });
+          if (signUpData?.user?.id) {
+            authUserId = signUpData.user.id;
           }
-        });
+          if (signUpErr) {
+            console.warn('Aviso no signUp Auth do Gestor:', signUpErr.message);
+          }
+        } catch (e) {
+          console.warn('Aviso ao criar conta Auth:', e);
+        }
 
-        if (error) throw error;
-        if (data && data.error) throw new Error(data.error);
+        // Tentar invocar invite-user como fallback secundário caso exista
+        try {
+          await supabase.functions.invoke('invite-user', {
+            body: {
+              email: formData.email,
+              nome: formData.nome,
+              role: payload.role,
+              regiao: formData.regiao
+            }
+          });
+        } catch (e) {}
 
-        // Atualizar lista local: Note que o trigger vai popular a tabela perfis
-        // Para uma atualização limpa, fazemos um leve refetch ou inserimos no state provisoriamente
+        // Inserir ou atualizar na tabela perfis
+        const profilePayload: any = {
+          nome: formData.nome,
+          email: formData.email,
+          role: payload.role,
+          regiao: formData.regiao || 'Geral, MS',
+          status: formData.status || 'Ativo'
+        };
+        if (authUserId) {
+          profilePayload.id = authUserId;
+        }
+
+        const { error: profileErr } = await supabase
+          .from('perfis')
+          .upsert([profilePayload]);
+
+        if (profileErr) throw profileErr;
+
         fetchUsuarios();
-        success('Convite enviado com sucesso para o e-mail do usuário!');
+        success(`Usuário cadastrado com sucesso! Senha padrão: Senha@123`);
       }
       setIsFormOpen(false);
     } catch (err: any) {
