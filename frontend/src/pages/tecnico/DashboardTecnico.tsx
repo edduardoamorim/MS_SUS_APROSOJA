@@ -16,6 +16,75 @@ import { ListSkeleton } from '../../components/ui/Skeleton';
 import ConfirmAction from '../../components/ui/ConfirmAction';
 import AuditDetailModal from '../../components/auditoria/AuditDetailModal';
 
+function formatMunicipioName(str?: string | null): string {
+  if (!str || str.trim().length === 0) return 'Mato Grosso do Sul, MS';
+  let clean = str.trim().replace(/,\s*MS$/i, '').trim();
+
+  const mapAccents: Record<string, string> = {
+    '5005251': 'Maracaju',
+    '5002902': 'Chapadão do Sul',
+    '5000203': 'Água Clara',
+    '5006606': 'Ponta Porã',
+    '5003207': 'Corumbá',
+    '5002704': 'Campo Grande',
+    '5003702': 'Dourados',
+    '5007901': 'Sidrolândia',
+    '5008305': 'Três Lagoas',
+    '5006200': 'Nova Andradina',
+    '5006309': 'Paranaíba',
+    '5005707': 'Naviraí',
+    '5001102': 'Aquidauana',
+    '5002209': 'Bonito',
+    '5007307': 'Rio Verde de Mato Grosso',
+    'agua clara': 'Água Clara',
+    'água clara': 'Água Clara',
+    'chapadao do sul': 'Chapadão do Sul',
+    'chapadão do sul': 'Chapadão do Sul',
+    'ponta pora': 'Ponta Porã',
+    'ponta porã': 'Ponta Porã',
+    'corumba': 'Corumbá',
+    'corumbá': 'Corumbá',
+    'maracaju': 'Maracaju',
+    'tres lagoas': 'Três Lagoas',
+    'três lagoas': 'Três Lagoas',
+    'sidrolandia': 'Sidrolândia',
+    'sidrolândia': 'Sidrolândia',
+    'navirai': 'Naviraí',
+    'naviraí': 'Naviraí',
+    'paranaiba': 'Paranaíba',
+    'paranaíba': 'Paranaíba',
+    'rio verde': 'Rio Verde de Mato Grosso',
+    'rio verde de mato grosso': 'Rio Verde de Mato Grosso'
+  };
+
+  const lower = clean.toLowerCase();
+  if (mapAccents[lower]) {
+    return `${mapAccents[lower]}, MS`;
+  }
+
+  const titleCase = clean
+    .toLowerCase()
+    .split(' ')
+    .map(word => {
+      if (['de', 'do', 'da', 'dos', 'das', 'e'].includes(word)) return word;
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    })
+    .join(' ');
+
+  return `${titleCase}, MS`;
+}
+
+function getTechnicianColor(nameOrId?: string, index: number = 0): string {
+  if (!nameOrId) return '#94a3b8';
+  const str = nameOrId.toLowerCase();
+  if (str.includes('patr') || str.includes('vilela')) return '#a855f7'; // Roxo
+  if (str.includes('alexandre') || str.includes('soares')) return '#3b82f6'; // Azul
+  if (str.includes('técnico ms') || str.includes('tecnico ms')) return '#10b981'; // Verde Esmeralda
+
+  const fallbackPalette = ['#f59e0b', '#ec4899', '#06b6d4', '#8b5cf6', '#f97316'];
+  return fallbackPalette[index % fallbackPalette.length];
+}
+
 export default function DashboardTecnico() {
   const { success, error, warning } = useToast();
   const { user } = useAuth();
@@ -187,16 +256,34 @@ export default function DashboardTecnico() {
         setAllAuditorias(auds);
       }
 
-      // Mapear nomes de técnicos
-      const tecIds = [...new Set((auds || []).map((a: any) => a.tecnico_responsavel_id).filter(Boolean))];
-      let tecMap: Record<string, string> = {};
-      if (tecIds.length > 0) {
-        const { data: tecs } = await supabase
-          .from('perfis')
-          .select('id, nome')
-          .in('id', tecIds);
-        if (tecs) {
-          tecs.forEach((t: any) => { tecMap[t.id] = t.nome; });
+      // 3. Mapear técnicos e atribuir paleta de cores exclusiva
+      const { data: tecsData } = await supabase
+        .from('perfis')
+        .select('id, nome')
+        .eq('role', 'tecnico');
+
+      const techColorMapLocal: Record<string, string> = {};
+      const tecMap: Record<string, string> = {};
+
+      if (tecsData && tecsData.length > 0) {
+        setAllTechnicians(tecsData);
+        tecsData.forEach((t: any, idx: number) => {
+          tecMap[t.id] = t.nome;
+          techColorMapLocal[t.id] = getTechnicianColor(t.nome, idx);
+        });
+      } else {
+        const tecIds = [...new Set((auds || []).map((a: any) => a.tecnico_responsavel_id).filter(Boolean))];
+        if (tecIds.length > 0) {
+          const { data: tecs } = await supabase
+            .from('perfis')
+            .select('id, nome')
+            .in('id', tecIds);
+          if (tecs) {
+            tecs.forEach((t: any, idx: number) => {
+              tecMap[t.id] = t.nome;
+              techColorMapLocal[t.id] = getTechnicianColor(t.nome, idx);
+            });
+          }
         }
       }
 
@@ -304,7 +391,9 @@ export default function DashboardTecnico() {
           }
 
           let resolvedMunicipio = p.municipio;
-          if (!resolvedMunicipio || resolvedMunicipio === 'Geral, MS') {
+          const isGeneric = (val?: string | null) => !val || val.trim() === '' || val.toLowerCase().includes('geral');
+
+          if (isGeneric(resolvedMunicipio)) {
             try {
               if (p.codigo_car) {
                 const cleanCar = p.codigo_car.trim();
@@ -316,7 +405,7 @@ export default function DashboardTecnico() {
                   .maybeSingle();
                 if (carMuni?.municipio) resolvedMunicipio = carMuni.municipio;
               }
-              if (!resolvedMunicipio && p.codigo_sigef) {
+              if (isGeneric(resolvedMunicipio) && p.codigo_sigef) {
                 const cleanSigef = p.codigo_sigef.trim();
                 const { data: sigefMuni } = await supabase
                   .from('imoveis_sigef')
@@ -329,11 +418,19 @@ export default function DashboardTecnico() {
             } catch (e) {}
           }
 
-          const finalMunicipio = resolvedMunicipio && resolvedMunicipio !== 'Geral, MS'
-            ? (resolvedMunicipio.includes(', MS') ? resolvedMunicipio : `${resolvedMunicipio}, MS`)
-            : (p.nome_fazenda?.toLowerCase().includes('chapad') ? 'Chapadão do Sul, MS' : 'Maracaju, MS');
+          if (isGeneric(resolvedMunicipio)) {
+            const nameLower = (p.nome_fazenda || '').toLowerCase();
+            if (nameLower.includes('chapad')) resolvedMunicipio = 'Chapadão do Sul';
+            else if (nameLower.includes('campanar')) resolvedMunicipio = 'Maracaju';
+            else if (nameLower.includes('rio verde')) resolvedMunicipio = 'Água Clara';
+            else if (nameLower.includes('santa virg')) resolvedMunicipio = 'Ponta Porã';
+            else if (nameLower.includes('caceres') || nameLower.includes('cáceres')) resolvedMunicipio = 'Corumbá';
+            else resolvedMunicipio = 'Mato Grosso do Sul';
+          }
 
-          const featureColor = tecId ? (techColorMap[tecId] || '#059669') : '#94a3b8';
+          const finalMunicipio = formatMunicipioName(resolvedMunicipio);
+
+          const featureColor = tecId ? getTechnicianColor(tecName, index) : '#94a3b8';
           const isMineFarm = tecId ? (user?.id && tecId === user.id) : true;
 
           return {
@@ -966,11 +1063,7 @@ export default function DashboardTecnico() {
   });
 
   const techColorMap: Record<string, string> = {};
-  const techColors = [
-    'hsl(142, 76%, 36%)', 'hsl(217, 91%, 60%)', 'hsl(280, 67%, 55%)', 'hsl(35, 92%, 50%)',
-    'hsl(0, 72%, 51%)', 'hsl(173, 80%, 40%)', 'hsl(340, 82%, 52%)', 'hsl(262, 83%, 58%)'
-  ];
-  allTechnicians.forEach((t, i) => { techColorMap[t.id] = techColors[i % techColors.length]; });
+  allTechnicians.forEach((t, i) => { techColorMap[t.id] = getTechnicianColor(t.nome, i); });
 
   const filteredFarmsGeoJSON: FeatureCollection = { type: 'FeatureCollection', features: filteredFarms };
 
@@ -1117,7 +1210,7 @@ export default function DashboardTecnico() {
                             {props.municipio && (
                               <p className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-1">
                                 <MapPin className="w-3 h-3 text-primary/70" />
-                                {props.municipio}
+                                {formatMunicipioName(props.municipio)}
                               </p>
                             )}
                             <p className="text-[11px] text-muted-foreground mt-1 flex items-center gap-1.5 font-medium">

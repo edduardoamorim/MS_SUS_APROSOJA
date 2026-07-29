@@ -17,78 +17,62 @@ interface MapViewProps {
   isVisible?: boolean;
 }
 
+// Estilo de mapa Carto Voyager de alta resolução e performance garantida
+const cartoVoyagerStyle: any = {
+  version: 8,
+  sources: {
+    'carto-voyager': {
+      type: 'raster',
+      tiles: [
+        'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
+        'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
+        'https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
+        'https://d.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png'
+      ],
+      tileSize: 256,
+      attribution: '&copy; CARTO &copy; OpenStreetMap contributors'
+    }
+  },
+  layers: [
+    {
+      id: 'carto-voyager-layer',
+      type: 'raster',
+      source: 'carto-voyager',
+      minzoom: 0,
+      maxzoom: 19
+    }
+  ]
+};
+
 export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, embargoes, municipalities, selectedFarmId, onMapClick, onSelectFarm, interactive = true, activeTab, isVisible }: MapViewProps) {
   const mapRef = useRef<MapRef>(null);
   const farms = farmsProp || farmsDataProp;
 
-  // Limites geográficos estritos travados no Estado de Mato Grosso do Sul (MS)
-  const msMaxBounds: [[number, number], [number, number]] = [
-    [-58.5, -24.5], // Sudoeste (SW)
-    [-50.5, -16.5]  // Nordeste (NE)
-  ];
-
-  // Recalcular tamanho do canvas do mapa e enquadramento quando a aba 'mapa' fica visível
+  // Garantir recálculo de tamanho do canvas do mapa ao alternar abas ou carregar
   useEffect(() => {
     const isTabActive = activeTab === 'mapa' || isVisible || isVisible === undefined;
     if (isTabActive) {
-      const timer = setTimeout(() => {
+      const resizeMap = () => {
         if (mapRef.current) {
           try {
             mapRef.current.resize();
-
-            if (farms && farms.features && farms.features.length > 0) {
-              let targetFeatures = farms.features;
-              if (selectedFarmId) {
-                const match = farms.features.filter(f => f.properties?.id === selectedFarmId);
-                if (match.length > 0) targetFeatures = match;
-              }
-
-              let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
-              let hasValidCoords = false;
-
-              const processCoords = (coords: any[]) => {
-                if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
-                  const [lng, lat] = coords;
-                  if (!isNaN(lng) && !isNaN(lat)) {
-                    minLng = Math.min(minLng, lng);
-                    minLat = Math.min(minLat, lat);
-                    maxLng = Math.max(maxLng, lng);
-                    maxLat = Math.max(maxLat, lat);
-                    hasValidCoords = true;
-                  }
-                } else if (Array.isArray(coords)) {
-                  coords.forEach(processCoords);
-                }
-              };
-
-              targetFeatures.forEach(f => {
-                if (f.geometry && (f.geometry as any).coordinates) {
-                  processCoords((f.geometry as any).coordinates);
-                }
-              });
-
-              if (hasValidCoords && isFinite(minLng) && isFinite(minLat)) {
-                const isSingle = !!selectedFarmId;
-                mapRef.current.fitBounds(
-                  [[minLng, minLat], [maxLng, maxLat]],
-                  {
-                    padding: isSingle ? 120 : 90,
-                    maxZoom: isSingle ? 15 : 12,
-                    duration: 1600,
-                    essential: true
-                  }
-                );
-              }
-            }
           } catch (e) {
             console.warn('Aviso ao redimensionar mapa:', e);
           }
         }
-      }, 120);
+      };
 
-      return () => clearTimeout(timer);
+      const t1 = setTimeout(resizeMap, 50);
+      const t2 = setTimeout(resizeMap, 300);
+      const t3 = setTimeout(resizeMap, 800);
+
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+        clearTimeout(t3);
+      };
     }
-  }, [activeTab, isVisible, farms, selectedFarmId]);
+  }, [activeTab, isVisible]);
 
   // Auto-fit bounds quando a lista de fazendas ou a fazenda selecionada muda
   useEffect(() => {
@@ -106,7 +90,7 @@ export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, em
     const processCoords = (coords: any[]) => {
       if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
         const [lng, lat] = coords;
-        if (!isNaN(lng) && !isNaN(lat)) {
+        if (!isNaN(lng) && !isNaN(lat) && isFinite(lng) && isFinite(lat)) {
           minLng = Math.min(minLng, lng);
           minLat = Math.min(minLat, lat);
           maxLng = Math.max(maxLng, lng);
@@ -125,15 +109,19 @@ export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, em
     });
 
     if (hasValidCoords && isFinite(minLng) && isFinite(minLat)) {
+      if (minLng === maxLng) { minLng -= 0.015; maxLng += 0.015; }
+      if (minLat === maxLat) { minLat -= 0.015; maxLat += 0.015; }
+
       try {
         const isSingle = !!selectedFarmId;
         mapRef.current.fitBounds(
           [[minLng, minLat], [maxLng, maxLat]],
           {
-            padding: isSingle ? 120 : 90,
-            maxZoom: isSingle ? 15 : 12,
-            duration: 3200,
-            essential: true
+            padding: isSingle ? 100 : 70,
+            maxZoom: isSingle ? 14 : 11,
+            duration: 2000,
+            essential: true,
+            easing: (t) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
           }
         );
       } catch (e) {
@@ -156,17 +144,17 @@ export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, em
   };
 
   return (
-    <div className="w-full h-full min-h-[400px] rounded-xl overflow-hidden shadow-sm border border-gray-200">
+    <div className="w-full h-full min-h-[450px] rounded-xl overflow-hidden shadow-sm border border-gray-200 relative bg-slate-100">
       <Map
         ref={mapRef}
         initialViewState={initialViewState}
-        maxBounds={msMaxBounds}
-        minZoom={6}
-        maxZoom={16}
-        mapStyle="https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
+        minZoom={5}
+        maxZoom={18}
+        mapStyle={cartoVoyagerStyle}
         interactive={interactive}
         onClick={handleClick}
         cursor={interactive ? 'crosshair' : 'grab'}
+        style={{ width: '100%', height: '100%' }}
       >
         <NavigationControl position="top-right" />
 
@@ -218,21 +206,35 @@ export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, em
         {/* Camada das Fazendas do Produtor */}
         {farms && (
           <Source id="farms" type="geojson" data={farms}>
+            {/* Preenchimento de Polígono da Fazenda */}
             <Layer
               id="farms-fill"
               type="fill"
               paint={{
                 'fill-color': ['coalesce', ['get', 'color'], '#10b981'],
-                'fill-opacity': 0.02
+                'fill-opacity': 0.2
               }}
             />
+            {/* Linha dos Limites da Fazenda (Cor do Técnico) */}
             <Layer
               id="farms-line"
               type="line"
               paint={{
-                'line-color': ['coalesce', ['get', 'color'], '#059669'],
-                'line-width': 3,
+                'line-color': ['coalesce', ['get', 'color'], '#047857'],
+                'line-width': 3.5,
                 'line-opacity': 0.95
+              }}
+            />
+            {/* Marcadores APENAS para geometrias do tipo Ponto (Point) - Sem bolinhas nos vértices de polígonos */}
+            <Layer
+              id="farms-circle"
+              type="circle"
+              filter={['==', '$type', 'Point']}
+              paint={{
+                'circle-color': ['coalesce', ['get', 'color'], '#047857'],
+                'circle-radius': 7,
+                'circle-stroke-width': 2,
+                'circle-stroke-color': '#ffffff'
               }}
             />
           </Source>
@@ -241,3 +243,4 @@ export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, em
     </div>
   );
 }
+

@@ -228,9 +228,14 @@ export default function DashboardProdutor() {
       success('Arquivo carregado com sucesso!');
     } catch (err: any) {
       console.error('Erro ao carregar arquivo de documento:', err);
-      const fallbackUrl = `http://localhost:54321/storage/v1/object/public/evidencias/${file.name}`;
-      setDocFormData(prev => ({ ...prev, arquivo_url: fallbackUrl }));
-      warning('Arquivo carregado (fallback local): ' + file.name);
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        if (evt.target?.result) {
+          setDocFormData(prev => ({ ...prev, arquivo_url: evt.target!.result as string }));
+          success('Arquivo carregado com sucesso!');
+        }
+      };
+      reader.readAsDataURL(file);
     } finally {
       setUploadingDocFile(false);
     }
