@@ -25,9 +25,21 @@ export default function ForgotPassword() {
       console.warn('Verificação por RPC ignorada:', e);
     }
 
+    const redirectUrl = `${window.location.origin}/redefinir-senha`;
+
+    // 1. Invoca o fluxo nativo do Supabase Auth para redefinição por e-mail
     const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/redefinir-senha`,
+      redirectTo: redirectUrl,
     });
+
+    // 2. Invoca a Edge Function para geração e disparo prioritário
+    try {
+      await supabase.functions.invoke('send-reset-password', {
+        body: { email, redirectTo: redirectUrl }
+      });
+    } catch (e) {
+      console.warn('Edge Function de backup notificada:', e);
+    }
 
     if (resetError) {
       setError(resetError.message || 'Falha ao enviar link de recuperação. Verifique o e-mail digitado.');

@@ -248,6 +248,10 @@ otp_expiry = 3600
 subject = "Convite para acesso ao Programa MS Sustentável"
 content_path = "./supabase/templates/invite.html"
 
+[auth.email.template.recovery]
+subject = "Recuperação de Senha — Programa MS Sustentável (APROSOJA/MS)"
+content_path = "./supabase/templates/recovery.html"
+
 # Uncomment to customize notification email template
 # [auth.email.notification.password_changed]
 # enabled = true
