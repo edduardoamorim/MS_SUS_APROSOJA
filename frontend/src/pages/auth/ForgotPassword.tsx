@@ -14,19 +14,15 @@ export default function ForgotPassword() {
     setLoading(true);
     setError('');
 
-    // Verifica se o e-mail existe no sistema
-    const { data: emailExists, error: checkError } = await supabase.rpc('check_email_exists', { p_email: email });
-
-    if (checkError) {
-      setError('Erro ao verificar e-mail. Tente novamente.');
-      setLoading(false);
-      return;
-    }
-
-    if (!emailExists) {
-      setError('Este e-mail não está cadastrado no sistema.');
-      setLoading(false);
-      return;
+    try {
+      const { data: emailExists, error: checkError } = await supabase.rpc('check_email_exists', { p_email: email });
+      if (!checkError && emailExists === false) {
+        setError('Este e-mail não está cadastrado no sistema.');
+        setLoading(false);
+        return;
+      }
+    } catch (e) {
+      console.warn('Verificação por RPC ignorada:', e);
     }
 
     const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
@@ -34,7 +30,7 @@ export default function ForgotPassword() {
     });
 
     if (resetError) {
-      setError(resetError.message);
+      setError(resetError.message || 'Falha ao enviar link de recuperação. Verifique o e-mail digitado.');
     } else {
       setSuccess(true);
     }
