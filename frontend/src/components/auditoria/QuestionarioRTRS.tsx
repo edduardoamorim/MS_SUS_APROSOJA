@@ -32,6 +32,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const [loadingPerguntas, setLoadingPerguntas] = useState(true);
   const [respostas, setRespostas] = useState<Record<string, { conforme: boolean | null; observacao: string; evidenciaUrl: string | null }>>({});
   const [syncingDb, setSyncingDb] = useState(true);
+  const [showSyncBadge, setShowSyncBadge] = useState(true);
   const [loading, setLoading] = useState(false);
   const [savingPartial, setSavingPartial] = useState(false);
   const [lastSavedTime, setLastSavedTime] = useState<string | null>(null);
@@ -40,6 +41,18 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const [secaoAtiva, setSecaoAtiva] = useState<string>('');
   const [expandedOrientacoes, setExpandedOrientacoes] = useState<Record<string, boolean>>({});
   const [fotoAmpliada, setFotoAmpliada] = useState<string | null>(null);
+
+  // Auto-hide do badge "Dados carregados" após 2.5s
+  useEffect(() => {
+    if (syncingDb) {
+      setShowSyncBadge(true);
+    } else {
+      const timer = setTimeout(() => {
+        setShowSyncBadge(false);
+      }, 2500);
+      return () => clearTimeout(timer);
+    }
+  }, [syncingDb]);
 
   // Efeito para buscar perguntas
   useEffect(() => {
@@ -606,7 +619,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           </div>
         )}
 
-        {/* TABS DE SELEÇÃO RÁPIDA (STEPPER DOS 5 PRINCÍPIOS) */}
+        {/* TABS DE SELEÇÃO RÁPIDA (STEPPER DOS 5 PRINCÍPIOS MINIMALISTA) */}
         <div className="bg-slate-100 border-b border-slate-200 px-4 py-2.5 shrink-0 flex items-center gap-2 overflow-x-auto scrollbar-none">
           {secoesUnicas.map((secao, idx) => {
             const isSelected = secaoAtiva === secao;
@@ -614,12 +627,21 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
             const countResp = perguntas.filter(p => p.secao === secao && respostas[p.id]?.conforme !== null && respostas[p.id]?.conforme !== undefined).length;
             const isDone = countSec > 0 && countResp === countSec;
 
+            const shortTitles: Record<number, string> = {
+              1: 'Legislação',
+              2: 'Trabalhista',
+              3: 'Comunidade',
+              4: 'Meio Ambiente',
+              5: 'Boas Práticas'
+            };
+            const shortName = shortTitles[idx + 1] || `P${idx + 1}`;
+
             return (
               <button
                 key={secao}
                 type="button"
                 onClick={() => setSecaoAtiva(secao)}
-                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shrink-0 border ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shrink-0 border ${
                   isSelected
                     ? 'bg-emerald-800 text-white border-emerald-800 shadow-sm ring-2 ring-emerald-600/30'
                     : isDone
@@ -632,7 +654,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                 }`}>
                   {idx + 1}
                 </span>
-                <span className="font-extrabold whitespace-nowrap">Princípio {idx + 1}</span>
+                <span className="font-extrabold whitespace-nowrap">{shortName}</span>
                 {isDone ? (
                   <CheckCircle2 className={`w-4 h-4 shrink-0 ${isSelected ? 'text-emerald-300' : 'text-emerald-600'}`} />
                 ) : (
@@ -655,17 +677,19 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               Progresso Geral
             </span>
 
-            {/* STATUS BADGE DA CONEXÃO DO BANCO */}
-            {syncingDb ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-extrabold border border-emerald-300 animate-pulse shadow-xs">
-                <Loader2 className="w-3 h-3 animate-spin text-emerald-700" />
-                <span>Carregando dados do banco...</span>
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white text-emerald-800 text-[11px] font-bold border border-emerald-200 shadow-xs">
-                <CloudCheck className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Dados carregados</span>
-              </span>
+            {/* STATUS BADGE DA CONEXÃO DO BANCO COM AUTO-HIDE (DESAPARECE SUAVEMENTE) */}
+            {showSyncBadge && (
+              syncingDb ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-extrabold border border-emerald-300 animate-pulse shadow-xs">
+                  <Loader2 className="w-3 h-3 animate-spin text-emerald-700" />
+                  <span>Carregando dados...</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white text-emerald-800 text-[11px] font-bold border border-emerald-200 shadow-xs animate-fade-in">
+                  <CloudCheck className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Dados carregados</span>
+                </span>
+              )
             )}
           </div>
 
@@ -775,12 +799,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                                 {resposta.evidenciaUrl.toLowerCase().includes('.pdf') ? <FileText className="w-5 h-5 text-emerald-700" /> : <img src={resposta.evidenciaUrl} alt="Evidência" className="w-full h-full object-cover" />}
                               </div>
                               <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-1.5">
-                                  <p className="text-sm font-bold text-gray-900 truncate">Evidência Anexada</p>
-                                  <span className="text-[10px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300 px-1.5 py-0.2 rounded-md flex items-center gap-1">
-                                    <CloudCheck className="w-3 h-3 text-emerald-600" /> Sincronizada
-                                  </span>
-                                </div>
+                                <p className="text-sm font-bold text-gray-900 truncate">Evidência Anexada</p>
                                 <button type="button" onClick={() => handleOpenEvidencia(resposta.evidenciaUrl!)} className="text-[11px] text-emerald-700 underline font-bold hover:text-emerald-900 cursor-pointer block mt-0.5 text-left">Ver Arquivo Enviado</button>
                               </div>
                               <div className="flex items-center gap-1.5 shrink-0">
