@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { Link } from 'react-router-dom';
-import { KeyRound, Loader2, CheckCircle2, ArrowLeft, Mail, ExternalLink } from 'lucide-react';
+import { KeyRound, Loader2, CheckCircle2, ArrowLeft, Mail } from 'lucide-react';
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState('');
@@ -37,8 +37,6 @@ export default function ForgotPassword() {
     setLoading(false);
   };
 
-  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-
   return (
     <div className="min-h-screen relative flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8 overflow-hidden bg-slate-900">
       
@@ -71,32 +69,15 @@ export default function ForgotPassword() {
               <div className="inline-flex items-center justify-center w-20 h-20 bg-emerald-500/20 rounded-full mb-2">
                 <CheckCircle2 className="w-10 h-10 text-emerald-400" />
               </div>
-              <h3 className="text-2xl font-bold text-white">E-mail enviado!</h3>
-              <p className="text-slate-300">
-                Enviamos um link de redefinição para <span className="font-semibold text-white">{email}</span>.
+              <h3 className="text-2xl font-bold text-white">Instruções enviadas!</h3>
+              <p className="text-slate-300 leading-relaxed">
+                Enviamos um link de redefinição de senha para <span className="font-semibold text-white">{email}</span>. Por favor, verifique a sua caixa de entrada e a pasta de spam.
               </p>
               
-              {isLocalhost && (
-                <div className="mt-6 p-4 bg-blue-500/10 border border-blue-500/20 rounded-2xl text-left">
-                  <p className="text-xs font-semibold text-blue-400 uppercase tracking-wider mb-2">Ambiente Local (Desenvolvimento)</p>
-                  <p className="text-sm text-blue-200 mb-3">
-                    Como você está rodando localmente, o e-mail não vai para a sua caixa real. Verifique o servidor local de e-mails (Inbucket).
-                  </p>
-                  <a 
-                    href="http://localhost:54324" 
-                    target="_blank" 
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-2 text-sm font-medium text-white bg-blue-500 hover:bg-blue-600 px-4 py-2 rounded-lg transition-colors"
-                  >
-                    Abrir Caixa de E-mail Local <ExternalLink className="w-4 h-4" />
-                  </a>
-                </div>
-              )}
-
-              <div className="pt-6">
+              <div className="pt-4">
                 <Link 
                   to="/login" 
-                  className="inline-flex items-center justify-center gap-2 w-full py-3 px-4 bg-white/5 hover:bg-white/10 text-white font-medium rounded-xl border border-white/10 transition-all duration-200 hover:scale-[1.02]"
+                  className="inline-flex items-center justify-center gap-2 w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition-all duration-200 shadow-lg cursor-pointer"
                 >
                   <ArrowLeft className="w-4 h-4" />
                   Voltar para o Login
