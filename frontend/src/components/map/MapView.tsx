@@ -48,35 +48,17 @@ export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, em
   const mapRef = useRef<MapRef>(null);
   const farms = farmsProp || farmsDataProp;
 
-  // Garantir recálculo de tamanho do canvas do mapa ao alternar abas ou carregar
-  useEffect(() => {
-    const isTabActive = activeTab === 'mapa' || isVisible || isVisible === undefined;
-    if (isTabActive) {
-      const resizeMap = () => {
-        if (mapRef.current) {
-          try {
-            mapRef.current.resize();
-          } catch (e) {
-            console.warn('Aviso ao redimensionar mapa:', e);
-          }
-        }
-      };
+  // Recalcular o tamanho do canvas do mapa e enquadrar os limites dos imóveis perfeitamente no centro
+  const fitBoundsAndResizeMap = () => {
+    if (!mapRef.current) return;
 
-      const t1 = setTimeout(resizeMap, 50);
-      const t2 = setTimeout(resizeMap, 300);
-      const t3 = setTimeout(resizeMap, 800);
-
-      return () => {
-        clearTimeout(t1);
-        clearTimeout(t2);
-        clearTimeout(t3);
-      };
+    try {
+      mapRef.current.resize();
+    } catch (e) {
+      console.warn('Aviso ao redimensionar mapa:', e);
     }
-  }, [activeTab, isVisible]);
 
-  // Auto-fit bounds quando a lista de fazendas ou a fazenda selecionada muda
-  useEffect(() => {
-    if (!farms || !farms.features || farms.features.length === 0 || !mapRef.current) return;
+    if (!farms || !farms.features || farms.features.length === 0) return;
 
     let targetFeatures = farms.features;
     if (selectedFarmId) {
@@ -117,9 +99,9 @@ export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, em
         mapRef.current.fitBounds(
           [[minLng, minLat], [maxLng, maxLat]],
           {
-            padding: isSingle ? 100 : 70,
+            padding: isSingle ? 100 : 75,
             maxZoom: isSingle ? 14 : 11,
-            duration: 2000,
+            duration: 800,
             essential: true,
             easing: (t) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
           }
@@ -128,7 +110,23 @@ export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, em
         console.warn('Erro ao ajustar limites do mapa:', e);
       }
     }
-  }, [farms, selectedFarmId]);
+  };
+
+  // Efeito para sincronizar o tamanho e a centralização do mapa ao alternar abas ou alterar a fazenda selecionada
+  useEffect(() => {
+    const isTabActive = activeTab === 'mapa' || isVisible || isVisible === undefined;
+    if (isTabActive) {
+      const t1 = setTimeout(fitBoundsAndResizeMap, 50);
+      const t2 = setTimeout(fitBoundsAndResizeMap, 250);
+      const t3 = setTimeout(fitBoundsAndResizeMap, 600);
+
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+        clearTimeout(t3);
+      };
+    }
+  }, [activeTab, isVisible, farms, selectedFarmId]);
 
   const handleClick = (e: any) => {
     if (onMapClick && e.lngLat) {
