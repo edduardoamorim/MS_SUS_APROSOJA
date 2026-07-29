@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { Link } from 'react-router-dom';
-import { KeyRound, Loader2, CheckCircle2, ArrowLeft, Mail } from 'lucide-react';
+import { KeyRound, Loader2, CheckCircle2, ArrowLeft, Mail, ChevronRight } from 'lucide-react';
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState('');
+  const [actionLink, setActionLink] = useState<string | null>(null);
 
   const handleReset = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,11 +33,14 @@ export default function ForgotPassword() {
       redirectTo: redirectUrl,
     });
 
-    // 2. Invoca a Edge Function para geração e disparo prioritário
+    // 2. Invoca a Edge Function para geração do link oficial e disparo prioritário
     try {
-      await supabase.functions.invoke('send-reset-password', {
+      const { data: fnData } = await supabase.functions.invoke('send-reset-password', {
         body: { email, redirectTo: redirectUrl }
       });
+      if (fnData?.action_link) {
+        setActionLink(fnData.action_link);
+      }
     } catch (e) {
       console.warn('Edge Function de backup notificada:', e);
     }
@@ -85,11 +89,23 @@ export default function ForgotPassword() {
               <p className="text-slate-300 leading-relaxed">
                 Enviamos um link de redefinição de senha para <span className="font-semibold text-white">{email}</span>. Por favor, verifique a sua caixa de entrada e a pasta de spam.
               </p>
+
+              {actionLink && (
+                <div className="pt-2">
+                  <a 
+                    href={actionLink}
+                    className="inline-flex items-center justify-center gap-2 w-full py-3.5 px-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white font-bold rounded-xl shadow-lg cursor-pointer transition-all duration-200 hover:scale-[1.02]"
+                  >
+                    <span>Redefinir Senha Agora</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </a>
+                </div>
+              )}
               
-              <div className="pt-4">
+              <div className="pt-2">
                 <Link 
                   to="/login" 
-                  className="inline-flex items-center justify-center gap-2 w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition-all duration-200 shadow-lg cursor-pointer"
+                  className="inline-flex items-center justify-center gap-2 w-full py-3 px-4 bg-white/5 hover:bg-white/10 text-slate-300 font-medium rounded-xl border border-white/10 transition-all duration-200"
                 >
                   <ArrowLeft className="w-4 h-4" />
                   Voltar para o Login
