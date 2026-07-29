@@ -294,14 +294,41 @@ export default function DashboardProdutor() {
   async function fetchFarmsAndPendencias() {
     setLoading(true);
     try {
-      // 1. Buscar propriedades do banco
+      // 1. Resolver usuário autenticado e perfil de produtor
+      const { data: { user } } = await supabase.auth.getUser();
+
+      if (!user) {
+        setProperties([]);
+        setPendencias([]);
+        setFarmsData({ type: 'FeatureCollection', features: [] });
+        setLoading(false);
+        return;
+      }
+
+      // Resolver perfil para obter ID de perfil correspondente se houver
+      let producerProfileId = user.id;
+      if (user.email) {
+        const { data: perf } = await supabase
+          .from('perfis')
+          .select('id')
+          .ilike('email', user.email)
+          .maybeSingle();
+
+        if (perf?.id) {
+          producerProfileId = perf.id;
+        }
+      }
+
+      // 2. Buscar APENAS as propriedades pertencentes ao produtor logado
       const { data: props, error: propsError } = await supabase
         .from('propriedades')
         .select('*')
+        .or(`produtor_id.eq.${user.id},produtor_id.eq.${producerProfileId}`)
         .order('created_at', { ascending: false });
+
       if (propsError) throw propsError;
 
-      // 2. Buscar pendências
+      // 3. Buscar pendências apenas dessas propriedades
       let pends: any[] = [];
       if (props && props.length > 0) {
         const propIds = props.map((p: any) => p.id);
@@ -318,21 +345,19 @@ export default function DashboardProdutor() {
       setProperties(props || []);
       setPendencias(pends);
 
-      // 3. Gerar FeatureCollection para o mapa baseado no banco
+      // 4. Gerar FeatureCollection para o mapa EXCLUSIVAMENTE dos imóveis do produtor logado
       if (props && props.length > 0) {
         const features = await Promise.all(
           props.map(async (p: any, index: number) => {
             let geom = p.geom;
 
             // --- BLINDAGEM DE GEOMETRIA ---
-            // Passo 1: Parse de geom se for string JSON
             if (typeof geom === 'string') {
               try {
                 const trimmed = geom.trim();
                 if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
                   geom = JSON.parse(trimmed);
                 } else {
-                  // É uma string WKB hex ou formato desconhecido — tratar como nulo
                   geom = null;
                 }
               } catch (e) {
@@ -341,14 +366,12 @@ export default function DashboardProdutor() {
               }
             }
 
-            // Passo 2: Validar que é um GeoJSON válido
             if (geom && typeof geom === 'object') {
               if (!geom.type || !geom.coordinates) {
                 geom = null;
               }
             }
 
-            // Passo 3: Converter MultiPolygon → Polygon (pegar o primeiro polígono)
             if (geom && geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
               geom = {
                 type: 'Polygon',
@@ -356,16 +379,15 @@ export default function DashboardProdutor() {
               };
             }
 
-            // Passo 4: Se a geometria continua nula, buscar no banco geoespacial de backup
             if (!geom) {
               try {
                 if (p.codigo_car) {
-                    const { data } = await supabase
-                      .from('imoveis_car')
-                      .select('geom')
-                      .or(`codigosica.ilike.%${p.codigo_car}%,cod_imovel.ilike.%${p.codigo_car}%`)
-                      .limit(1)
-                      .maybeSingle();
+                  const { data } = await supabase
+                    .from('imoveis_car')
+                    .select('geom')
+                    .or(`codigosica.ilike.%${p.codigo_car}%,cod_imovel.ilike.%${p.codigo_car}%`)
+                    .limit(1)
+                    .maybeSingle();
                   if (data?.geom) {
                     geom = typeof data.geom === 'string' && data.geom.trim().startsWith('{') ? JSON.parse(data.geom) : data.geom;
                   }
@@ -386,7 +408,6 @@ export default function DashboardProdutor() {
               }
             }
 
-            // Passo 5: MultiPolygon → Polygon novamente (caso veio do backup)
             if (geom && geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
               geom = {
                 type: 'Polygon',
@@ -394,7 +415,6 @@ export default function DashboardProdutor() {
               };
             }
 
-            // Passo 6: Fallback absoluto — gerar polígono placeholder
             if (!geom || typeof geom !== 'object' || !geom.type || !geom.coordinates) {
               const latBase = -20.4 - (index * 0.15);
               const lngBase = -54.6 - (index * 0.15);
@@ -423,10 +443,11 @@ export default function DashboardProdutor() {
           features: features
         });
       } else {
-        setFarmsData(MOCK_FARMS);
+        setFarmsData({ type: 'FeatureCollection', features: [] });
       }
     } catch (error) {
       console.error('Erro ao buscar dados do produtor:', error);
+      setFarmsData({ type: 'FeatureCollection', features: [] });
     } finally {
       setLoading(false);
     }

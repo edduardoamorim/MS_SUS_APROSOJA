@@ -231,18 +231,37 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     fetchExistingRespostas();
   }, [currentAuditoriaId, propriedadeId, propriedadeNome]);
 
+  // Auto-sync de respostas para LocalStorage a cada alteração
+  useEffect(() => {
+    if (Object.keys(respostas).length > 0) {
+      try {
+        localStorage.setItem(getCacheKey(), JSON.stringify(respostas));
+      } catch (e) {
+        console.warn('Erro ao salvar rascunho local:', e);
+      }
+    }
+  }, [respostas, propriedadeNome]);
+
   const handleResposta = (id: string, conforme: boolean) => {
-    setRespostas(prev => ({
-      ...prev,
-      [id]: { ...prev[id], conforme, observacao: prev[id]?.observacao || '', evidenciaUrl: prev[id]?.evidenciaUrl || null }
-    }));
+    setRespostas(prev => {
+      const next = {
+        ...prev,
+        [id]: { ...prev[id], conforme, observacao: prev[id]?.observacao || '', evidenciaUrl: prev[id]?.evidenciaUrl || null }
+      };
+      try { localStorage.setItem(getCacheKey(), JSON.stringify(next)); } catch (e) {}
+      return next;
+    });
   };
 
   const handleObservacao = (id: string, observacao: string) => {
-    setRespostas(prev => ({
-      ...prev,
-      [id]: { ...prev[id], conforme: prev[id]?.conforme ?? null, observacao, evidenciaUrl: prev[id]?.evidenciaUrl || null }
-    }));
+    setRespostas(prev => {
+      const next = {
+        ...prev,
+        [id]: { ...prev[id], conforme: prev[id]?.conforme ?? null, observacao, evidenciaUrl: prev[id]?.evidenciaUrl || null }
+      };
+      try { localStorage.setItem(getCacheKey(), JSON.stringify(next)); } catch (e) {}
+      return next;
+    });
   };
 
   const handleOpenEvidencia = (url: string) => {
@@ -304,16 +323,38 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       }
 
       if (urlToUse) {
-        setRespostas(prev => ({
-          ...prev,
+        const updatedRespostas = {
+          ...respostas,
           [id]: { 
-            ...prev[id], 
-            conforme: prev[id]?.conforme ?? null, 
-            observacao: prev[id]?.observacao || '', 
+            ...respostas[id], 
+            conforme: respostas[id]?.conforme ?? null, 
+            observacao: respostas[id]?.observacao || '', 
             evidenciaUrl: urlToUse 
           }
-        }));
-        success('Evidência enviada e sincronizada com sucesso!');
+        };
+
+        setRespostas(updatedRespostas);
+        try {
+          localStorage.setItem(getCacheKey(), JSON.stringify(updatedRespostas));
+        } catch (e) {}
+
+        // Persistir imediatamente a evidência anexada no banco de dados
+        getOrCreateRealAuditoriaId().then(activeId => {
+          if (activeId && !activeId.startsWith('mock-') && !activeId.startsWith('assigned-pend-')) {
+            supabase.from('respostas_auditoria').upsert([{
+              auditoria_id: activeId,
+              pergunta_id: id,
+              conforme: updatedRespostas[id].conforme,
+              observacoes: updatedRespostas[id].observacao || '',
+              observacao: updatedRespostas[id].observacao || '',
+              evidencia_url: urlToUse
+            }], { onConflict: 'auditoria_id,pergunta_id' }).then(({ error: err }) => {
+              if (err) console.warn('Aviso no salvamento automático de evidência:', err);
+            });
+          }
+        });
+
+        success('Evidência enviada e salva com sucesso!');
       }
     } catch (err: any) {
       console.error('Erro ao processar evidência:', err);
