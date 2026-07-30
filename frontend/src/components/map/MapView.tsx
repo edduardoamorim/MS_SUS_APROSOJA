@@ -44,18 +44,23 @@ const cartoVoyagerStyle: any = {
   ]
 };
 
+// Curva Easing de Altíssima Suavidade (Sine Ease-In-Out para voos de câmera suaves e graduais)
+const smoothSineEasing = (t: number) => 0.5 - Math.cos(t * Math.PI) / 2;
+
 export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, embargoes, municipalities, selectedFarmId, onMapClick, onSelectFarm, interactive = true, activeTab, isVisible }: MapViewProps) {
   const mapRef = useRef<MapRef>(null);
   const farms = farmsProp || farmsDataProp;
 
-  // Recalcular o tamanho do canvas do mapa e enquadrar os limites dos imóveis perfeitamente no centro
-  const fitBoundsAndResizeMap = () => {
+  // Recalcular o tamanho do canvas e transicionar a câmera suavemente para enquadrar os imóveis
+  const animateToBounds = (isTabChange = false) => {
     if (!mapRef.current) return;
 
-    try {
-      mapRef.current.resize();
-    } catch (e) {
-      console.warn('Aviso ao redimensionar mapa:', e);
+    if (isTabChange) {
+      try {
+        mapRef.current.resize();
+      } catch (e) {
+        console.warn('Aviso ao redimensionar mapa:', e);
+      }
     }
 
     if (!farms || !farms.features || farms.features.length === 0) return;
@@ -99,11 +104,11 @@ export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, em
         mapRef.current.fitBounds(
           [[minLng, minLat], [maxLng, maxLat]],
           {
-            padding: isSingle ? 100 : 75,
+            padding: isSingle ? 90 : 70,
             maxZoom: isSingle ? 14 : 11,
-            duration: 800,
+            duration: 2000,
             essential: true,
-            easing: (t) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
+            easing: smoothSineEasing
           }
         );
       } catch (e) {
@@ -112,21 +117,24 @@ export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, em
     }
   };
 
-  // Efeito para sincronizar o tamanho e a centralização do mapa ao alternar abas ou alterar a fazenda selecionada
+  // 1. Transição fluida de câmera ao alterar a fazenda selecionada ou lista de fazendas
+  useEffect(() => {
+    const rafId = requestAnimationFrame(() => {
+      animateToBounds(false);
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [farms, selectedFarmId]);
+
+  // 2. Ajuste do canvas apenas ao trocar de aba ou tornar o componente visível
   useEffect(() => {
     const isTabActive = activeTab === 'mapa' || isVisible || isVisible === undefined;
     if (isTabActive) {
-      const t1 = setTimeout(fitBoundsAndResizeMap, 50);
-      const t2 = setTimeout(fitBoundsAndResizeMap, 250);
-      const t3 = setTimeout(fitBoundsAndResizeMap, 600);
-
-      return () => {
-        clearTimeout(t1);
-        clearTimeout(t2);
-        clearTimeout(t3);
-      };
+      const timer = setTimeout(() => {
+        animateToBounds(true);
+      }, 150);
+      return () => clearTimeout(timer);
     }
-  }, [activeTab, isVisible, farms, selectedFarmId]);
+  }, [activeTab, isVisible]);
 
   const handleClick = (e: any) => {
     if (onMapClick && e.lngLat) {
@@ -151,6 +159,7 @@ export default function MapView({ farms: farmsProp, farmsData: farmsDataProp, em
         mapStyle={cartoVoyagerStyle}
         interactive={interactive}
         onClick={handleClick}
+        reuseMaps
         cursor={interactive ? 'crosshair' : 'grab'}
         style={{ width: '100%', height: '100%' }}
       >

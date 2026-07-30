@@ -1134,7 +1134,10 @@ export default function DashboardTecnico() {
             {/* Filter Toggle */}
             <div className="flex gap-1 bg-muted/60 p-0.5 rounded-lg border border-border/50">
               <button
-                onClick={() => setFilterMode('minhas')}
+                onClick={() => {
+                  setFilterMode('minhas');
+                  setSelectedFarmId(null);
+                }}
                 className={`flex-1 py-2 px-3 rounded-md text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                   filterMode === 'minhas' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
                 }`}
@@ -1143,7 +1146,10 @@ export default function DashboardTecnico() {
                 Minhas Fazendas
               </button>
               <button
-                onClick={() => setFilterMode('todas')}
+                onClick={() => {
+                  setFilterMode('todas');
+                  setSelectedFarmId(null);
+                }}
                 className={`flex-1 py-2 px-3 rounded-md text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                   filterMode === 'todas' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
                 }`}

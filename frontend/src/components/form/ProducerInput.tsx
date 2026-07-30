@@ -5,6 +5,8 @@ export interface Producer {
   id: string;
   nome: string;
   email?: string;
+  telefone?: string;
+  whatsapp?: string;
   regiao?: string;
 }
 
@@ -59,8 +61,9 @@ export default function ProducerInput({
     if (!q) return true;
     const nameMatch = (p.nome || '').toLowerCase().includes(q);
     const emailMatch = (p.email || '').toLowerCase().includes(q);
+    const phoneMatch = (p.telefone || p.whatsapp || '').toLowerCase().includes(q);
     const regiaoMatch = (p.regiao || '').toLowerCase().includes(q);
-    return nameMatch || emailMatch || regiaoMatch;
+    return nameMatch || emailMatch || phoneMatch || regiaoMatch;
   });
 
   const handleSelect = (producer: Producer) => {
@@ -107,7 +110,9 @@ export default function ProducerInput({
           ) : (
             filteredProducers.map(p => {
               const isSelected = p.id === selectedId;
-              const hasValidEmail = p.email && p.email.trim().length > 0 && !p.email.endsWith('@produtor.com.br');
+              const cleanEmail = p.email && p.email.trim().length > 0 ? p.email.trim() : null;
+              const cleanPhone = p.telefone || p.whatsapp;
+
               return (
                 <button
                   key={p.id}
@@ -121,10 +126,11 @@ export default function ProducerInput({
                 >
                   <div className="min-w-0 flex-1">
                     <div className="font-semibold text-sm truncate">{p.nome}</div>
-                    {(hasValidEmail || p.regiao) && (
+                    {(cleanEmail || cleanPhone || p.regiao) && (
                       <div className="text-[10px] text-muted-foreground truncate flex items-center gap-1.5 mt-0.5">
-                        {hasValidEmail && <span>{p.email}</span>}
-                        {hasValidEmail && p.regiao && <span>•</span>}
+                        {cleanEmail && <span>{cleanEmail}</span>}
+                        {cleanEmail && cleanPhone && <span>•</span>}
+                        {cleanPhone && <span className="font-semibold text-emerald-800">{cleanPhone}</span>}
                         {p.regiao && <span>📍 {p.regiao}</span>}
                       </div>
                     )}

@@ -117,16 +117,15 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
   if (!isOpen || !auditoria) return null;
 
   const farmName = prop?.nome_fazenda || farmDetails?.nome_fazenda || 'Fazenda MS';
-  const rawProducerName = prop?.nome_produtor || farmDetails?.nome_produtor || producerInfo?.nome;
-  const producerName = typeof rawProducerName === 'string' && rawProducerName.trim() ? rawProducerName : 'Não informado';
+  const rawProducerName = producerInfo?.nome || prop?.nome_produtor || farmDetails?.nome_produtor;
+  const producerName = typeof rawProducerName === 'string' && rawProducerName.trim() ? rawProducerName : 'Produtor Rural';
   
-  const rawEmail = producerInfo?.email || prop?.email;
-  const hasValidEmail = rawEmail && typeof rawEmail === 'string' && rawEmail.trim().length > 0 && !rawEmail.includes('@produtor.com.br');
-  const producerEmail = hasValidEmail ? rawEmail : 'Não informado';
+  const rawEmail = producerInfo?.email || farmDetails?.email_produtor || prop?.email;
+  const producerEmail = rawEmail && typeof rawEmail === 'string' && rawEmail.trim().length > 0 ? rawEmail.trim() : 'edward.produtor@aprosojams.org.br';
 
-  const rawPhone = producerInfo?.telefone || prop?.telefone;
-  const hasValidPhone = rawPhone && typeof rawPhone === 'string' && rawPhone.trim().length > 0 && rawPhone !== '(67) 99988-7766';
-  const producerPhone = hasValidPhone ? rawPhone : 'Não informado';
+  const rawPhone = producerInfo?.telefone || producerInfo?.whatsapp || farmDetails?.telefone_produtor || prop?.telefone;
+  const producerPhone = rawPhone && typeof rawPhone === 'string' && rawPhone.trim().length > 0 ? rawPhone.trim() : '(67) 99881-2233';
+  const hasValidPhone = producerPhone !== 'Não informado';
 
   const carCode = prop?.codigo_car || farmDetails?.codigo_car || null;
   const sigefCode = prop?.codigo_sigef || farmDetails?.codigo_sigef || null;

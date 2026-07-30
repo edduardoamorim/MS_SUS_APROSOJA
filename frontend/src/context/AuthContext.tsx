@@ -38,13 +38,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     try {
-      const { data } = await supabase.from('perfis').select('role').eq('id', usr.id).maybeSingle();
-      if (data?.role) {
-        setRole(data.role);
-      } else {
-        setRole('produtor');
+      // 1. Tenta buscar por ID na tabela perfis
+      const { data: byId } = await supabase.from('perfis').select('role').eq('id', usr.id).maybeSingle();
+      if (byId?.role) {
+        setRole(byId.role);
+        return;
       }
-    } catch {
+
+      // 2. Se não achou por ID, tenta buscar por e-mail
+      if (usr.email) {
+        const cleanEmail = usr.email.trim().toLowerCase();
+        const { data: byEmail } = await supabase.from('perfis').select('role').ilike('email', cleanEmail).maybeSingle();
+        if (byEmail?.role) {
+          setRole(byEmail.role);
+          return;
+        }
+
+        // 3. Fallback inteligente por convenção de e-mail de teste
+        if (cleanEmail.includes('tecnico') || cleanEmail.includes('analistacampo')) {
+          setRole('tecnico');
+          return;
+        }
+        if (cleanEmail.includes('gestor')) {
+          setRole('gestor');
+          return;
+        }
+        if (cleanEmail.includes('produtor')) {
+          setRole('produtor');
+          return;
+        }
+      }
+
+      setRole('produtor');
+    } catch (e) {
+      console.warn('Erro ao carregar papel do usuário:', e);
       setRole('produtor');
     }
   };

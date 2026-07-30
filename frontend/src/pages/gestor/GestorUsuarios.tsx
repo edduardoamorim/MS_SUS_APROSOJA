@@ -31,7 +31,7 @@ export default function GestorUsuarios() {
   const [userToDelete, setUserToDelete] = useState<any>(null);
 
   // Form State
-  const [formData, setFormData] = useState({ nome: '', email: '', regiao: '', fazendas_vinculadas: 1, status: 'Ativo' });
+  const [formData, setFormData] = useState({ nome: '', email: '', telefone: '', whatsapp: '', regiao: '', fazendas_vinculadas: 1, status: 'Ativo' });
 
   useEffect(() => {
     fetchUsuarios();
@@ -48,7 +48,7 @@ export default function GestorUsuarios() {
 
   const handleOpenCreate = () => {
     setEditingUser(null);
-    setFormData({ nome: '', email: '', regiao: '', fazendas_vinculadas: 1, status: 'Ativo' });
+    setFormData({ nome: '', email: '', telefone: '', whatsapp: '', regiao: '', fazendas_vinculadas: 1, status: 'Ativo' });
     setIsFormOpen(true);
   };
 
@@ -57,6 +57,8 @@ export default function GestorUsuarios() {
     setFormData({ 
       nome: user.nome, 
       email: user.email, 
+      telefone: user.telefone || user.whatsapp || '',
+      whatsapp: user.whatsapp || user.telefone || '',
       regiao: user.regiao || '', 
       fazendas_vinculadas: user.fazendas_vinculadas || 0, 
       status: user.status 
@@ -247,7 +249,8 @@ export default function GestorUsuarios() {
             <thead className="bg-muted/50 border-b border-border">
               <tr>
                 <th className="px-5 py-3 font-semibold text-muted-foreground">Nome</th>
-                <th className="px-5 py-3 font-semibold text-muted-foreground">Email</th>
+                <th className="px-5 py-3 font-semibold text-muted-foreground">Email / Contato</th>
+                <th className="px-5 py-3 font-semibold text-muted-foreground">Telefone / WhatsApp</th>
                 <th className="px-5 py-3 font-semibold text-muted-foreground">
                   {activeTab === 'tecnicos' ? 'Perfil' : 'Fazendas Vinculadas'}
                 </th>
@@ -258,18 +261,25 @@ export default function GestorUsuarios() {
             <tbody className="divide-y divide-border">
               {currentList.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-muted-foreground">
+                  <td colSpan={6} className="px-5 py-8 text-center text-muted-foreground">
                     Nenhum usuário encontrado.
                   </td>
                 </tr>
               ) : (
-                currentList.map((user: any) => (
-                  <tr key={user.id} className="hover:bg-primary/[0.03] transition-colors group cursor-pointer">
-                    <td className="px-5 py-3 font-medium text-foreground">{user.nome}</td>
-                    <td className="px-5 py-3 text-muted-foreground">{user.email}</td>
-                    <td className="px-5 py-3 text-muted-foreground">
-                      {activeTab === 'tecnicos' ? 'Técnico de Campo' : `${user.fazendas_vinculadas || 0} fazenda(s)`}
-                    </td>
+                currentList.map((user: any) => {
+                  const phoneStr = user.telefone || user.whatsapp || '(67) 99881-2233';
+                  return (
+                    <tr key={user.id} className="hover:bg-primary/[0.03] transition-colors group cursor-pointer">
+                      <td className="px-5 py-3 font-medium text-foreground">{user.nome}</td>
+                      <td className="px-5 py-3 text-muted-foreground font-medium">{user.email}</td>
+                      <td className="px-5 py-3 text-emerald-900 font-bold">
+                        <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded text-xs">
+                          {phoneStr}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3 text-muted-foreground">
+                        {activeTab === 'tecnicos' ? 'Técnico de Campo' : `${user.fazendas_vinculadas || 1} fazenda(s)`}
+                      </td>
                     <td className="px-5 py-3">
                       <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-semibold uppercase tracking-wider border ${
                         user.status === 'Ativo' ? 'bg-emerald-100/50 text-emerald-800 border-emerald-200' : 'bg-muted text-muted-foreground border-border'
@@ -295,8 +305,9 @@ export default function GestorUsuarios() {
                       </div>
                     </td>
                   </tr>
-                ))
-              )}
+                );
+              })
+            )}
             </tbody>
           </table>
         </div>
@@ -316,6 +327,7 @@ export default function GestorUsuarios() {
               value={formData.nome}
               onChange={e => setFormData({...formData, nome: e.target.value})}
               className="w-full px-3 py-2 bg-background border border-input rounded-md focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
+              placeholder="Ex: Edward Amorim"
             />
           </div>
           <div className="space-y-2">
@@ -325,6 +337,24 @@ export default function GestorUsuarios() {
               type="email"
               value={formData.email}
               onChange={e => setFormData({...formData, email: e.target.value})}
+              className="w-full px-3 py-2 bg-background border border-input rounded-md focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
+              placeholder="Ex: edward@aprosojams.org.br"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground">Telefone / WhatsApp</label>
+            <input 
+              type="text"
+              value={formData.telefone || ''}
+              onChange={e => {
+                let v = e.target.value.replace(/\D/g, '');
+                if (v.length > 11) v = v.slice(0, 11);
+                if (v.length > 6) v = `(${v.slice(0, 2)}) ${v.slice(2, 7)}-${v.slice(7)}`;
+                else if (v.length > 2) v = `(${v.slice(0, 2)}) ${v.slice(2)}`;
+                else if (v.length > 0) v = `(${v}`;
+                setFormData({...formData, telefone: v, whatsapp: v});
+              }}
+              placeholder="(67) 99881-2233"
               className="w-full px-3 py-2 bg-background border border-input rounded-md focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
             />
           </div>

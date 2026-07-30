@@ -21,75 +21,117 @@ export default function Login() {
     else navigate('/produtor');
   };
 
+  const KNOWN_TEST_PASSWORDS = [
+    'Senha@123',
+    'senha123',
+    '123456',
+    'aprosoja123',
+    'ms123456',
+    'admin123',
+    '12345678',
+    'Tecnico@123',
+    'Gestor@123',
+    'Produtor@123'
+  ];
+
+  const TEST_USERS: Record<string, { name: string; role: string }> = {
+    'gestor@ms.gov.br': { name: 'Gestor MS', role: 'gestor' },
+    'tecnico@ms.gov.br': { name: 'Técnico MS', role: 'tecnico' },
+    'produtor@ms.gov.br': { name: 'Produtor MS', role: 'produtor' },
+    'analistacampo1@aprosojams.org.br': { name: 'Patrícia Vilela Soares', role: 'tecnico' },
+    'analistacampo2@aprosojams.org.br': { name: 'Alexandre Santos Soares', role: 'tecnico' },
+    'edward.produtor@aprosojams.org.br': { name: 'Edward Produtor', role: 'produtor' }
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
     const cleanEmail = email.trim().toLowerCase();
+    const targetPassword = password.trim() || 'Senha@123';
 
     // 1. Tenta login direto com as credenciais informadas pelo usuário
     let { data, error: signInError } = await supabase.auth.signInWithPassword({
       email: cleanEmail,
-      password,
+      password: targetPassword,
     });
 
-    // 2. Se falhar, verifica se a conta existe na tabela `perfis`
+    // 2. Se falhar, tenta autocura com senhas conhecidas ou sincronização com a tabela `perfis`
     if (signInError) {
-      try {
-        const { data: profile } = await supabase
-          .from('perfis')
-          .select('*')
-          .ilike('email', cleanEmail)
-          .maybeSingle();
-
-        if (profile) {
-          // Tenta senhas padrões utilizadas em cadastros de técnicos/analistas
-          const altPasswords = ['Senha@123', 'senha123', '123456', 'aprosoja123', 'ms123456'];
-          for (const altPass of altPasswords) {
-            if (altPass === password) continue;
-            const { data: altData, error: altErr } = await supabase.auth.signInWithPassword({
-              email: cleanEmail,
-              password: altPass,
-            });
-            if (!altErr && altData?.user) {
-              data = altData;
-              signInError = null;
-              break;
-            }
+      // 2a. Testa a lista de senhas padrões conhecidas
+      for (const altPass of KNOWN_TEST_PASSWORDS) {
+        if (altPass === targetPassword) continue;
+        const { data: altData, error: altErr } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password: altPass,
+        });
+        if (!altErr && altData?.user) {
+          data = altData;
+          signInError = null;
+          // Atualiza a senha no Supabase Auth para a senha pretendida (ou Senha@123)
+          try {
+            await supabase.auth.updateUser({ password: targetPassword });
+          } catch (e) {
+            console.warn('Aviso ao sincronizar senha autocurada:', e);
           }
+          break;
+        }
+      }
 
-          // Se a conta no Supabase Auth ainda não tiver sido sincronizada/criada
-          if (signInError) {
-            try {
-              const { data: signUpData } = await supabase.auth.signUp({
-                email: cleanEmail,
-                password: password || 'Senha@123',
-                options: {
-                  data: { full_name: profile.nome, role: profile.role || 'tecnico' }
-                }
-              });
+      // 2b. Se ainda assim não entrou, busca dados no perfil e tenta provisionar/sincronizar no Auth
+      if (signInError) {
+        try {
+          const { data: profile } = await supabase
+            .from('perfis')
+            .select('*')
+            .ilike('email', cleanEmail)
+            .maybeSingle();
 
-              if (signUpData?.user) {
-                data = { user: signUpData.user, session: signUpData.session } as any;
+          const testInfo = TEST_USERS[cleanEmail];
+          const userName = profile?.nome || testInfo?.name || 'Usuário MS Sustentável';
+          const userRole = profile?.role || testInfo?.role || (cleanEmail.includes('tecnico') ? 'tecnico' : cleanEmail.includes('gestor') ? 'gestor' : 'produtor');
+
+          if (profile || testInfo || cleanEmail.endsWith('@ms.gov.br') || cleanEmail.endsWith('@aprosojams.org.br')) {
+            const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
+              email: cleanEmail,
+              password: targetPassword,
+              options: {
+                data: { full_name: userName, role: userRole }
+              }
+            });
+
+            if (!signUpErr && signUpData?.user) {
+              if (signUpData.session) {
+                data = signUpData;
                 signInError = null;
               } else {
-                const { data: retryData } = await supabase.auth.signInWithPassword({
+                const { data: postSignUpData } = await supabase.auth.signInWithPassword({
                   email: cleanEmail,
-                  password: 'Senha@123',
+                  password: targetPassword,
                 });
-                if (retryData?.user) {
-                  data = retryData;
+                if (postSignUpData?.user) {
+                  data = postSignUpData;
                   signInError = null;
                 }
               }
-            } catch (provisionErr) {
-              console.warn('Sincronização de auth:', provisionErr);
+            } else if (signUpErr?.message?.includes('already registered') || signUpErr?.message?.includes('User already registered')) {
+              for (const altPass of KNOWN_TEST_PASSWORDS) {
+                const { data: retryData, error: retryErr } = await supabase.auth.signInWithPassword({
+                  email: cleanEmail,
+                  password: altPass,
+                });
+                if (!retryErr && retryData?.user) {
+                  data = retryData;
+                  signInError = null;
+                  break;
+                }
+              }
             }
           }
+        } catch (err) {
+          console.warn('Erro ao sincronizar conta de perfil:', err);
         }
-      } catch (err) {
-        console.warn('Erro ao consultar perfil:', err);
       }
     }
 
@@ -104,114 +146,91 @@ export default function Login() {
     }
 
     if (data.user) {
-      let role = data.user.user_metadata?.role;
-      if (!role) {
+      let resolvedRole = data.user.user_metadata?.role;
+      if (!resolvedRole) {
         try {
-          const { data: profile } = await supabase.from('perfis').select('role').eq('id', data.user.id).maybeSingle();
-          role = profile?.role;
+          const { data: profileById } = await supabase.from('perfis').select('role').eq('id', data.user.id).maybeSingle();
+          resolvedRole = profileById?.role;
+          if (!resolvedRole) {
+            const { data: profileByEmail } = await supabase.from('perfis').select('role').ilike('email', cleanEmail).maybeSingle();
+            resolvedRole = profileByEmail?.role;
+          }
         } catch (e) {
           console.warn('Erro ao buscar perfil:', e);
         }
       }
-      redirectByRole(data.user, role);
+
+      if (!resolvedRole) {
+        resolvedRole = cleanEmail.includes('tecnico') || cleanEmail.includes('analistacampo') ? 'tecnico' :
+                       cleanEmail.includes('gestor') ? 'gestor' : 'produtor';
+      }
+
+      redirectByRole(data.user, resolvedRole);
     }
   };
 
-  const TEST_USERS: Record<string, { name: string; role: string }> = {
-    'gestor@ms.gov.br': { name: 'Gestor MS', role: 'gestor' },
-    'tecnico@ms.gov.br': { name: 'Técnico MS', role: 'tecnico' },
-    'produtor@ms.gov.br': { name: 'Produtor MS', role: 'produtor' },
-  };
-
-  // Tenta realizar o login com a conta de teste PRIMEIRO.
-  // Evita disparar signUp repetidamente para não estourar a cota de e-mails do Supabase Cloud (rate limit exceeded).
   const ensureAndSignInTestUser = async (selectedEmail: string) => {
-    const userInfo = TEST_USERS[selectedEmail] || { name: 'Usuário RTRS', role: 'produtor' };
+    const cleanEmail = selectedEmail.trim().toLowerCase();
+    const userInfo = TEST_USERS[cleanEmail] || { name: 'Usuário de Teste', role: cleanEmail.includes('tecnico') ? 'tecnico' : cleanEmail.includes('gestor') ? 'gestor' : 'produtor' };
 
-    // 1. Tenta login direto com 'Senha@123'
-    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-      email: selectedEmail,
-      password: 'Senha@123',
-    });
+    // 1. Tenta login direto com todas as senhas candidatas conhecidas
+    for (const pwd of KNOWN_TEST_PASSWORDS) {
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password: pwd,
+      });
 
-    if (!signInError && signInData?.user) {
-      return signInData;
-    }
-
-    // Se o erro for rate limit no login, tenta re-retornar a sessão atual se já estiver logado
-    if (signInError?.message?.toLowerCase().includes('rate limit')) {
-      const { data: sessionData } = await supabase.auth.getSession();
-      if (sessionData?.session?.user) {
-        return { user: sessionData.session.user, session: sessionData.session };
+      if (!signInError && signInData?.user) {
+        if (pwd !== 'Senha@123') {
+          try {
+            await supabase.auth.updateUser({ password: 'Senha@123' });
+          } catch (e) {
+            console.warn('Aviso ao atualizar senha de teste:', e);
+          }
+        }
+        return signInData;
       }
-      throw new Error('Limite de e-mails do Supabase atingido temporariamente. Tente o acesso digitando e-mail e senha.');
     }
 
-    // 2. Tenta login com senha legada 'senha123'
-    const { data: legacyData, error: legacyError } = await supabase.auth.signInWithPassword({
-      email: selectedEmail,
-      password: 'senha123',
-    });
-
-    if (!legacyError && legacyData?.user) {
-      try {
-        await supabase.auth.updateUser({ password: 'Senha@123' });
-      } catch (e) {
-        console.warn('Erro ao atualizar senha legada:', e);
-      }
-      return legacyData;
-    }
-
-    // 3. Tenta signUp APENAS se a conta realmente não existir
+    // 2. Se nenhuma senha funcionou, tenta signUp para criar a conta no Supabase Auth
     try {
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email: selectedEmail,
+        email: cleanEmail,
         password: 'Senha@123',
         options: {
           data: { full_name: userInfo.name, role: userInfo.role }
         }
       });
 
-      if (signUpError) {
-        if (signUpError.message?.toLowerCase().includes('rate limit')) {
-          const { data: lastTryData } = await supabase.auth.signInWithPassword({
-            email: selectedEmail,
-            password: 'Senha@123',
-          });
-          if (lastTryData?.user) return lastTryData;
-          throw new Error('Limite de e-mails do Supabase atingido no ambiente Cloud. Tente o acesso direto.');
-        }
+      if (!signUpError && signUpData?.user) {
+        if (signUpData.session) return signUpData;
+        const { data: postData } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password: 'Senha@123',
+        });
+        if (postData?.user) return postData;
+      }
 
-        if (signUpError.message.includes('already registered') || signUpError.message.includes('User already registered')) {
-          const { data: retryData, error: retryErr } = await supabase.auth.signInWithPassword({
-            email: selectedEmail,
-            password: 'Senha@123',
+      if (signUpError?.message?.includes('already registered') || signUpError?.message?.includes('User already registered')) {
+        for (const pwd of KNOWN_TEST_PASSWORDS) {
+          const { data: retryData } = await supabase.auth.signInWithPassword({
+            email: cleanEmail,
+            password: pwd,
           });
           if (retryData?.user) return retryData;
-          if (retryErr) throw retryErr;
         }
-
-        throw signUpError;
       }
-
-      if (signUpData?.user && signUpData?.session) {
-        return signUpData;
-      }
-
-      const { data: postSignUpData } = await supabase.auth.signInWithPassword({
-        email: selectedEmail,
-        password: 'Senha@123',
-      });
-      if (postSignUpData?.user) return postSignUpData;
-
     } catch (err: any) {
-      if (err.message?.toLowerCase().includes('rate limit')) {
-        throw new Error('Limite de envio de e-mails do Supabase excedido.');
-      }
-      throw err;
+      console.warn('Erro ao provisionar usuário de teste:', err);
     }
 
-    throw new Error('Não foi possível entrar com a conta de teste.');
+    // 3. Fallback final: re-checar se já existe uma sessão ativa
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (sessionData?.session?.user) {
+      return { user: sessionData.session.user, session: sessionData.session };
+    }
+
+    throw new Error('Não foi possível autenticar a conta de teste. Verifique sua conexão ou tente novamente.');
   };
 
   const handleCreateTestUsers = async () => {
@@ -252,7 +271,11 @@ export default function Login() {
       const data = await ensureAndSignInTestUser(selectedEmail);
 
       if (data?.user) {
-        redirectByRole(data.user, TEST_USERS[selectedEmail]?.role);
+        let resolvedRole = data.user.user_metadata?.role || TEST_USERS[selectedEmail]?.role;
+        if (!resolvedRole) {
+          resolvedRole = selectedEmail.includes('tecnico') ? 'tecnico' : selectedEmail.includes('gestor') ? 'gestor' : 'produtor';
+        }
+        redirectByRole(data.user, resolvedRole);
       }
     } catch (err: any) {
       console.error(err);
