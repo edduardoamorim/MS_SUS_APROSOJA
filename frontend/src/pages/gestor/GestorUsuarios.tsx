@@ -267,7 +267,7 @@ export default function GestorUsuarios() {
                 </tr>
               ) : (
                 currentList.map((user: any) => {
-                  const phoneStr = user.telefone || user.whatsapp || '(67) 99881-2233';
+                  const phoneStr = user.telefone || user.whatsapp || 'Não informado';
                   return (
                     <tr key={user.id} className="hover:bg-primary/[0.03] transition-colors group cursor-pointer">
                       <td className="px-5 py-3 font-medium text-foreground">{user.nome}</td>

@@ -23,6 +23,7 @@ import GestorUsuarios from './pages/gestor/GestorUsuarios';
 import GestorAuditorias from './pages/gestor/GestorAuditorias';
 import GestorQuestionarios from './pages/gestor/GestorQuestionarios';
 import GestorMapa from './pages/gestor/GestorMapa';
+import GestorDocumentos from './pages/gestor/GestorDocumentos';
 import ProfileSettings from './pages/profile/ProfileSettings';
 import { ToastProvider } from './context/ToastContext';
 
@@ -66,6 +67,7 @@ function App() {
                   <Route index element={<DashboardGestor />} />
                   <Route path="propriedades" element={<GestorPropriedades />} />
                   <Route path="auditorias" element={<GestorAuditorias />} />
+                  <Route path="documentos" element={<GestorDocumentos />} />
                   <Route path="mapa" element={<GestorMapa />} />
                   <Route path="usuarios" element={<GestorUsuarios />} />
                   <Route path="questionario" element={<GestorQuestionarios />} />

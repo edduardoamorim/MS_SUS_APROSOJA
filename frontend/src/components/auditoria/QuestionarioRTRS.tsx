@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { CheckCircle2, Camera, AlertCircle, X, Loader2, Image as ImageIcon, FileText, Save, ChevronLeft, ChevronRight, CloudCheck } from 'lucide-react';
+import { CheckCircle2, Camera, AlertCircle, X, Loader2, Image as ImageIcon, FileText, Save, ChevronLeft, ChevronRight, CloudCheck, Download, ExternalLink } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
@@ -41,6 +41,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const [secaoAtiva, setSecaoAtiva] = useState<string>('');
   const [expandedOrientacoes, setExpandedOrientacoes] = useState<Record<string, boolean>>({});
   const [fotoAmpliada, setFotoAmpliada] = useState<string | null>(null);
+  const [pdfAmpliado, setPdfAmpliado] = useState<string | null>(null);
 
   // Auto-hide do badge "Dados carregados" após 2.5s
   useEffect(() => {
@@ -265,26 +266,27 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   };
 
   const handleOpenEvidencia = (url: string) => {
-    if (!url) return;
-    if (url.toLowerCase().includes('.pdf') || url.startsWith('data:application/pdf')) {
-      if (url.startsWith('data:')) {
-        const win = window.open('');
-        if (win) {
-          win.document.write(`
-            <!DOCTYPE html>
-            <html>
-              <head><title>Visualizar Evidência PDF</title></head>
-              <body style="margin:0; height:100vh;">
-                <iframe src="${url}" style="width:100vw; height:100vh; border:none;"></iframe>
-              </body>
-            </html>
-          `);
-        }
-      } else {
-        window.open(url, '_blank', 'noopener,noreferrer');
+    if (!url || !url.trim()) return;
+    let cleanUrl = url.trim();
+
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://') && !cleanUrl.startsWith('data:')) {
+      try {
+        const bucket = cleanUrl.includes('auditoria-evidencias') ? 'auditoria-evidencias' : 'evidencias';
+        const filePath = cleanUrl.replace(/^(evidencias|auditoria-evidencias)\//, '');
+        const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
+        if (data?.publicUrl) cleanUrl = data.publicUrl;
+      } catch (e) {
+        console.warn('Erro ao obter URL pública do storage:', e);
       }
+    }
+
+    const lower = cleanUrl.toLowerCase();
+    const isPdf = lower.includes('.pdf') || lower.startsWith('data:application/pdf');
+
+    if (isPdf) {
+      setPdfAmpliado(cleanUrl);
     } else {
-      setFotoAmpliada(url);
+      setFotoAmpliada(cleanUrl);
     }
   };
 
@@ -592,44 +594,42 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const percentualConcluido = totalPerguntas > 0 ? Math.round((totalRespondidas / totalPerguntas) * 100) : 0;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex justify-center items-center p-2 sm:p-4 overflow-y-auto animate-fadeIn">
-      <div className="bg-slate-50 w-full max-w-4xl max-h-[92vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-emerald-100">
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex justify-center items-center p-0 sm:p-4 overflow-y-auto animate-fadeIn">
+      <div className="bg-slate-50 w-full max-w-4xl h-full sm:h-auto sm:max-h-[92vh] rounded-none sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden border-0 sm:border sm:border-emerald-100">
         
         {/* Cabeçalho do Modal */}
-        <div className="bg-emerald-800 text-white px-6 py-4 flex items-center justify-between shrink-0 shadow-sm">
-          <div>
-            <span className="text-[10px] font-extrabold tracking-widest text-emerald-200 uppercase bg-emerald-900/60 px-2.5 py-1 rounded-md border border-emerald-700/50">
+        <div className="bg-emerald-800 text-white px-3 py-2 sm:px-6 sm:py-3.5 flex items-center justify-between shrink-0 shadow-sm">
+          <div className="min-w-0 flex-1 pr-2">
+            <span className="text-[9px] sm:text-[10px] font-extrabold tracking-wider text-emerald-200 uppercase bg-emerald-900/60 px-2 py-0.5 rounded border border-emerald-700/50">
               {modo === 'autoavaliacao' ? 'Autoavaliação do Produtor' : 'Auditoria In Loco'}
             </span>
-            <h2 className="text-xl font-black text-white mt-1 leading-tight">{propriedadeNome}</h2>
+            <h2 className="text-sm sm:text-xl font-black text-white mt-0.5 leading-tight truncate">{propriedadeNome}</h2>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-emerald-700/60 rounded-xl transition-colors text-emerald-100 hover:text-white cursor-pointer">
-            <X className="w-6 h-6" />
+          <button onClick={onClose} className="p-1.5 sm:p-2 hover:bg-emerald-700/60 rounded-xl transition-colors text-emerald-100 hover:text-white cursor-pointer shrink-0">
+            <X className="w-5 h-5 sm:w-6 sm:h-6" />
           </button>
         </div>
 
-        {/* Navegação Elegante de Princípios (Tabs Reformuladas) */}
-        {/* BANNER EM DESTAQUE DO PRINCÍPIO ATIVO (SEM CORTES DE TEXTO) */}
+        {/* Banner em Destaque do Princípio Ativo (Compacto no Mobile) */}
         {secaoAtiva && (
-          <div className="bg-gradient-to-r from-emerald-900 via-emerald-800 to-teal-900 text-white p-5 shrink-0 border-b border-emerald-700 shadow-md">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="bg-gradient-to-r from-emerald-900 via-emerald-800 to-teal-900 text-white p-2.5 sm:p-5 shrink-0 border-b border-emerald-700 shadow-md">
+            <div className="flex flex-row items-center justify-between gap-2">
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-2 flex-wrap">
-                  <span className="text-[10px] font-black uppercase tracking-widest bg-emerald-700/80 text-emerald-100 px-3 py-1 rounded-md border border-emerald-600/50 shadow-xs">
-                    Princípio {secoesUnicas.indexOf(secaoAtiva) + 1} de {secoesUnicas.length}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-wider bg-emerald-700/80 text-emerald-100 px-2 py-0.5 rounded border border-emerald-600/50 shadow-xs">
+                    P{secoesUnicas.indexOf(secaoAtiva) + 1} de {secoesUnicas.length}
                   </span>
-                  <span className="text-[11px] font-extrabold text-emerald-200 bg-black/20 px-3 py-1 rounded-md border border-white/10">
-                    {perguntas.filter(p => p.secao === secaoAtiva && respostas[p.id]?.conforme !== null && respostas[p.id]?.conforme !== undefined).length} de {perguntas.filter(p => p.secao === secaoAtiva).length} critérios respondidos
+                  <span className="text-[9px] sm:text-[11px] font-extrabold text-emerald-200 bg-black/20 px-2 py-0.5 rounded border border-white/10">
+                    {perguntas.filter(p => p.secao === secaoAtiva && respostas[p.id]?.conforme !== null && respostas[p.id]?.conforme !== undefined).length}/{perguntas.filter(p => p.secao === secaoAtiva).length} respondidos
                   </span>
                 </div>
-                {/* NOME COMPLETO DO PRINCÍPIO SEM QUALQUER CORTE */}
-                <h3 className="text-lg sm:text-xl font-black text-white leading-snug tracking-tight">
+                <h3 className="text-xs sm:text-xl font-black text-white leading-snug tracking-tight truncate mt-0.5 sm:mt-1">
                   {secaoAtiva}
                 </h3>
               </div>
 
-              {/* BOTÕES DE NAVEGAÇÃO RÁPIDA ENTRE PRINCÍPIOS */}
-              <div className="flex items-center gap-2 shrink-0">
+              {/* Botões de Navegação entre Princípios */}
+              <div className="flex items-center gap-1 shrink-0">
                 <button
                   type="button"
                   onClick={() => {
@@ -637,10 +637,10 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                     if (idx > 0) setSecaoAtiva(secoesUnicas[idx - 1]);
                   }}
                   disabled={secoesUnicas.indexOf(secaoAtiva) <= 0}
-                  className="px-3.5 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer flex items-center gap-1.5 border border-white/10"
+                  className="px-2 py-1.5 sm:px-3.5 sm:py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg sm:rounded-xl text-xs font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer flex items-center gap-1 border border-white/10"
                 >
                   <ChevronLeft className="w-4 h-4" />
-                  <span>Anterior</span>
+                  <span className="hidden sm:inline">Anterior</span>
                 </button>
 
                 <button
@@ -650,9 +650,9 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                     if (idx < secoesUnicas.length - 1) setSecaoAtiva(secoesUnicas[idx + 1]);
                   }}
                   disabled={secoesUnicas.indexOf(secaoAtiva) >= secoesUnicas.length - 1}
-                  className="px-4 py-2 bg-emerald-400 hover:bg-emerald-300 text-emerald-950 font-black rounded-xl text-xs transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer flex items-center gap-1.5 shadow-md"
+                  className="px-2.5 py-1.5 sm:px-4 sm:py-2 bg-emerald-400 hover:bg-emerald-300 text-emerald-950 font-black rounded-lg sm:rounded-xl text-xs transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer flex items-center gap-1 shadow-md"
                 >
-                  <span>Próximo</span>
+                  <span className="hidden sm:inline">Próximo</span>
                   <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
@@ -660,8 +660,8 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           </div>
         )}
 
-        {/* TABS DE SELEÇÃO RÁPIDA (STEPPER DOS 5 PRINCÍPIOS MINIMALISTA) */}
-        <div className="bg-slate-100 border-b border-slate-200 px-4 py-2.5 shrink-0 flex items-center gap-2 overflow-x-auto scrollbar-none">
+        {/* Tabs de Seleção Rápida dos 5 Princípios */}
+        <div className="bg-slate-100 border-b border-slate-200 px-2 py-1.5 sm:px-4 sm:py-2.5 shrink-0 flex items-center gap-1.5 overflow-x-auto scrollbar-none">
           {secoesUnicas.map((secao, idx) => {
             const isSelected = secaoAtiva === secao;
             const countSec = perguntas.filter(p => p.secao === secao).length;
@@ -682,7 +682,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                 key={secao}
                 type="button"
                 onClick={() => setSecaoAtiva(secao)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shrink-0 border ${
+                className={`px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg sm:rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shrink-0 border ${
                   isSelected
                     ? 'bg-emerald-800 text-white border-emerald-800 shadow-sm ring-2 ring-emerald-600/30'
                     : isDone
@@ -690,16 +690,16 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                     : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-200/80'
                 }`}
               >
-                <span className={`w-5 h-5 rounded-lg flex items-center justify-center text-[10px] font-black ${
+                <span className={`w-4 h-4 sm:w-5 sm:h-5 rounded-md sm:rounded-lg flex items-center justify-center text-[9px] sm:text-[10px] font-black ${
                   isSelected ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'
                 }`}>
                   {idx + 1}
                 </span>
                 <span className="font-extrabold whitespace-nowrap">{shortName}</span>
                 {isDone ? (
-                  <CheckCircle2 className={`w-4 h-4 shrink-0 ${isSelected ? 'text-emerald-300' : 'text-emerald-600'}`} />
+                  <CheckCircle2 className={`w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 ${isSelected ? 'text-emerald-300' : 'text-emerald-600'}`} />
                 ) : (
-                  <span className={`text-[10px] px-1.5 py-0.2 rounded font-black ${
+                  <span className={`text-[9px] sm:text-[10px] px-1 py-0.2 rounded font-black ${
                     isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
                   }`}>
                     {countResp}/{countSec}
@@ -711,58 +711,55 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         </div>
 
         {/* Barra de Progresso e Status de Sincronização */}
-        <div className="bg-emerald-50/80 px-6 py-2.5 border-b border-emerald-100 flex flex-wrap items-center justify-between gap-3 text-xs shrink-0">
-          <div className="flex items-center gap-3">
-            <span className="font-bold text-emerald-900 flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
-              Progresso Geral
+        <div className="bg-emerald-50/80 px-3 py-1.5 sm:px-6 sm:py-2.5 border-b border-emerald-100 flex items-center justify-between gap-2 text-[11px] sm:text-xs shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="font-bold text-emerald-900 flex items-center gap-1 shrink-0">
+              <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-emerald-600 animate-pulse" />
+              Progresso
             </span>
 
-            {/* STATUS BADGE DA CONEXÃO DO BANCO COM AUTO-HIDE (DESAPARECE SUAVEMENTE) */}
             {showSyncBadge && (
               syncingDb ? (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-extrabold border border-emerald-300 animate-pulse shadow-xs">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] sm:text-[11px] font-extrabold border border-emerald-300 animate-pulse shrink-0">
                   <Loader2 className="w-3 h-3 animate-spin text-emerald-700" />
-                  <span>Carregando dados...</span>
+                  <span className="hidden sm:inline">Carregando...</span>
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white text-emerald-800 text-[11px] font-bold border border-emerald-200 shadow-xs animate-fade-in">
-                  <CloudCheck className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Dados carregados</span>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white text-emerald-800 text-[10px] sm:text-[11px] font-bold border border-emerald-200 shrink-0">
+                  <CloudCheck className="w-3 h-3 text-emerald-600" />
+                  <span className="hidden sm:inline">Dados carregados</span>
                 </span>
               )
             )}
           </div>
 
-          <div className="flex items-center gap-3 w-1/3 max-w-xs">
-            <div className="w-full bg-emerald-200/60 h-2.5 rounded-full overflow-hidden p-0.5 border border-emerald-200">
+          <div className="flex items-center gap-2 w-28 sm:w-1/3 sm:max-w-xs shrink-0">
+            <div className="w-full bg-emerald-200/60 h-2 sm:h-2.5 rounded-full overflow-hidden p-0.5 border border-emerald-200">
               <div className="bg-gradient-to-r from-emerald-600 to-teal-500 h-full transition-all duration-500 rounded-full" style={{ width: `${percentualConcluido}%` }} />
             </div>
-            <span className="font-black text-emerald-800 min-w-[35px] text-right">{percentualConcluido}%</span>
+            <span className="font-black text-emerald-800 min-w-[30px] text-right text-[11px] sm:text-xs">{percentualConcluido}%</span>
           </div>
         </div>
 
-        {/* Lista de Perguntas do Princípio */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+        {/* Lista de Perguntas do Princípio (Área Principal com Espaço Maximizado) */}
+        <div className="flex-1 overflow-y-auto p-2.5 sm:p-6 space-y-3 sm:space-y-6">
           {loadingPerguntas || (syncingDb && Object.keys(respostas).length === 0) ? (
-            <div className="py-6 space-y-6">
+            <div className="py-6 space-y-4">
               <div className="flex items-center justify-center gap-3 text-emerald-800 bg-emerald-50/90 p-4 rounded-xl border border-emerald-200/80 animate-pulse shadow-xs">
                 <Loader2 className="w-5 h-5 animate-spin text-emerald-600" />
                 <span className="text-sm font-extrabold tracking-wide">Carregando questionário e dados da auditoria...</span>
               </div>
 
-              {/* SKELETON PLACEHOLDERS PROFISSIONAIS */}
               {[1, 2].map((n) => (
-                <div key={n} className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4 animate-pulse shadow-xs">
+                <div key={n} className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3 animate-pulse shadow-xs">
                   <div className="flex items-center justify-between">
-                    <div className="h-6 bg-slate-200 rounded-lg w-32" />
-                    <div className="h-5 bg-emerald-100 rounded-full w-24" />
+                    <div className="h-5 bg-slate-200 rounded-lg w-28" />
+                    <div className="h-4 bg-emerald-100 rounded-full w-20" />
                   </div>
-                  <div className="h-5 bg-slate-200 rounded-md w-4/5" />
-                  <div className="h-4 bg-slate-100 rounded-md w-full" />
-                  <div className="grid grid-cols-2 gap-4 pt-3">
-                    <div className="h-12 bg-slate-100 rounded-xl border border-slate-200" />
-                    <div className="h-12 bg-slate-100 rounded-xl border border-slate-200" />
+                  <div className="h-4 bg-slate-200 rounded-md w-4/5" />
+                  <div className="grid grid-cols-2 gap-3 pt-2">
+                    <div className="h-10 bg-slate-100 rounded-xl border border-slate-200" />
+                    <div className="h-10 bg-slate-100 rounded-xl border border-slate-200" />
                   </div>
                 </div>
               ))}
@@ -776,51 +773,53 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               const isNaoConforme = resposta?.conforme === false;
 
               return (
-                <div key={pergunta.id} className={`bg-white rounded-2xl border p-5 transition-all shadow-sm ${isConforme ? 'border-emerald-300 ring-1 ring-emerald-100 bg-emerald-50/10' : isNaoConforme ? 'border-red-300 ring-1 ring-red-100 bg-red-50/10' : 'border-gray-200 hover:border-emerald-200'}`}>
-                  <div className="flex flex-col gap-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-xs font-black text-white bg-slate-800 px-2.5 py-1 rounded-lg">Indicador {pergunta.numero_criterio}</span>
-                        <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md ${pergunta.ponderacao === 'Imediata' ? 'bg-red-100 text-red-700 border border-red-200' : pergunta.ponderacao === 'Curto Prazo' ? 'bg-amber-100 text-amber-800 border border-amber-200' : 'bg-blue-100 text-blue-800 border border-blue-200'}`}>
+                <div key={pergunta.id} className={`bg-white rounded-xl sm:rounded-2xl border p-3.5 sm:p-5 transition-all shadow-sm ${isConforme ? 'border-emerald-300 ring-1 ring-emerald-100 bg-emerald-50/10' : isNaoConforme ? 'border-red-300 ring-1 ring-red-100 bg-red-50/10' : 'border-gray-200 hover:border-emerald-200'}`}>
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] sm:text-xs font-black text-white bg-slate-800 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md sm:rounded-lg">Indicador {pergunta.numero_criterio}</span>
+                        <span className={`text-[9px] sm:text-[10px] font-extrabold px-1.5 py-0.5 rounded ${pergunta.ponderacao === 'Imediata' ? 'bg-red-100 text-red-700 border border-red-200' : pergunta.ponderacao === 'Curto Prazo' ? 'bg-amber-100 text-amber-800 border border-amber-200' : 'bg-blue-100 text-blue-800 border border-blue-200'}`}>
                           {pergunta.ponderacao}
                         </span>
                       </div>
                     </div>
                     
-                    <h3 className="text-base font-bold text-gray-900 leading-snug">{pergunta.enunciado || pergunta.criterio}</h3>
+                    <h3 className="text-xs sm:text-base font-bold text-gray-900 leading-snug">{pergunta.enunciado || pergunta.criterio}</h3>
                     
                     {pergunta.orientacao && (
-                      <div className="bg-slate-50 rounded-xl border border-slate-200 overflow-hidden">
-                        <button type="button" onClick={() => setExpandedOrientacoes(prev => ({ ...prev, [pergunta.id]: !prev[pergunta.id] }))} className="w-full px-4 py-2.5 text-left text-xs font-bold text-slate-700 flex items-center justify-between hover:bg-slate-100 transition-colors">
-                          <span className="flex items-center gap-1.5 text-emerald-800">Ver Orientação / Diretrizes</span>
+                      <div className="bg-slate-50 rounded-lg sm:rounded-xl border border-slate-200 overflow-hidden">
+                        <button type="button" onClick={() => setExpandedOrientacoes(prev => ({ ...prev, [pergunta.id]: !prev[pergunta.id] }))} className="w-full px-3 py-1.5 sm:px-4 sm:py-2.5 text-left text-xs font-bold text-slate-700 flex items-center justify-between hover:bg-slate-100 transition-colors">
+                          <span className="flex items-center gap-1 text-emerald-800">Ver Orientação / Diretrizes</span>
                           <span className="text-slate-400 font-extrabold text-sm">{expandedOrientacoes[pergunta.id] ? '−' : '+'}</span>
                         </button>
                         {expandedOrientacoes[pergunta.id] && (
-                          <div className="px-4 pb-3 pt-1 text-xs text-slate-600 leading-relaxed border-t border-slate-200/60 bg-white">{pergunta.orientacao}</div>
+                          <div className="px-3 pb-2.5 pt-1 text-xs text-slate-600 leading-relaxed border-t border-slate-200/60 bg-white">{pergunta.orientacao}</div>
                         )}
                       </div>
                     )}
                     
-                    <div className="grid grid-cols-2 gap-3 pt-2">
-                      <button type="button" onClick={() => handleResposta(pergunta.id, true)} className={`py-3 px-4 rounded-xl font-extrabold text-xs transition-all flex items-center justify-center gap-2 cursor-pointer ${isConforme ? 'bg-emerald-600 text-white shadow-md ring-2 ring-emerald-600 ring-offset-1' : 'bg-white border-2 border-emerald-200 text-emerald-800 hover:bg-emerald-50'}`}>
-                        <CheckCircle2 className="w-4 h-4" /> Sim, Conforme
+                    <div className="grid grid-cols-2 gap-2 sm:gap-3 pt-1">
+                      <button type="button" onClick={() => handleResposta(pergunta.id, true)} className={`py-2.5 px-2 sm:py-3 sm:px-4 rounded-xl font-extrabold text-[11px] sm:text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer ${isConforme ? 'bg-emerald-600 text-white shadow-md ring-2 ring-emerald-600 ring-offset-1' : 'bg-white border-2 border-emerald-200 text-emerald-800 hover:bg-emerald-50'}`}>
+                        <CheckCircle2 className="w-4 h-4 shrink-0" />
+                        <span>Sim, Conforme</span>
                       </button>
-                      <button type="button" onClick={() => handleResposta(pergunta.id, false)} className={`py-3 px-4 rounded-xl font-extrabold text-xs transition-all flex items-center justify-center gap-2 cursor-pointer ${isNaoConforme ? 'bg-red-600 text-white shadow-md ring-2 ring-red-600 ring-offset-1' : 'bg-white border-2 border-red-200 text-red-800 hover:bg-red-50'}`}>
-                        <AlertCircle className="w-4 h-4" /> Não Conforme
+                      <button type="button" onClick={() => handleResposta(pergunta.id, false)} className={`py-2.5 px-2 sm:py-3 sm:px-4 rounded-xl font-extrabold text-[11px] sm:text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer ${isNaoConforme ? 'bg-red-600 text-white shadow-md ring-2 ring-red-600 ring-offset-1' : 'bg-white border-2 border-red-200 text-red-800 hover:bg-red-50'}`}>
+                        <AlertCircle className="w-4 h-4 shrink-0" />
+                        <span>Não Conforme</span>
                       </button>
                     </div>
 
                     {resposta?.conforme !== null && resposta?.conforme !== undefined && (
-                      <div className="mt-2 pt-4 border-t border-gray-100 space-y-3 animate-fadeIn">
+                      <div className="mt-1 pt-3 border-t border-gray-100 space-y-2.5 animate-fadeIn">
                         <div>
                           <label className="block text-xs font-bold text-gray-700 mb-1">Observações do Inspetor</label>
-                          <textarea rows={2} value={resposta?.observacao || ''} onChange={(e) => handleObservacao(pergunta.id, e.target.value)} placeholder="Detalhe as condições observadas..." className="w-full p-3 bg-white border border-gray-200 rounded-xl text-xs focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all" />
+                          <textarea rows={2} value={resposta?.observacao || ''} onChange={(e) => handleObservacao(pergunta.id, e.target.value)} placeholder="Detalhe as condições observadas..." className="w-full p-2.5 bg-white border border-gray-200 rounded-xl text-xs focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all" />
                         </div>
                         
                         <div>
                           {cameraLoadingId === pergunta.id ? (
-                            <div className="flex items-center gap-3 bg-amber-50 p-3 rounded-xl border border-amber-200 shadow-sm animate-pulse">
-                              <Loader2 className="w-5 h-5 animate-spin text-amber-600 shrink-0" />
+                            <div className="flex items-center gap-2.5 bg-amber-50 p-2.5 rounded-xl border border-amber-200 shadow-sm animate-pulse">
+                              <Loader2 className="w-4 h-4 animate-spin text-amber-600 shrink-0" />
                               <div className="flex-1 min-w-0">
                                 <p className="text-xs font-bold text-amber-900">Sincronizando arquivo na nuvem...</p>
                                 <p className="text-[10px] text-amber-700">Aguarde o término do envio antes de prosseguir.</p>
@@ -829,23 +828,23 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                           ) : !resposta?.evidenciaUrl ? (
                             <div>
                               <input type="file" id={`file-input-${pergunta.id}`} accept="image/*,application/pdf" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (file) handleUploadEvidencia(pergunta.id, file); }} />
-                              <button type="button" onClick={() => document.getElementById(`file-input-${pergunta.id}`)?.click()} className="w-full flex items-center justify-center gap-2 py-2.5 border-2 border-dashed border-emerald-300 bg-emerald-50/50 text-emerald-700 rounded-xl hover:bg-emerald-100 hover:border-emerald-400 transition-all font-bold cursor-pointer text-xs">
-                                <Camera className="w-5 h-5 text-emerald-600" />
-                                <span>{modo === 'autoavaliacao' ? 'Enviar Evidência (Imagem ou PDF)' : 'Tirar Foto / Enviar Evidência (Imagem ou PDF)'}</span>
+                              <button type="button" onClick={() => document.getElementById(`file-input-${pergunta.id}`)?.click()} className="w-full flex items-center justify-center gap-1.5 py-2 border-2 border-dashed border-emerald-300 bg-emerald-50/50 text-emerald-700 rounded-xl hover:bg-emerald-100 hover:border-emerald-400 transition-all font-bold cursor-pointer text-xs">
+                                <Camera className="w-4 h-4 text-emerald-600 shrink-0" />
+                                <span>{modo === 'autoavaliacao' ? 'Enviar Evidência (Imagem/PDF)' : 'Tirar Foto / Enviar Evidência'}</span>
                               </button>
                             </div>
                           ) : (
-                            <div className="flex items-center gap-3 bg-white p-3 rounded-xl border border-emerald-200 shadow-sm">
-                              <div className="bg-emerald-100 rounded-lg overflow-hidden w-10 h-10 flex items-center justify-center shrink-0 cursor-pointer hover:opacity-85 transition-opacity border border-emerald-200" onClick={() => handleOpenEvidencia(resposta.evidenciaUrl!)}>
-                                {resposta.evidenciaUrl.toLowerCase().includes('.pdf') ? <FileText className="w-5 h-5 text-emerald-700" /> : <img src={resposta.evidenciaUrl} alt="Evidência" className="w-full h-full object-cover" />}
+                            <div className="flex items-center gap-2.5 bg-white p-2.5 rounded-xl border border-emerald-200 shadow-sm">
+                              <div className="bg-emerald-100 rounded-lg overflow-hidden w-9 h-9 flex items-center justify-center shrink-0 cursor-pointer hover:opacity-85 transition-opacity border border-emerald-200" onClick={() => handleOpenEvidencia(resposta.evidenciaUrl!)}>
+                                {resposta.evidenciaUrl.toLowerCase().includes('.pdf') ? <FileText className="w-4 h-4 text-emerald-700" /> : <img src={resposta.evidenciaUrl} alt="Evidência" className="w-full h-full object-cover" />}
                               </div>
                               <div className="flex-1 min-w-0">
-                                <p className="text-sm font-bold text-gray-900 truncate">Evidência Anexada</p>
-                                <button type="button" onClick={() => handleOpenEvidencia(resposta.evidenciaUrl!)} className="text-[11px] text-emerald-700 underline font-bold hover:text-emerald-900 cursor-pointer block mt-0.5 text-left">Ver Arquivo Enviado</button>
+                                <p className="text-xs font-bold text-gray-900 truncate">Evidência Anexada</p>
+                                <button type="button" onClick={() => handleOpenEvidencia(resposta.evidenciaUrl!)} className="text-[10px] text-emerald-700 underline font-bold hover:text-emerald-900 cursor-pointer block mt-0.5 text-left">Ver Arquivo Enviado</button>
                               </div>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <CheckCircle2 className="w-6 h-6 text-emerald-500" />
-                                <button type="button" title="Remover" onClick={() => setRespostas(prev => ({ ...prev, [pergunta.id]: { ...prev[pergunta.id], evidenciaUrl: null } }))} className="text-gray-400 hover:text-red-500 transition-colors p-1.5 rounded-lg hover:bg-red-50 cursor-pointer"><X className="w-4 h-4" /></button>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+                                <button type="button" title="Remover" onClick={() => setRespostas(prev => ({ ...prev, [pergunta.id]: { ...prev[pergunta.id], evidenciaUrl: null } }))} className="text-gray-400 hover:text-red-500 transition-colors p-1 rounded-lg hover:bg-red-50 cursor-pointer"><X className="w-4 h-4" /></button>
                               </div>
                             </div>
                           )}
@@ -860,30 +859,31 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         </div>
 
         {/* Rodapé Profissional com Salvamento Parcial / Rascunho e Submissão */}
-        <div className="px-6 py-4 bg-white border-t border-slate-200 shrink-0 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-xs text-slate-500 order-2 sm:order-1">
+        <div className="px-3 py-2.5 sm:px-6 sm:py-4 bg-white border-t border-slate-200 shrink-0 flex flex-row items-center justify-between gap-2">
+          <div className="hidden sm:flex items-center gap-2 text-xs text-slate-500">
             <Save className="w-4 h-4 text-emerald-600" />
             <span>
               {lastSavedTime ? `Rascunho salvo às ${lastSavedTime}` : 'Você pode salvar parcialmente e continuar depois'}
             </span>
           </div>
 
-          <div className="flex items-center gap-3 w-full sm:w-auto order-1 sm:order-2">
+          <div className="flex items-center gap-2 w-full sm:w-auto">
             <button
               type="button"
               onClick={handleSavePartial}
               disabled={savingPartial || loading || loadingPerguntas}
-              className="flex-1 sm:flex-none px-5 py-3 bg-white border-2 border-slate-300 hover:border-emerald-600 text-slate-700 hover:text-emerald-800 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer shadow-sm"
+              className="flex-1 sm:flex-none px-3 py-2.5 sm:px-5 sm:py-3 bg-white border-2 border-slate-300 hover:border-emerald-600 text-slate-700 hover:text-emerald-800 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-sm"
             >
               {savingPartial ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
-                  <span>Salvando Rascunho...</span>
+                  <span className="hidden sm:inline">Salvando...</span>
+                  <span className="sm:hidden">Salvando</span>
                 </>
               ) : (
                 <>
-                  <Save className="w-4 h-4 text-emerald-600" />
-                  <span>Salvar Rascunho</span>
+                  <Save className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Rascunho</span>
                 </>
               )}
             </button>
@@ -892,17 +892,17 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               type="button"
               onClick={handleSubmit}
               disabled={loading || savingPartial || loadingPerguntas || perguntas.length === 0}
-              className="flex-1 sm:flex-none px-6 py-3 bg-emerald-800 hover:bg-emerald-900 text-white rounded-xl font-extrabold text-xs sm:text-sm shadow-md transition-all flex justify-center items-center gap-2 disabled:opacity-60 cursor-pointer"
+              className="flex-1 sm:flex-none px-4 py-2.5 sm:px-6 sm:py-3 bg-emerald-800 hover:bg-emerald-900 text-white rounded-xl font-extrabold text-xs sm:text-sm shadow-md transition-all flex justify-center items-center gap-1.5 disabled:opacity-60 cursor-pointer"
             >
               {loading ? (
                 <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
                   <span>Finalizando...</span>
                 </>
               ) : (
                 <>
-                  <CheckCircle2 className="w-5 h-5 text-emerald-300" />
-                  <span>Submeter Relatório de Auditoria</span>
+                  <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-300 shrink-0" />
+                  <span>Submeter</span>
                 </>
               )}
             </button>
@@ -912,11 +912,43 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
 
       {/* Modal Lightbox de Foto Ampliada */}
       {fotoAmpliada && (
-        <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex flex-col items-center justify-center p-4 cursor-zoom-out" onClick={() => setFotoAmpliada(null)}>
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn transition-all" onClick={() => setFotoAmpliada(null)}>
           <div className="relative max-w-4xl max-h-[90vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
-            <button onClick={() => setFotoAmpliada(null)} className="absolute -top-10 right-0 text-white bg-white/20 hover:bg-white/40 p-2 rounded-full transition-all cursor-pointer"><X className="w-6 h-6" /></button>
-            <img src={fotoAmpliada} alt="Evidência Ampliada" className="max-w-full max-h-[85vh] rounded-xl shadow-2xl object-contain border border-slate-700" />
-            {fotoAmpliada.startsWith('http') && <a href={fotoAmpliada} target="_blank" rel="noreferrer" className="mt-3 text-xs text-emerald-300 underline font-bold hover:text-white">Abrir em nova guia</a>}
+            <button onClick={() => setFotoAmpliada(null)} className="absolute -top-10 right-0 text-white bg-black/50 hover:bg-black/70 p-2 rounded-full transition-all cursor-pointer shadow-md"><X className="w-6 h-6" /></button>
+            <img src={fotoAmpliada} alt="Evidência Ampliada" className="max-w-full max-h-[85vh] rounded-xl shadow-2xl object-contain border border-slate-700/60 bg-slate-900/40" />
+            {fotoAmpliada.startsWith('http') && <a href={fotoAmpliada} target="_blank" rel="noreferrer" className="mt-3 text-xs text-emerald-300 underline font-bold hover:text-white flex items-center gap-1 bg-black/40 px-3 py-1 rounded-full border border-white/10"><ExternalLink className="w-3.5 h-3.5" /><span>Abrir em nova guia</span></a>}
+          </div>
+        </div>
+      )}
+
+      {/* Modal Viewer de PDF */}
+      {pdfAmpliado && (
+        <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn" onClick={() => setPdfAmpliado(null)}>
+          <div className="relative w-full max-w-5xl h-[88vh] flex flex-col bg-slate-900 rounded-2xl overflow-hidden border border-slate-700 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-3.5 bg-slate-800 border-b border-slate-700 text-white">
+              <div className="flex items-center gap-2">
+                <FileText className="w-5 h-5 text-emerald-400" />
+                <span className="font-bold text-sm">Visualizador de Documento PDF</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <a
+                  href={pdfAmpliado}
+                  download="documento.pdf"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Baixar / Abrir PDF</span>
+                </a>
+                <button type="button" onClick={() => setPdfAmpliado(null)} className="text-slate-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 w-full h-full bg-slate-950">
+              <iframe src={pdfAmpliado} className="w-full h-full border-none" title="Documento PDF" />
+            </div>
           </div>
         </div>
       )}

@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import Modal from '../ui/Modal';
+import { resolveMunicipioFromCarOrName } from '../../lib/geoUtils';
 
 interface Props {
   isOpen: boolean;
@@ -121,26 +122,22 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
   const producerName = typeof rawProducerName === 'string' && rawProducerName.trim() ? rawProducerName : 'Produtor Rural';
   
   const rawEmail = producerInfo?.email || farmDetails?.email_produtor || prop?.email;
-  const producerEmail = rawEmail && typeof rawEmail === 'string' && rawEmail.trim().length > 0 ? rawEmail.trim() : 'edward.produtor@aprosojams.org.br';
+  const producerEmail = rawEmail && typeof rawEmail === 'string' && rawEmail.trim().length > 0 && !rawEmail.includes('edward.produtor@aprosojams.org.br') 
+    ? rawEmail.trim() 
+    : 'Não informado';
 
   const rawPhone = producerInfo?.telefone || producerInfo?.whatsapp || farmDetails?.telefone_produtor || prop?.telefone;
-  const producerPhone = rawPhone && typeof rawPhone === 'string' && rawPhone.trim().length > 0 ? rawPhone.trim() : '(67) 99881-2233';
+  const producerPhone = rawPhone && typeof rawPhone === 'string' && rawPhone.trim().length > 0 
+    ? rawPhone.trim() 
+    : 'Não informado';
   const hasValidPhone = producerPhone !== 'Não informado';
 
   const carCode = prop?.codigo_car || farmDetails?.codigo_car || null;
   const sigefCode = prop?.codigo_sigef || farmDetails?.codigo_sigef || null;
   const origemCadastro = prop?.origem_cadastro || farmDetails?.origem_cadastro || (sigefCode ? 'SIGEF' : carCode ? 'CAR' : 'Manual');
 
-  let realMuni = prop?.municipio || farmDetails?.municipio;
-  if (!realMuni || realMuni === 'Geral, MS') {
-    const fname = farmName.toLowerCase();
-    if (fname.includes('chapad')) realMuni = 'Chapadão do Sul, MS';
-    else if (fname.includes('virgí') || fname.includes('virgin')) realMuni = 'Caarapó, MS';
-    else if (fname.includes('cácer') || fname.includes('cacer')) realMuni = 'Corumbá, MS';
-    else if (fname.includes('sol nascente')) realMuni = 'Maracaju, MS';
-    else realMuni = 'Maracaju, MS';
-  }
-  const municipioName = realMuni.includes(', MS') ? realMuni : `${realMuni}, MS`;
+  const municipioName = resolveMunicipioFromCarOrName(carCode, farmName, prop?.municipio || farmDetails?.municipio);
+  const etapaName = auditoria.etapa || prop?.etapa || farmDetails?.etapa || 'Prospecção';
   
   const progressPercent = Math.min(100, Math.round((answeredCount / totalQuestions) * 100));
 
@@ -218,7 +215,13 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
                 <Calendar className="w-4 h-4 text-[#C59B27]" />
                 Agendamento
               </span>
-              <span className="text-[10px] bg-[#C59B27] text-white px-2 py-0.5 rounded-full font-bold">Oficial</span>
+              <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold shadow-xs text-white ${
+                etapaName === 'Prospecção' ? 'bg-amber-600' :
+                etapaName === 'Auditoria Prévia' ? 'bg-blue-600' :
+                'bg-emerald-600'
+              }`}>
+                {etapaName}
+              </span>
             </div>
             <p className="text-sm font-extrabold text-amber-950 mt-1">{formattedDate}</p>
             <p className="text-[11px] text-amber-800/80 mt-1 flex items-center gap-1">

@@ -237,10 +237,10 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
       {/* Lightbox para ampliar a foto */}
       {fotoAmpliada && (
         <div 
-          className="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center p-4 cursor-zoom-out"
+          className="fixed inset-0 z-[60] bg-black/45 backdrop-blur-md flex items-center justify-center p-4 cursor-zoom-out animate-fadeIn transition-all"
           onClick={() => setFotoAmpliada(null)}
         >
-          <img src={fotoAmpliada} alt="Evidência Ampliada" className="max-w-full max-h-[90vh] rounded-lg shadow-2xl" />
+          <img src={fotoAmpliada} alt="Evidência Ampliada" className="max-w-full max-h-[90vh] rounded-xl shadow-2xl border border-slate-700/60 bg-slate-900/40" />
         </div>
       )}
     </div>,

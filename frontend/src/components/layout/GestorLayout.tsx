@@ -5,7 +5,8 @@ import {
   Users, 
   FileCheck2, 
   ClipboardList,
-  Map as MapIcon
+  Map as MapIcon,
+  FolderOpen
 } from 'lucide-react';
 
 export default function GestorLayout() {
@@ -15,6 +16,7 @@ export default function GestorLayout() {
     { name: 'Visão Geral', href: '/gestor', icon: LayoutDashboard, exact: true },
     { name: 'Propriedades', href: '/gestor/propriedades', icon: Building2 },
     { name: 'Auditorias', href: '/gestor/auditorias', icon: FileCheck2 },
+    { name: 'Documentação & Evidências', href: '/gestor/documentos', icon: FolderOpen },
     { name: 'Mapa e Cruzamento', href: '/gestor/mapa', icon: MapIcon },
     { name: 'Usuários', href: '/gestor/usuarios', icon: Users },
     { name: 'Questionário RTRS', href: '/gestor/questionario', icon: ClipboardList },

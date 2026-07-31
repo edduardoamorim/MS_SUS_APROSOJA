@@ -6,12 +6,12 @@ import siteContent from '../../config/site_content.json';
 
 export default function BaseLayout() {
   const content = siteContent.geral;
-  const { user, role } = useAuth();
+  const { user, role, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    await logout();
     navigate('/login');
   };
 

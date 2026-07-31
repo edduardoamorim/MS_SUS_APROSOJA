@@ -6,10 +6,10 @@ import { supabase } from '../lib/supabase';
 
 export default function Unauthorized() {
   const navigate = useNavigate();
-  const { role } = useAuth();
+  const { role, logout } = useAuth();
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    await logout();
     navigate('/login');
   };
 

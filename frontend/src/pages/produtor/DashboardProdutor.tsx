@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { MapPin, Plus, AlertTriangle, CheckCircle, Search, ShieldAlert, Loader2, Sparkles, ClipboardList, Clock, CheckCircle2, Image as ImageIcon, FolderOpen, FileText, Trash2, X } from 'lucide-react';
+import { MapPin, Plus, AlertTriangle, CheckCircle, Search, ShieldAlert, Loader2, Sparkles, ClipboardList, Clock, CheckCircle2, Image as ImageIcon, FolderOpen, FileText, Trash2, X, Eye, Download, ExternalLink } from 'lucide-react';
 import MapView from '../../components/map/MapView';
 import type { FeatureCollection, Feature, Polygon } from 'geojson';
 import QuestionarioRTRS from '../../components/auditoria/QuestionarioRTRS';
@@ -8,6 +8,7 @@ import AIInsightsPanel from '../../components/ui/AIInsightsPanel';
 import { aiService } from '../../services/aiService';
 import siteContent from '../../config/site_content.json';
 import { supabase } from '../../lib/supabase';
+import { resolveFarmEtapa } from '../../lib/etapaUtils';
 import Modal from '../../components/ui/Modal';
 import { useToast } from '../../context/ToastContext';
 import { useSearchParams } from 'react-router-dom';
@@ -100,12 +101,39 @@ export default function DashboardProdutor() {
   const [deleteDocConfirmId, setDeleteDocConfirmId] = useState<string | null>(null);
   const [showUploadDocModal, setShowUploadDocModal] = useState(false);
   const [uploadingDocFile, setUploadingDocFile] = useState(false);
+  const [fotoAmpliada, setFotoAmpliada] = useState<string | null>(null);
+  const [pdfAmpliado, setPdfAmpliado] = useState<string | null>(null);
   const [docFormData, setDocFormData] = useState({
     nome: '',
     categoria: 'CAR',
     propriedade_id: '',
     arquivo_url: ''
   });
+
+  const handleOpenEvidencia = (url?: string | null) => {
+    if (!url || !url.trim()) return;
+    let cleanUrl = url.trim();
+
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://') && !cleanUrl.startsWith('data:')) {
+      try {
+        const bucket = cleanUrl.includes('auditoria-evidencias') ? 'auditoria-evidencias' : 'evidencias';
+        const filePath = cleanUrl.replace(/^(evidencias|auditoria-evidencias)\//, '');
+        const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
+        if (data?.publicUrl) cleanUrl = data.publicUrl;
+      } catch (e) {
+        console.warn('Erro ao obter URL pública do storage:', e);
+      }
+    }
+
+    const lower = cleanUrl.toLowerCase();
+    const isPdf = lower.includes('.pdf') || lower.startsWith('data:application/pdf');
+
+    if (isPdf) {
+      setPdfAmpliado(cleanUrl);
+    } else {
+      setFotoAmpliada(cleanUrl);
+    }
+  };
 
   useEffect(() => {
     fetchFarmsAndPendencias();
@@ -488,6 +516,7 @@ export default function DashboardProdutor() {
       const newProp = {
         produtor_id: user.id,
         nome_fazenda: codeFarmData.nome_fazenda,
+        etapa: 'Prospecção',
         nome_produtor: user.user_metadata?.full_name || 'Produtor',
         codigo_car: codeFarmData.origem === 'CAR' ? codeFarmData.codigo_car : null,
         codigo_sigef: codeFarmData.origem === 'SIGEF' ? codeFarmData.codigo_sigef : null,
@@ -525,6 +554,7 @@ export default function DashboardProdutor() {
         const newProp = {
           produtor_id: user.id,
           nome_fazenda: newFarmName,
+          etapa: 'Prospecção',
           nome_produtor: user.user_metadata?.full_name || 'Produtor',
           codigo_car: `MS-${Math.floor(1000000 + Math.random() * 9000000)}-ABCD.EFGH.IJKL.MNOP`,
           geom: geom
@@ -661,11 +691,20 @@ export default function DashboardProdutor() {
     );
   }
 
+  const selectedFarmObj = properties.find(p => p.id === selectedFarmId);
+  const activeEtapaName = selectedFarmObj ? resolveFarmEtapa(selectedFarmObj.id, selectedFarmObj.etapa, null) : 'Prospecção';
+
   return (
     <div className="space-y-8 animate-fade-in max-w-7xl mx-auto">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 border-b border-border pb-6">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-border pb-6">
         <div>
-          <h1 className="text-3xl font-extrabold text-foreground tracking-tight">{content.titulo}</h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-3xl font-extrabold text-foreground tracking-tight">{content.titulo}</h1>
+            <span className="px-3 py-1 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-full text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-xs">
+              <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
+              Etapa Atual: {activeEtapaName}
+            </span>
+          </div>
           <p className="text-muted-foreground mt-1 text-lg">{content.subtitulo}</p>
         </div>
         
@@ -1007,9 +1046,14 @@ export default function DashboardProdutor() {
                                     <div className="italic">"{pend.resolucao_descricao}"</div>
                                     {pend.evidencia_url && (
                                       <div className="mt-1">
-                                        <a href={pend.evidencia_url} target="_blank" rel="noreferrer" className="underline text-indigo-600 font-semibold hover:text-indigo-800 flex items-center gap-1">
-                                          Ver Evidência Anexada
-                                        </a>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleOpenEvidencia(pend.evidencia_url)}
+                                          className="underline text-indigo-600 font-semibold hover:text-indigo-800 flex items-center gap-1.5 cursor-pointer text-xs"
+                                        >
+                                          <Eye className="w-4 h-4 text-indigo-600 shrink-0" />
+                                          <span>Ver Evidência Anexada</span>
+                                        </button>
                                       </div>
                                     )}
                                   </div>
@@ -1167,18 +1211,20 @@ export default function DashboardProdutor() {
       )}
 
       {activeTab === 'documentacao' && (
-        <div className="space-y-6 animate-fade-in-up delay-300 opacity-0 max-w-6xl mx-auto" style={{ animationFillMode: 'forwards' }}>
+        <div className="space-y-6 animate-fade-in-up max-w-6xl mx-auto">
+          {/* Cabeçalho */}
           <div className="bg-card p-6 rounded-2xl border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
               <h2 className="text-2xl font-bold text-foreground flex items-center gap-2">
                 <FolderOpen className="w-6 h-6 text-emerald-600" />
-                Histórico de Documentação & Evidências
+                Documentação Vigente da Propriedade
               </h2>
               <p className="text-muted-foreground text-sm mt-1">
-                Central de armazenamento e consulta de laudos, licenças, CAR, fotos e comprovantes de conformidade.
+                Documentos e comprovantes de conformidade organizados por Princípios RTRS e categoria. Exibindo apenas a última versão vigente de cada critério.
               </p>
             </div>
             <button
+              type="button"
               onClick={() => {
                 if (properties.length === 0) {
                   warning('Você precisa ter pelo menos uma propriedade cadastrada para anexar documentos.');
@@ -1187,10 +1233,10 @@ export default function DashboardProdutor() {
                 setDocFormData(prev => ({ ...prev, propriedade_id: properties[0].id }));
                 setShowUploadDocModal(true);
               }}
-              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl font-bold text-sm transition-all shadow-sm active:scale-[0.98] cursor-pointer"
+              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl font-bold text-sm transition-all shadow-sm cursor-pointer shrink-0"
             >
               <Plus className="w-4 h-4" />
-              Arquivar Novo Documento
+              <span>Anexar Novo Documento</span>
             </button>
           </div>
 
@@ -1198,88 +1244,169 @@ export default function DashboardProdutor() {
             <div className="flex justify-center items-center py-16">
               <Loader2 className="w-8 h-8 animate-spin text-emerald-600" />
             </div>
-          ) : documentos.length === 0 ? (
-            <div className="bg-white border border-gray-200 rounded-2xl p-12 text-center text-muted-foreground">
-              <FolderOpen className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-              <p className="font-bold text-gray-700 text-base">Nenhum documento arquivado ainda</p>
-              <p className="text-sm mt-1">Envie documentos gerais clicando no botão acima ou realize autoavaliações para salvar evidências.</p>
-            </div>
           ) : (
-            <div className="bg-card rounded-2xl border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-slate-50 border-b border-gray-100 text-slate-500 font-bold text-xs uppercase tracking-wider">
-                    <tr>
-                      <th className="px-6 py-4">Documento / Critério</th>
-                      <th className="px-6 py-4">Propriedade</th>
-                      <th className="px-6 py-4">Categoria</th>
-                      <th className="px-6 py-4">Origem / Contexto</th>
-                      <th className="px-6 py-4">Data Envio</th>
-                      <th className="px-6 py-4 text-center">Arquivo</th>
-                      <th className="px-6 py-4 text-right">Ação</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {documentos.map((doc) => {
-                      const propNome = properties.find(p => p.id === doc.propriedade_id)?.nome_fazenda || 'Geral/Outros';
-                      return (
-                        <tr key={doc.id} className="hover:bg-slate-50/50 transition-colors font-medium">
-                          <td className="px-6 py-4 text-gray-900 font-bold">{doc.nome}</td>
-                          <td className="px-6 py-4 text-gray-600">{propNome}</td>
-                          <td className="px-6 py-4">
-                            <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                              doc.categoria === 'CAR' ? 'bg-indigo-50 border border-indigo-200 text-indigo-700' :
-                              doc.categoria === 'LAU' ? 'bg-blue-50 border border-blue-200 text-blue-700' :
-                              doc.categoria === 'EPI' ? 'bg-amber-50 border border-amber-200 text-amber-700' :
-                              doc.categoria === 'Checklist RTRS' ? 'bg-emerald-50 border border-emerald-200 text-emerald-700' :
-                              doc.categoria === 'Regularização' ? 'bg-purple-50 border border-purple-200 text-purple-700' :
-                              'bg-slate-100 text-slate-700'
-                            }`}>
-                              {doc.categoria}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 text-gray-500 text-xs">{doc.origem}</td>
-                          <td className="px-6 py-4 text-gray-500 text-xs">{new Date(doc.data).toLocaleDateString('pt-BR')}</td>
-                          <td className="px-6 py-4 text-center">
-                            <a
-                              href={doc.arquivo_url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-800 font-bold underline"
-                            >
-                              {doc.arquivo_url.toLowerCase().includes('.pdf') ? (
-                                <>
-                                  <FileText className="w-4 h-4 shrink-0" />
-                                  <span>Abrir PDF</span>
-                                </>
-                              ) : (
-                                <>
-                                  <ImageIcon className="w-4 h-4 shrink-0" />
-                                  <span>Ver Imagem</span>
-                                </>
-                              )}
-                            </a>
-                          </td>
-                          <td className="px-6 py-4 text-right font-bold">
-                            {doc.podeDeletar ? (
-                              <button
-                                onClick={() => handleDeleteDoc(doc.id)}
-                                className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                                title="Excluir do armazenamento"
-                              >
-                                <Trash2 className="w-4.5 h-4.5" />
-                              </button>
-                            ) : (
-                              <span className="text-[10px] text-gray-400 font-bold bg-gray-100 px-2 py-0.5 rounded uppercase tracking-wider" title="Evidências vinculadas a questionários não podem ser deletadas diretamente">
-                                Vinculado
+            <div className="space-y-6">
+              {/* SEÇÃO 1: DOCUMENTOS GERAIS DA FAZENDA (ÚLTIMA VERSÃO) */}
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-emerald-700" />
+                    Documentos Gerais da Fazenda (Últimas Versões)
+                  </h3>
+                  <span className="text-xs font-bold text-slate-500 bg-slate-100 px-3 py-1 rounded-full">
+                    CAR, LAU, EPI e Laudos
+                  </span>
+                </div>
+
+                {(() => {
+                  const genMap = new Map<string, any>();
+                  documentos
+                    .filter(d => ['CAR', 'LAU', 'EPI', 'Outros', 'Armazenamento Geral'].includes(d.categoria) || d.origem === 'Armazenamento Geral')
+                    .forEach(d => {
+                      const key = d.categoria;
+                      const existing = genMap.get(key);
+                      if (!existing || new Date(d.data).getTime() > new Date(existing.data).getTime()) {
+                        genMap.set(key, d);
+                      }
+                    });
+                  const latestGenDocs = Array.from(genMap.values());
+
+                  if (latestGenDocs.length === 0) {
+                    return (
+                      <div className="py-6 text-center text-slate-400 text-xs font-medium">
+                        Nenhum documento geral anexado ainda. Clique em "Anexar Novo Documento" para registrar CAR, LAU ou EPI.
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {latestGenDocs.map((doc) => (
+                        <div key={doc.id} className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between space-y-3">
+                          <div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                {doc.categoria}
                               </span>
+                              <span className="text-[10px] text-slate-400 font-bold">
+                                {new Date(doc.data).toLocaleDateString('pt-BR')}
+                              </span>
+                            </div>
+                            <h4 className="text-xs font-bold text-slate-900 mt-2 line-clamp-1">{doc.nome}</h4>
+                            <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.5 rounded mt-1 inline-block">✓ Versão Vigente</span>
+                          </div>
+
+                          <div className="flex items-center justify-between pt-2 border-t border-slate-200/60">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEvidencia(doc.arquivo_url)}
+                              className="text-xs text-emerald-700 hover:text-emerald-900 font-extrabold underline flex items-center gap-1 cursor-pointer"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>Ver Arquivo</span>
+                            </button>
+
+                            {doc.podeDeletar && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteDoc(doc.id)}
+                                className="p-1 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                                title="Excluir"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
                             )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* SEÇÃO 2: EVIDÊNCIAS ORGANIZADAS PELOS 5 PRINCÍPIOS RTRS (APENAS O ÚLTIMO ANEXADO POR CRITÉRIO) */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-extrabold text-slate-900 flex items-center gap-2">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                    Evidências Organizadas por Princípios RTRS
+                  </h3>
+                  <span className="text-xs text-slate-500 font-bold">Apenas a última versão de cada critério</span>
+                </div>
+
+                {[
+                  { num: 1, nome: 'Princípio 1: Cumprimento da Legislação e Boas Práticas Empresariais' },
+                  { num: 2, nome: 'Princípio 2: Condições de Trabalho Fisiológicas e Humanas' },
+                  { num: 3, nome: 'Princípio 3: Relações Comunitárias e Sociais' },
+                  { num: 4, nome: 'Princípio 4: Meio Ambiente e Biodiversidade' },
+                  { num: 5, nome: 'Princípio 5: Boas Práticas Agrícolas e Produção' }
+                ].map((principio) => {
+                  const mapCrit = new Map<string, any>();
+
+                  documentos.forEach(doc => {
+                    if (doc.nome.includes(`Princípio ${principio.num}`) || (principio.num === 1 && doc.categoria === 'Checklist RTRS' && !doc.nome.includes('Princípio'))) {
+                      const key = doc.nome;
+                      const existing = mapCrit.get(key);
+                      if (!existing || new Date(doc.data).getTime() > new Date(existing.data).getTime()) {
+                        mapCrit.set(key, doc);
+                      }
+                    }
+                  });
+
+                  const principioDocs = Array.from(mapCrit.values());
+
+                  return (
+                    <div key={principio.num} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                      <div className="bg-slate-50 px-6 py-3.5 border-b border-slate-200 flex items-center justify-between">
+                        <span className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-2">
+                          <span className="w-5 h-5 rounded-full bg-emerald-700 text-white flex items-center justify-center text-[10px]">
+                            {principio.num}
+                          </span>
+                          {principio.nome}
+                        </span>
+                        <span className="text-xs font-bold text-slate-500 bg-white px-2.5 py-0.5 rounded-full border border-slate-200">
+                          {principioDocs.length} critério(s) com evidência
+                        </span>
+                      </div>
+
+                      <div className="p-4">
+                        {principioDocs.length === 0 ? (
+                          <div className="py-4 text-center text-slate-400 text-xs font-medium">
+                            Nenhuma evidência anexada para os critérios deste princípio ainda.
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {principioDocs.map((doc) => (
+                              <div key={doc.id} className="p-3.5 bg-slate-50/70 rounded-xl border border-slate-200 flex items-center justify-between gap-3 hover:bg-slate-100/60 transition-colors">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5 mb-1">
+                                    <span className="text-[9px] font-black uppercase bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded border border-emerald-200">
+                                      Última Versão
+                                    </span>
+                                    <span className="text-[10px] text-slate-400 font-medium">
+                                      {new Date(doc.data).toLocaleDateString('pt-BR')}
+                                    </span>
+                                  </div>
+                                  <h4 className="text-xs font-bold text-slate-900 truncate">{doc.nome}</h4>
+                                  <p className="text-[11px] text-slate-500 truncate">{doc.origem}</p>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEvidencia(doc.arquivo_url)}
+                                  className="px-3 py-1.5 bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-800 rounded-lg text-xs font-bold transition-all shadow-xs shrink-0 flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5 text-emerald-600" />
+                                  <span>Ver Evidência</span>
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -1433,6 +1560,56 @@ export default function DashboardProdutor() {
         confirmText="Excluir"
         actionType="danger"
       />
+
+      {/* Modal Lightbox de Foto Ampliada */}
+      {fotoAmpliada && (
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn transition-all" onClick={() => setFotoAmpliada(null)}>
+          <div className="relative max-w-4xl max-h-[90vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
+            <button type="button" onClick={() => setFotoAmpliada(null)} className="absolute -top-10 right-0 text-white bg-black/50 hover:bg-black/70 p-2 rounded-full transition-all cursor-pointer shadow-md">
+              <X className="w-6 h-6" />
+            </button>
+            <img src={fotoAmpliada} alt="Evidência Ampliada" className="max-w-full max-h-[85vh] rounded-xl shadow-2xl object-contain border border-slate-700/60 bg-slate-900/40" />
+            {fotoAmpliada.startsWith('http') && (
+              <a href={fotoAmpliada} target="_blank" rel="noreferrer" className="mt-3 text-xs text-emerald-300 underline font-bold hover:text-white flex items-center gap-1 bg-black/40 px-3 py-1 rounded-full border border-white/10">
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Abrir imagem original em nova guia</span>
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Modal Viewer de PDF */}
+      {pdfAmpliado && (
+        <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn" onClick={() => setPdfAmpliado(null)}>
+          <div className="relative w-full max-w-5xl h-[88vh] flex flex-col bg-slate-900 rounded-2xl overflow-hidden border border-slate-700 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-3.5 bg-slate-800 border-b border-slate-700 text-white">
+              <div className="flex items-center gap-2">
+                <FileText className="w-5 h-5 text-emerald-400" />
+                <span className="font-bold text-sm">Visualizador de Documento PDF</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <a
+                  href={pdfAmpliado}
+                  download="documento.pdf"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Baixar / Abrir PDF</span>
+                </a>
+                <button type="button" onClick={() => setPdfAmpliado(null)} className="text-slate-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 w-full h-full bg-slate-950">
+              <iframe src={pdfAmpliado} className="w-full h-full border-none" title="Documento PDF" />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

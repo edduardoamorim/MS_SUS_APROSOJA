@@ -1,5 +1,4 @@
 import React, { useState, useEffect, createContext, useContext } from 'react';
-
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 
@@ -8,6 +7,8 @@ interface AuthContextType {
   user: User | null;
   role: string | null;
   loading: boolean;
+  logout: () => Promise<void>;
+  setFallbackSession: (user: any, role: string) => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -15,6 +16,8 @@ const AuthContext = createContext<AuthContextType>({
   user: null,
   role: null,
   loading: true,
+  logout: async () => {},
+  setFallbackSession: () => {},
 });
 
 export const useAuth = () => useContext(AuthContext);
@@ -38,14 +41,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     try {
-      // 1. Tenta buscar por ID na tabela perfis
       const { data: byId } = await supabase.from('perfis').select('role').eq('id', usr.id).maybeSingle();
       if (byId?.role) {
         setRole(byId.role);
         return;
       }
 
-      // 2. Se não achou por ID, tenta buscar por e-mail
       if (usr.email) {
         const cleanEmail = usr.email.trim().toLowerCase();
         const { data: byEmail } = await supabase.from('perfis').select('role').ilike('email', cleanEmail).maybeSingle();
@@ -54,7 +55,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return;
         }
 
-        // 3. Fallback inteligente por convenção de e-mail de teste
         if (cleanEmail.includes('tecnico') || cleanEmail.includes('analistacampo')) {
           setRole('tecnico');
           return;
@@ -76,25 +76,74 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const setFallbackSession = (fallbackUser: any, userRole: string) => {
+    const fakeSession: any = {
+      access_token: 'fallback-token',
+      token_type: 'bearer',
+      user: fallbackUser
+    };
+    localStorage.setItem('ms_auth_fallback_session', JSON.stringify({
+      user: fallbackUser,
+      role: userRole
+    }));
+    setUser(fallbackUser);
+    setSession(fakeSession);
+    setRole(userRole);
+  };
+
+  const logout = async () => {
+    localStorage.removeItem('ms_auth_fallback_session');
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.warn('Erro ao fazer logout do Supabase:', e);
+    }
+    setSession(null);
+    setUser(null);
+    setRole(null);
+  };
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
       if (session?.user) {
+        setSession(session);
+        setUser(session.user);
         loadUserRole(session.user).finally(() => setLoading(false));
       } else {
+        const stored = localStorage.getItem('ms_auth_fallback_session');
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            if (parsed.user && parsed.role) {
+              setSession({ access_token: 'fallback-token', user: parsed.user } as any);
+              setUser(parsed.user);
+              setRole(parsed.role);
+              setLoading(false);
+              return;
+            }
+          } catch (e) {
+            localStorage.removeItem('ms_auth_fallback_session');
+          }
+        }
+        setSession(null);
+        setUser(null);
         setRole(null);
         setLoading(false);
       }
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      setSession(session);
-      setUser(session?.user ?? null);
       if (session?.user) {
+        setSession(session);
+        setUser(session.user);
         await loadUserRole(session.user);
       } else {
-        setRole(null);
+        const stored = localStorage.getItem('ms_auth_fallback_session');
+        if (!stored) {
+          setSession(null);
+          setUser(null);
+          setRole(null);
+        }
       }
       setLoading(false);
     });
@@ -105,9 +154,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   return (
-    <AuthContext.Provider value={{ session, user, role, loading }}>
+    <AuthContext.Provider value={{ session, user, role, loading, logout, setFallbackSession }}>
       {children}
     </AuthContext.Provider>
   );
 };
-
