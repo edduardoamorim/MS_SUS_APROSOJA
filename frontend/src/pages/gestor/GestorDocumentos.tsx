@@ -322,18 +322,17 @@ export default function GestorDocumentos() {
   });
 
   return (
-    <div className="space-y-6">
-      {/* Cabeçalho da Seção */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+    <div className="space-y-6 animate-fade-in-up">
+      {/* Cabeçalho da Seção com Motion */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-3xl border border-slate-200/80 shadow-xs">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="p-2 bg-emerald-50 text-emerald-700 rounded-xl">
-              <FolderOpen className="w-6 h-6" />
-            </span>
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-              Histórico de Documentação & Evidências
-            </h1>
+          <div className="inline-flex items-center gap-2 bg-[#1B7547]/10 text-[#1B7547] px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider mb-2">
+            <FolderOpen className="w-3.5 h-3.5" />
+            <span>Repositório Digital MS</span>
           </div>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">
+            Histórico de Documentação & Evidências
+          </h1>
           <p className="text-sm text-slate-500 mt-1 font-medium">
             Central de controle de laudos, licenças, CAR, fotos e comprovantes de conformidade das propriedades.
           </p>
@@ -342,31 +341,31 @@ export default function GestorDocumentos() {
         <button
           type="button"
           onClick={() => setShowUploadModal(true)}
-          className="px-5 py-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl font-extrabold text-sm transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer shrink-0"
+          className="group relative flex items-center justify-center gap-2 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white px-6 py-3.5 rounded-2xl font-extrabold text-xs transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer shrink-0"
         >
-          <Plus className="w-4 h-4" />
+          <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
           <span>Arquivar Novo Documento</span>
         </button>
       </div>
 
-      {/* Cards de Métricas */}
+      {/* Cards de Métricas com Motion */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
-          <div className="p-3 bg-emerald-50 text-emerald-700 rounded-xl">
-            <FolderOpen className="w-6 h-6" />
+        <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-xs hover:shadow-lg transition-all duration-300 flex items-center gap-4 group">
+          <div className="p-3.5 bg-[#1B7547]/10 text-[#1B7547] rounded-2xl group-hover:bg-[#1B7547] group-hover:text-white transition-colors duration-300">
+            <FolderOpen className="w-6 h-6 transition-transform group-hover:scale-110" />
           </div>
           <div>
-            <div className="text-2xl font-black text-slate-900">{documentos.length}</div>
-            <div className="text-xs text-slate-500 font-bold uppercase tracking-wider">Total de Arquivos</div>
+            <div className="text-2xl font-extrabold text-slate-900 tracking-tight">{documentos.length}</div>
+            <div className="text-xs text-slate-500 font-extrabold uppercase tracking-wider">Total de Arquivos</div>
           </div>
         </div>
 
-        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center gap-4">
-          <div className="p-3 bg-blue-50 text-blue-700 rounded-xl">
-            <ShieldCheck className="w-6 h-6" />
+        <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-xs hover:shadow-lg transition-all duration-300 flex items-center gap-4 group">
+          <div className="p-3.5 bg-blue-50 text-blue-700 rounded-2xl group-hover:bg-blue-600 group-hover:text-white transition-colors duration-300">
+            <ShieldCheck className="w-6 h-6 transition-transform group-hover:scale-110" />
           </div>
           <div>
-            <div className="text-2xl font-black text-slate-900">
+            <div className="text-2xl font-extrabold text-slate-900 tracking-tight">
               {documentos.filter(d => d.categoria === 'Checklist RTRS').length}
             </div>
             <div className="text-xs text-slate-500 font-bold uppercase tracking-wider">Evidências RTRS</div>
@@ -493,16 +492,16 @@ export default function GestorDocumentos() {
                       <button
                         type="button"
                         onClick={() => handleOpenEvidencia(doc.arquivo_url)}
-                        className="inline-flex items-center gap-1 text-xs text-emerald-700 hover:text-emerald-900 font-bold underline cursor-pointer"
+                        className="group/btn inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#1B7547]/10 hover:bg-[#1B7547]/20 text-[#1B7547] rounded-xl text-xs font-extrabold transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
                       >
                         {doc.arquivo_url?.toLowerCase().includes('.pdf') ? (
                           <>
-                            <FileText className="w-4 h-4 shrink-0 text-emerald-600" />
+                            <FileText className="w-3.5 h-3.5 shrink-0 text-[#1B7547] transition-transform group-hover/btn:scale-110 duration-300" />
                             <span>Abrir PDF</span>
                           </>
                         ) : (
                           <>
-                            <ImageIcon className="w-4 h-4 shrink-0 text-emerald-600" />
+                            <ImageIcon className="w-3.5 h-3.5 shrink-0 text-[#1B7547] transition-transform group-hover/btn:scale-110 duration-300" />
                             <span>Ver Imagem</span>
                           </>
                         )}
@@ -513,13 +512,13 @@ export default function GestorDocumentos() {
                         <button
                           type="button"
                           onClick={() => setDeleteConfirmId(doc.id)}
-                          className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                          className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all duration-300 hover:scale-110 active:scale-90 cursor-pointer"
                           title="Excluir documento"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
                       ) : (
-                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider bg-slate-100 px-2 py-0.5 rounded">
+                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider bg-slate-100 px-2.5 py-1 rounded-lg">
                           Vinculado
                         </span>
                       )}

@@ -216,20 +216,21 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
           )}
         </div>
 
-        {/* Footer: Botões de Decisão */}
-        <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 shrink-0 flex justify-end gap-3">
+        {/* Footer: Botões de Decisão Padronizados com Motion */}
+        <div className="px-6 py-4 bg-slate-50 border-t border-slate-200/80 shrink-0 flex justify-end gap-3">
           <button
             onClick={onReject}
-            className="px-6 py-3 bg-white border border-red-200 text-red-700 hover:bg-red-50 rounded-xl font-bold transition-colors"
+            className="group relative flex items-center gap-2 px-6 py-3 bg-white border border-red-200 text-red-700 hover:bg-red-50 hover:border-red-300 rounded-2xl font-extrabold text-xs transition-all duration-300 hover:scale-105 active:scale-95 shadow-2xs cursor-pointer overflow-hidden"
           >
-            Recusar (Exigir Adequações)
+            <span>Recusar (Exigir Adequações)</span>
           </button>
           <button
             onClick={onApprove}
-            className="px-8 py-3 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm rounded-xl font-bold flex items-center gap-2 transition-colors"
+            className="group relative flex items-center gap-2 px-7 py-3 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white shadow-md shadow-[#1B7547]/20 hover:shadow-xl rounded-2xl font-extrabold text-xs transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
           >
-            <ShieldCheck className="w-5 h-5" />
-            Aprovar Certificação Oficial
+            <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+            <ShieldCheck className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
+            <span>Aprovar Certificação Oficial</span>
           </button>
         </div>
       </div>

@@ -867,23 +867,22 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
             </span>
           </div>
 
-          <div className="flex items-center gap-2 w-full sm:w-auto">
+          <div className="flex items-center gap-3 w-full sm:w-auto">
             <button
               type="button"
               onClick={handleSavePartial}
-              disabled={savingPartial || loading || loadingPerguntas}
-              className="flex-1 sm:flex-none px-3 py-2.5 sm:px-5 sm:py-3 bg-white border-2 border-slate-300 hover:border-emerald-600 text-slate-700 hover:text-emerald-800 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-sm"
+              disabled={savingPartial || loading}
+              className="flex-1 sm:flex-none px-5 py-3 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-2xl font-extrabold text-xs sm:text-sm border border-slate-200/80 transition-all duration-300 hover:scale-105 active:scale-95 disabled:opacity-50 cursor-pointer shadow-2xs flex items-center justify-center gap-2"
             >
               {savingPartial ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
-                  <span className="hidden sm:inline">Salvando...</span>
-                  <span className="sm:hidden">Salvando</span>
+                  <Loader2 className="w-4 h-4 animate-spin text-[#1B7547]" />
+                  <span>Salvando...</span>
                 </>
               ) : (
                 <>
-                  <Save className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>Rascunho</span>
+                  <Save className="w-4 h-4 text-[#1B7547] shrink-0" />
+                  <span>Salvar Rascunho</span>
                 </>
               )}
             </button>
@@ -892,17 +891,18 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               type="button"
               onClick={handleSubmit}
               disabled={loading || savingPartial || loadingPerguntas || perguntas.length === 0}
-              className="flex-1 sm:flex-none px-4 py-2.5 sm:px-6 sm:py-3 bg-emerald-800 hover:bg-emerald-900 text-white rounded-xl font-extrabold text-xs sm:text-sm shadow-md transition-all flex justify-center items-center gap-1.5 disabled:opacity-60 cursor-pointer"
+              className="group relative flex-1 sm:flex-none px-6 py-3 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-2xl font-extrabold text-xs sm:text-sm shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-300 flex justify-center items-center gap-2 disabled:opacity-60 cursor-pointer overflow-hidden"
             >
+              <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
               {loading ? (
                 <>
                   <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
-                  <span>Finalizando...</span>
+                  <span>Submetendo Vistoria...</span>
                 </>
               ) : (
                 <>
-                  <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-300 shrink-0" />
-                  <span>Submeter</span>
+                  <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-300 shrink-0 transition-transform group-hover:scale-110 duration-300" />
+                  <span>Submeter Vistoria RTRS</span>
                 </>
               )}
             </button>

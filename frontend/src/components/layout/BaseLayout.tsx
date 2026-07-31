@@ -18,15 +18,15 @@ export default function BaseLayout() {
   const rootPaths = [
     '/',
     '/login',
-    '/produtor',
-    '/tecnico',
-    '/gestor',
-    '/gestor/visao-geral',
-    '/gestor/propriedades',
-    '/gestor/usuarios',
-    '/gestor/auditorias',
-    '/gestor/questionario',
-    '/gestor/mapa'
+    '/app/produtor',
+    '/app/tecnico',
+    '/app/gestor',
+    '/app/gestor/visao-geral',
+    '/app/gestor/propriedades',
+    '/app/gestor/usuarios',
+    '/app/gestor/auditorias',
+    '/app/gestor/questionario',
+    '/app/gestor/mapa'
   ];
 
   // Mostra o botão Voltar APENAS se a rota atual NÃO for uma das rotas principais de navegação
@@ -34,9 +34,9 @@ export default function BaseLayout() {
 
   const getHomePath = () => {
     if (!user) return '/';
-    if (role === 'gestor') return '/gestor';
-    if (role === 'tecnico') return '/tecnico';
-    if (role === 'produtor') return '/produtor';
+    if (role === 'gestor') return '/app/gestor';
+    if (role === 'tecnico') return '/app/tecnico';
+    if (role === 'produtor') return '/app/produtor';
     return '/';
   };
 
@@ -89,7 +89,7 @@ export default function BaseLayout() {
 
                 {/* Botões de Ação */}
                 <Link
-                  to="/perfil"
+                  to="/app/perfil"
                   className="flex items-center justify-center w-9 h-9 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-all duration-200"
                   title="Meu Perfil"
                 >
@@ -109,8 +109,8 @@ export default function BaseLayout() {
         </div>
       </header>
 
-      {/* Conteúdo Principal */}
-      <main className="flex-1 w-full max-w-[1920px] mx-auto p-4 sm:p-6 lg:p-8">
+      {/* Conteúdo Principal com Animação Fluida */}
+      <main key={location.pathname} className="flex-1 w-full max-w-[1920px] mx-auto p-4 sm:p-6 lg:p-8 animate-fade-in-up duration-300">
         <Outlet />
       </main>
     </div>

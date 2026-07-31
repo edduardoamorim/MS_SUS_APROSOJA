@@ -328,46 +328,51 @@ export default function GestorAuditorias() {
   const countOficial = auditorias.filter(a => a.etapa === 'Auditoria Oficial').length;
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="space-y-6 animate-fade-in-up">
       {/* Cabeçalho */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-border pb-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-200/80 pb-6">
         <div>
-          <h1 className="text-2xl font-bold text-foreground tracking-tight flex items-center gap-2">
-            <FileCheck2 className="w-5 h-5 text-emerald-600" />
+          <div className="inline-flex items-center gap-2 bg-[#1B7547]/10 text-[#1B7547] px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider mb-2">
+            <FileCheck2 className="w-3.5 h-3.5" />
+            <span>Fluxo de Homologação RTRS</span>
+          </div>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
             Gestão de Auditorias & Etapas RTRS
           </h1>
-          <p className="text-muted-foreground mt-1 text-sm">
+          <p className="text-slate-500 mt-1 text-sm">
             Gerencie o fluxo de certificação dividido nas 3 etapas oficiais: Prospecção, Auditoria Prévia e Auditoria Oficial.
           </p>
         </div>
         <button 
           onClick={handleOpenCreate}
-          className="flex items-center gap-2 bg-emerald-700 hover:bg-emerald-800 text-white px-4 py-2.5 rounded-xl font-bold text-xs transition-all shadow-sm active:scale-[0.98] cursor-pointer"
+          className="group relative flex items-center gap-2 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white px-5 py-3 rounded-2xl font-extrabold text-xs transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
         >
-          <Calendar className="w-4 h-4" />
+          <Calendar className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
           <span>Novo Agendamento ({activeEtapaTab})</span>
         </button>
       </div>
 
-      {/* ABAS DAS 3 ETAPAS DA AUDITORIA */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      {/* ABAS DAS 3 ETAPAS DA AUDITORIA COM MOTION DESIGN */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <button
           type="button"
           onClick={() => setActiveEtapaTab('Prospecção')}
-          className={`p-4 rounded-2xl border text-left transition-all cursor-pointer flex items-center justify-between ${
+          className={`p-5 rounded-3xl border text-left transition-all duration-300 cursor-pointer flex items-center justify-between group ${
             activeEtapaTab === 'Prospecção'
-              ? 'bg-amber-50 border-amber-300 ring-2 ring-amber-400/30 shadow-sm'
-              : 'bg-white border-slate-200 hover:bg-slate-50'
+              ? 'bg-gradient-to-br from-amber-50 to-white border-amber-300 ring-4 ring-amber-400/20 shadow-lg scale-102'
+              : 'bg-white border-slate-200 hover:bg-slate-50 hover:shadow-md'
           }`}
         >
           <div>
-            <div className="flex items-center gap-2">
-              <span className="w-6 h-6 rounded-full bg-amber-200 text-amber-900 text-xs font-black flex items-center justify-center">1</span>
+            <div className="flex items-center gap-2.5">
+              <span className={`w-7 h-7 rounded-2xl text-xs font-extrabold flex items-center justify-center transition-transform group-hover:scale-110 ${
+                activeEtapaTab === 'Prospecção' ? 'bg-[#C59B27] text-white shadow-md' : 'bg-amber-100 text-amber-900'
+              }`}>1</span>
               <h3 className="font-extrabold text-sm text-slate-900">1. Prospecção</h3>
             </div>
-            <p className="text-[11px] text-slate-500 mt-1 font-medium">Onboarding e cadastro de fazendas</p>
+            <p className="text-[11px] text-slate-500 mt-1.5 font-medium">Onboarding e cadastro de fazendas</p>
           </div>
-          <span className="text-lg font-black text-amber-700 bg-amber-100/80 px-3 py-1 rounded-xl">
+          <span className="text-base font-extrabold text-[#C59B27] bg-[#C59B27]/10 px-3 py-1.5 rounded-2xl border border-[#C59B27]/20 shadow-2xs">
             {countProspeccao}
           </span>
         </button>
@@ -375,20 +380,22 @@ export default function GestorAuditorias() {
         <button
           type="button"
           onClick={() => setActiveEtapaTab('Auditoria Prévia')}
-          className={`p-4 rounded-2xl border text-left transition-all cursor-pointer flex items-center justify-between ${
+          className={`p-5 rounded-3xl border text-left transition-all duration-300 cursor-pointer flex items-center justify-between group ${
             activeEtapaTab === 'Auditoria Prévia'
-              ? 'bg-blue-50 border-blue-300 ring-2 ring-blue-400/30 shadow-sm'
-              : 'bg-white border-slate-200 hover:bg-slate-50'
+              ? 'bg-gradient-to-br from-blue-50 to-white border-blue-300 ring-4 ring-blue-400/20 shadow-lg scale-102'
+              : 'bg-white border-slate-200 hover:bg-slate-50 hover:shadow-md'
           }`}
         >
           <div>
-            <div className="flex items-center gap-2">
-              <span className="w-6 h-6 rounded-full bg-blue-200 text-blue-900 text-xs font-black flex items-center justify-center">2</span>
+            <div className="flex items-center gap-2.5">
+              <span className={`w-7 h-7 rounded-2xl text-xs font-extrabold flex items-center justify-center transition-transform group-hover:scale-110 ${
+                activeEtapaTab === 'Auditoria Prévia' ? 'bg-blue-600 text-white shadow-md' : 'bg-blue-100 text-blue-900'
+              }`}>2</span>
               <h3 className="font-extrabold text-sm text-slate-900">2. Auditoria Prévia</h3>
             </div>
-            <p className="text-[11px] text-slate-500 mt-1 font-medium">Diagnóstico prévio e autoavaliação</p>
+            <p className="text-[11px] text-slate-500 mt-1.5 font-medium">Diagnóstico prévio e autoavaliação</p>
           </div>
-          <span className="text-lg font-black text-blue-700 bg-blue-100/80 px-3 py-1 rounded-xl">
+          <span className="text-base font-extrabold text-blue-700 bg-blue-100/80 px-3 py-1.5 rounded-2xl border border-blue-200 shadow-2xs">
             {countPrevia}
           </span>
         </button>
@@ -396,20 +403,22 @@ export default function GestorAuditorias() {
         <button
           type="button"
           onClick={() => setActiveEtapaTab('Auditoria Oficial')}
-          className={`p-4 rounded-2xl border text-left transition-all cursor-pointer flex items-center justify-between ${
+          className={`p-5 rounded-3xl border text-left transition-all duration-300 cursor-pointer flex items-center justify-between group ${
             activeEtapaTab === 'Auditoria Oficial'
-              ? 'bg-emerald-50 border-emerald-300 ring-2 ring-emerald-400/30 shadow-sm'
-              : 'bg-white border-slate-200 hover:bg-slate-50'
+              ? 'bg-gradient-to-br from-emerald-50 to-white border-emerald-300 ring-4 ring-emerald-400/20 shadow-lg scale-102'
+              : 'bg-white border-slate-200 hover:bg-slate-50 hover:shadow-md'
           }`}
         >
           <div>
-            <div className="flex items-center gap-2">
-              <span className="w-6 h-6 rounded-full bg-emerald-200 text-emerald-900 text-xs font-black flex items-center justify-center">3</span>
+            <div className="flex items-center gap-2.5">
+              <span className={`w-7 h-7 rounded-2xl text-xs font-extrabold flex items-center justify-center transition-transform group-hover:scale-110 ${
+                activeEtapaTab === 'Auditoria Oficial' ? 'bg-[#1B7547] text-white shadow-md' : 'bg-emerald-100 text-emerald-900'
+              }`}>3</span>
               <h3 className="font-extrabold text-sm text-slate-900">3. Auditoria Oficial</h3>
             </div>
-            <p className="text-[11px] text-slate-500 mt-1 font-medium">Vistoria in-loco e certificação RTRS</p>
+            <p className="text-[11px] text-slate-500 mt-1.5 font-medium">Vistoria técnica final & Certificação</p>
           </div>
-          <span className="text-lg font-black text-emerald-700 bg-emerald-100/80 px-3 py-1 rounded-xl">
+          <span className="text-base font-extrabold text-[#1B7547] bg-[#1B7547]/10 px-3 py-1.5 rounded-2xl border border-[#1B7547]/20 shadow-2xs">
             {countOficial}
           </span>
         </button>
@@ -501,11 +510,11 @@ export default function GestorAuditorias() {
                             <button
                               type="button"
                               onClick={() => handleUpdateEtapa(auditoria.id, 'Auditoria Prévia')}
-                              className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-lg font-bold text-[11px] border border-blue-200 transition-all flex items-center gap-1 cursor-pointer"
+                              className="group/btn inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-xl font-extrabold text-[11px] border border-blue-200/80 transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs"
                               title="Promover para Auditoria Prévia"
                             >
                               <span>Avançar para Prévia</span>
-                              <ArrowRight className="w-3 h-3" />
+                              <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover/btn:translate-x-1 duration-300" />
                             </button>
                           )}
 
@@ -513,11 +522,11 @@ export default function GestorAuditorias() {
                             <button
                               type="button"
                               onClick={() => handleUpdateEtapa(auditoria.id, 'Auditoria Oficial')}
-                              className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg font-bold text-[11px] border border-emerald-200 transition-all flex items-center gap-1 cursor-pointer"
+                              className="group/btn inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-xl font-extrabold text-[11px] border border-emerald-200/80 transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs"
                               title="Promover para Auditoria Oficial"
                             >
                               <span>Promover p/ Oficial</span>
-                              <ArrowRight className="w-3 h-3" />
+                              <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover/btn:translate-x-1 duration-300" />
                             </button>
                           )}
 
@@ -525,9 +534,10 @@ export default function GestorAuditorias() {
                             <button 
                               type="button"
                               onClick={() => setRevisaoAuditoria({ id: auditoria.id, nome: getFazendaName(auditoria) })}
-                              className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold text-xs shadow-xs transition-all flex items-center gap-1 cursor-pointer"
+                              className="group/btn relative inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-xl font-extrabold text-xs shadow-md shadow-[#1B7547]/20 transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
                             >
-                              <FileSearch className="w-3.5 h-3.5" />
+                              <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover/btn:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+                              <FileSearch className="w-3.5 h-3.5 transition-transform group-hover/btn:scale-110 duration-300" />
                               <span>Avaliar Certificação</span>
                             </button>
                           )}
@@ -535,7 +545,7 @@ export default function GestorAuditorias() {
                           <button 
                             type="button"
                             onClick={() => handleOpenEdit(auditoria)}
-                            className="p-1.5 text-slate-400 hover:text-emerald-700 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                            className="p-2 text-slate-400 hover:text-[#1B7547] hover:bg-[#1B7547]/10 rounded-xl transition-all duration-300 hover:scale-110 active:scale-90 cursor-pointer"
                             title="Editar"
                           >
                             <Edit3 className="w-4 h-4" />
@@ -543,7 +553,7 @@ export default function GestorAuditorias() {
                           <button 
                             type="button"
                             onClick={() => handleOpenDelete(auditoria)}
-                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all duration-300 hover:scale-110 active:scale-90 cursor-pointer"
                             title="Excluir"
                           >
                             <Trash2 className="w-4 h-4" />

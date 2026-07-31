@@ -17,10 +17,10 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
 
   const redirectByRole = (role: string) => {
-    if (role === 'produtor') navigate('/produtor');
-    else if (role === 'tecnico') navigate('/tecnico');
-    else if (role === 'gestor') navigate('/gestor');
-    else navigate('/produtor');
+    if (role === 'produtor') navigate('/app/produtor');
+    else if (role === 'tecnico') navigate('/app/tecnico');
+    else if (role === 'gestor') navigate('/app/gestor');
+    else navigate('/app/produtor');
   };
 
   const TEST_USERS: Record<string, { name: string; role: string; id?: string }> = {

@@ -44,17 +44,20 @@
   --animate-shimmer: shimmer 2s infinite linear;
   --animate-soft-pulse: softPulse 2s infinite ease-in-out;
   --animate-bounce-soft: bounceSoft 2s infinite ease-in-out;
+  --animate-float-slow: floatSlow 4s ease-in-out infinite;
+  --animate-pulse-glow: pulseGlow 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-gradient-flow: gradientFlow 6s ease infinite;
 
   @keyframes fadeIn {
     from { opacity: 0; }
     to { opacity: 1; }
   }
   @keyframes fadeInUp {
-    from { opacity: 0; transform: translateY(12px); }
+    from { opacity: 0; transform: translateY(16px); }
     to { opacity: 1; transform: translateY(0); }
   }
   @keyframes fadeInDown {
-    from { opacity: 0; transform: translateY(-12px); }
+    from { opacity: 0; transform: translateY(-16px); }
     to { opacity: 1; transform: translateY(0); }
   }
   @keyframes slideInRight {
@@ -77,6 +80,23 @@
     0%, 100% { transform: translateY(-5%); }
     50% { transform: translateY(0); }
   }
+  @keyframes floatSlow {
+    0%, 100% { transform: translateY(0px) rotate(0deg); }
+    50% { transform: translateY(-8px) rotate(0.5deg); }
+  }
+  @keyframes pulseGlow {
+    0%, 100% { box-shadow: 0 0 15px rgba(27, 117, 71, 0.2); }
+    50% { box-shadow: 0 0 35px rgba(197, 155, 39, 0.4); }
+  }
+  @keyframes gradientFlow {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 @layer base {

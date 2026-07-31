@@ -20,6 +20,7 @@ import {
 import { supabase } from '../../lib/supabase';
 import Modal from '../ui/Modal';
 import { resolveMunicipioFromCarOrName } from '../../lib/geoUtils';
+import { formatUltimaAlteracao } from '../../lib/dateUtils';
 
 interface Props {
   isOpen: boolean;
@@ -174,6 +175,12 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
                 <span>•</span>
                 <span>Produtor: <strong>{producerName}</strong></span>
               </p>
+
+              <div className="flex items-center gap-2 mt-2 pt-2 border-t border-white/10 text-[11px] text-emerald-100 font-medium">
+                <Clock className="w-3.5 h-3.5 text-[#C59B27] shrink-0" />
+                <span>Última alteração:</span>
+                <strong className="text-white font-extrabold">{formatUltimaAlteracao(auditoria.ultima_alteracao_at || auditoria.updated_at || auditoria.created_at).badgeText}</strong>
+              </div>
             </div>
 
             <button
@@ -349,25 +356,25 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
           </div>
         </div>
 
-        {/* Rodapé com Botões de Ação Direta */}
-        <div className="flex flex-col sm:flex-row justify-between items-center gap-3 pt-4 border-t border-border mt-4">
+        {/* Rodapé com Botões de Ação Direta Padronizados com Motion */}
+        <div className="flex flex-col sm:flex-row justify-between items-center gap-3 pt-4 border-t border-slate-200/80 mt-4">
           <button
             type="button"
             onClick={() => {
               onClose();
               onOpenPendencias(prop || farmDetails);
             }}
-            className="w-full sm:w-auto px-4 py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs"
+            className="group/btn w-full sm:w-auto px-4.5 py-2.5 bg-amber-100/80 hover:bg-amber-200/80 text-amber-950 border border-amber-300/80 rounded-2xl font-extrabold text-xs flex items-center justify-center gap-2 transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs"
           >
-            <ClipboardList className="w-4 h-4 text-[#C59B27]" />
-            Gerenciar Pendências ({pendenciasCount})
+            <ClipboardList className="w-4 h-4 text-[#C59B27] transition-transform group-hover/btn:scale-110 duration-300" />
+            <span>Gerenciar Pendências ({pendenciasCount})</span>
           </button>
 
-          <div className="flex items-center gap-2 w-full sm:w-auto">
+          <div className="flex items-center gap-3 w-full sm:w-auto">
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 sm:flex-initial px-4 py-2.5 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-xl font-bold text-xs transition-all cursor-pointer"
+              className="flex-1 sm:flex-initial px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl font-extrabold text-xs transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
             >
               Fechar
             </button>
@@ -377,10 +384,11 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
                 onClose();
                 onStartVisita(auditoria);
               }}
-              className="flex-1 sm:flex-initial px-5 py-2.5 bg-[#1B7547] hover:bg-[#16633b] text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md active:scale-[0.98]"
+              className="group relative flex-1 sm:flex-initial flex items-center justify-center gap-2 px-6 py-2.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-2xl font-extrabold text-xs shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-300 cursor-pointer overflow-hidden"
             >
-              <Sparkles className="w-4 h-4" />
-              {answeredCount > 0 ? 'Continuar Questionário RTRS' : 'Iniciar Vistoria RTRS'}
+              <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+              <Sparkles className="w-4 h-4 transition-transform group-hover:rotate-12 duration-300" />
+              <span>{answeredCount > 0 ? 'Continuar Questionário RTRS' : 'Iniciar Vistoria RTRS'}</span>
             </button>
           </div>
         </div>

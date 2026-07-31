@@ -199,48 +199,66 @@ export default function GestorUsuarios() {
   }
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-border pb-6">
+    <div className="space-y-6 animate-fade-in-up">
+      {/* Cabeçalho da Seção */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-200/80 pb-6">
         <div>
-          <h1 className="text-2xl font-bold text-foreground tracking-tight flex items-center gap-2">
-            <Users className="w-5 h-5 text-primary" />
+          <div className="inline-flex items-center gap-2 bg-[#1B7547]/10 text-[#1B7547] px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider mb-2">
+            <Users className="w-3.5 h-3.5" />
+            <span>Gestão de Acessos & Perfis</span>
+          </div>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
             Controle de Usuários
           </h1>
-          <p className="text-muted-foreground mt-1 text-sm">Gerencie acessos de Técnicos de Campo e Produtores Rurais.</p>
+          <p className="text-slate-500 mt-1 text-sm">Gerencie permissões e perfis de Técnicos de Campo e Produtores Rurais.</p>
         </div>
         <button 
           onClick={handleOpenCreate}
-          className="flex items-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded-md font-medium text-sm transition-all shadow-sm active:scale-[0.98]"
+          className="group relative flex items-center gap-2 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white px-5 py-3 rounded-2xl font-extrabold text-xs transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer shrink-0"
         >
-          <Plus className="w-4 h-4" />
-          Convidar {activeTab === 'tecnicos' ? 'Técnico' : 'Produtor'}
+          <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
+          <span>Convidar {activeTab === 'tecnicos' ? 'Técnico' : 'Produtor'}</span>
         </button>
       </div>
 
-      <div className="flex gap-6 border-b border-border">
-        <button 
+      {/* Selector de Abas de Role com Motion */}
+      <div className="flex gap-3 bg-slate-100 p-1.5 rounded-2xl border border-slate-200 w-fit">
+        <button
           onClick={() => setActiveTab('tecnicos')}
-          className={`pb-3 px-1 font-medium text-sm border-b-2 transition-colors flex items-center gap-2 ${activeTab === 'tecnicos' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-extrabold transition-all duration-300 cursor-pointer ${
+            activeTab === 'tecnicos'
+              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+          }`}
         >
-          <Shield className="w-4 h-4" /> Equipe de Campo
+          <UserCog className="w-4 h-4" />
+          <span>Técnicos de Campo ({tecnicos.length})</span>
         </button>
-        <button 
+
+        <button
           onClick={() => setActiveTab('produtores')}
-          className={`pb-3 px-1 font-medium text-sm border-b-2 transition-colors flex items-center gap-2 ${activeTab === 'produtores' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-extrabold transition-all duration-300 cursor-pointer ${
+            activeTab === 'produtores'
+              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+          }`}
         >
-          <UserCog className="w-4 h-4" /> Produtores Rurais
+          <UserCheck className="w-4 h-4" />
+          <span>Produtores Rurais ({produtores.length})</span>
         </button>
       </div>
 
-      <div className="relative w-full sm:w-96">
-        <Search className="w-4 h-4 text-muted-foreground absolute left-3 top-2.5" />
-        <input 
-          type="text" 
-          placeholder="Buscar por nome ou email..."
-          value={searchQuery}
-          onChange={e => setSearchQuery(e.target.value)}
-          className="w-full pl-9 pr-4 py-2 bg-background border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent shadow-sm text-sm"
-        />
+      <div className="flex flex-col sm:flex-row gap-4 items-center justify-between">
+        <div className="relative w-full sm:w-96">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
+          <input 
+            type="text" 
+            placeholder={`Buscar por nome ou e-mail...`}
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-2xl focus:outline-none focus:ring-4 focus:ring-[#1B7547]/15 focus:border-[#1B7547] shadow-xs text-xs font-medium transition-all"
+          />
+        </div>
       </div>
 
       <div className="bg-card rounded-xl shadow-sm border border-border overflow-hidden">
@@ -288,22 +306,24 @@ export default function GestorUsuarios() {
                         {user.status}
                       </span>
                     </td>
-                    <td className="px-5 py-3 text-right">
-                      <div className="flex items-center justify-end gap-2 opacity-50 group-hover:opacity-100 transition-opacity">
-                        <button 
-                          onClick={() => handleOpenEdit(user)}
-                          className="p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded-md transition-all hover:scale-110 hover:-translate-y-0.5 active:scale-95"
-                        >
-                          <Edit3 className="w-4 h-4" />
-                        </button>
-                        <button 
-                          onClick={() => handleOpenDelete(user)}
-                          className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md transition-all hover:scale-110 hover:-translate-y-0.5 active:scale-95"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
+                      <td className="px-5 py-3 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <button 
+                            onClick={() => handleOpenEdit(user)}
+                            className="p-2 text-slate-400 hover:text-[#1B7547] hover:bg-[#1B7547]/10 rounded-xl transition-all duration-300 hover:scale-110 active:scale-90 cursor-pointer"
+                            title="Editar Usuário"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button 
+                            onClick={() => handleOpenDelete(user)}
+                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all duration-300 hover:scale-110 active:scale-90 cursor-pointer"
+                            title="Excluir Usuário"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
                   </tr>
                 );
               })

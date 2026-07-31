@@ -329,16 +329,15 @@ export default function GestorQuestionarios() {
   }
 
   return (
-    <div className="space-y-6 animate-fade-in pb-12">
-      {/* Header da Página */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white/70 backdrop-blur-md p-6 rounded-2xl border border-slate-200/80 shadow-xs">
+    <div className="space-y-6 animate-fade-in-up pb-12">
+      {/* Header da Página com Motion */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-3xl border border-slate-200/80 shadow-xs">
         <div>
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-emerald-100/80 text-emerald-800">
-              <ClipboardList className="w-5 h-5" />
-            </div>
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Matriz RTRS</h1>
+          <div className="inline-flex items-center gap-2 bg-[#1B7547]/10 text-[#1B7547] px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider mb-2">
+            <ClipboardList className="w-3.5 h-3.5" />
+            <span>Matriz RTRS Oficial</span>
           </div>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Matriz RTRS de Auditoria</h1>
           <p className="text-slate-500 text-sm mt-1 font-medium">
             Gerencie os 5 Princípios da certificação e seus respectivos critérios avaliados em campo.
           </p>
@@ -346,25 +345,25 @@ export default function GestorQuestionarios() {
         <div className="flex items-center gap-3 shrink-0">
           <button 
             onClick={() => setIsSecaoOpen(true)}
-            className="flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200/80 text-slate-800 text-sm font-semibold rounded-xl transition-all duration-200 active:scale-95 shadow-xs"
+            className="flex items-center gap-2 px-4.5 py-3 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-extrabold rounded-2xl transition-all duration-300 active:scale-95 shadow-xs cursor-pointer"
           >
             <Plus className="w-4 h-4 text-slate-600" />
             <span>Nova Seção</span>
           </button>
           <button 
             onClick={handleOpenCreate}
-            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-700 to-teal-800 hover:from-emerald-800 hover:to-teal-900 text-white text-sm font-semibold rounded-xl transition-all duration-200 active:scale-95 shadow-md shadow-emerald-900/15"
+            className="group relative flex items-center gap-2 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white px-5 py-3 rounded-2xl font-extrabold text-xs transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer shrink-0"
           >
-            <Plus className="w-4 h-4" />
+            <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
             <span>Novo Critério</span>
           </button>
         </div>
       </div>
 
       <div className="flex flex-col lg:flex-row gap-6 items-start">
-        {/* Menu Lateral de Seções (Princípios RTRS) */}
-        <div className="w-full lg:w-80 xl:w-96 bg-white/80 backdrop-blur-md rounded-2xl border border-slate-200/80 p-3.5 shadow-xs space-y-1.5 shrink-0">
-          <div className="px-3 py-2 text-[11px] font-black text-slate-400 uppercase tracking-wider">
+        {/* Menu Lateral de Seções (Princípios RTRS) com Motion */}
+        <div className="w-full lg:w-80 xl:w-96 bg-white/90 backdrop-blur-md rounded-3xl border border-slate-200/80 p-4 shadow-xs space-y-2 shrink-0">
+          <div className="px-3 py-1.5 text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">
             Seções do Questionário ({secoes.length})
           </div>
           {secoes.map((secao) => {
@@ -374,10 +373,10 @@ export default function GestorQuestionarios() {
               <button
                 key={secao}
                 onClick={() => setSecaoAtiva(secao)}
-                className={`w-full flex items-start justify-between gap-2.5 px-3.5 py-3 rounded-xl text-left text-xs font-bold transition-all duration-200 group active:scale-[0.98] ${
+                className={`w-full flex items-start justify-between gap-2.5 px-4 py-3.5 rounded-2xl text-left text-xs font-extrabold transition-all duration-300 group active:scale-[0.98] cursor-pointer ${
                   isActive 
-                    ? 'bg-gradient-to-r from-emerald-800 to-teal-900 text-white shadow-md shadow-emerald-950/20' 
-                    : 'text-slate-700 hover:bg-slate-100/80 hover:text-slate-900'
+                    ? 'bg-gradient-to-r from-[#1B7547] to-[#15613a] text-white shadow-md shadow-[#1B7547]/25 translate-x-1' 
+                    : 'text-slate-700 hover:bg-slate-100/80 hover:text-slate-900 lg:hover:translate-x-1'
                 }`}
               >
                 <span className="leading-snug flex-1">{secao}</span>
@@ -517,13 +516,13 @@ export default function GestorQuestionarios() {
                                       )}
                                     </div>
                                     
-                                    {/* Botões de Ação */}
-                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 shrink-0">
+                                    {/* Botões de Ação Padronizados com Motion */}
+                                    <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 shrink-0">
                                       <button 
                                         type="button"
                                         onClick={() => toggleAtivo(p.id, isAtivo)}
-                                        className={`p-2 rounded-lg transition-all active:scale-90 shadow-2xs hover:shadow-xs ${
-                                          isAtivo ? 'text-amber-600 hover:bg-amber-50' : 'text-emerald-600 hover:bg-emerald-50'
+                                        className={`p-2 rounded-xl transition-all duration-300 hover:scale-110 active:scale-90 cursor-pointer ${
+                                          isAtivo ? 'text-amber-600 hover:bg-amber-50' : 'text-[#1B7547] hover:bg-[#1B7547]/10'
                                         }`}
                                         title={isAtivo ? "Desativar Critério" : "Ativar Critério"}
                                       >
@@ -532,7 +531,7 @@ export default function GestorQuestionarios() {
                                       <button 
                                         type="button"
                                         onClick={() => handleOpenEdit(p)}
-                                        className="p-2 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-all active:scale-90 shadow-2xs hover:shadow-xs"
+                                        className="p-2 text-slate-400 hover:text-[#1B7547] hover:bg-[#1B7547]/10 rounded-xl transition-all duration-300 hover:scale-110 active:scale-90 cursor-pointer"
                                         title="Editar Critério"
                                       >
                                         <Edit3 className="w-4 h-4" />
@@ -540,7 +539,7 @@ export default function GestorQuestionarios() {
                                       <button 
                                         type="button"
                                         onClick={() => handleOpenDelete(p)}
-                                        className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all active:scale-90 shadow-2xs hover:shadow-xs"
+                                        className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all duration-300 hover:scale-110 active:scale-90 cursor-pointer"
                                         title="Excluir Critério"
                                       >
                                         <Trash2 className="w-4 h-4" />

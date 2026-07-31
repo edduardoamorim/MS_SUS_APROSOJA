@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { MapPin, ClipboardList, CheckCircle2, CalendarDays, Clock, Plus, Trash2, Loader2, Search, Map as MapIcon, AlertTriangle, Eye, FileText, ChevronRight, FolderOpen, Image as ImageIcon, Download, ExternalLink, X } from 'lucide-react';
 import type { FeatureCollection } from 'geojson';
@@ -8,7 +9,7 @@ import { useAuth } from '../../context/AuthContext';
 import QuestionarioRTRS from '../../components/auditoria/QuestionarioRTRS';
 import Modal from '../../components/ui/Modal';
 import { useToast } from '../../context/ToastContext';
-import { getRemainingTimeLabel } from '../../lib/dateUtils';
+import { getRemainingTimeLabel, formatUltimaAlteracao } from '../../lib/dateUtils';
 import PropertyCodeInput from '../../components/form/PropertyCodeInput';
 import CityInput from '../../components/form/CityInput';
 import ProducerInput from '../../components/form/ProducerInput';
@@ -278,6 +279,9 @@ export default function DashboardTecnico() {
         });
       }
 
+      // Ordenar documentos estritamente por data de envio (mais recente PRIMEIRO)
+      list.sort((a, b) => new Date(b.data || 0).getTime() - new Date(a.data || 0).getTime());
+
       setDocumentos(list);
     } catch (err: any) {
       console.error('Erro ao carregar documentos no técnico:', err);
@@ -437,16 +441,16 @@ export default function DashboardTecnico() {
       // 1. Carregar TODAS as propriedades cadastradas na tabela 'propriedades'
       const { data: propsList, error: propsError } = await supabase
         .from('propriedades')
-        .select('id, nome_fazenda, nome_produtor, codigo_car, codigo_sigef, municipio, geom, produtor_id')
-        .order('created_at', { ascending: false });
+        .select('id, nome_fazenda, nome_produtor, codigo_car, codigo_sigef, municipio, geom, produtor_id, created_at, updated_at')
+        .order('updated_at', { ascending: false, nullsFirst: false });
 
       if (propsError) throw propsError;
 
       // 2. Carregar TODAS as auditorias com técnicos responsáveis
       const { data: auds } = await supabase
         .from('auditorias')
-        .select('id, status, data_agendamento, tecnico_responsavel_id, propriedade_id')
-        .order('created_at', { ascending: false });
+        .select('id, status, data_agendamento, tecnico_responsavel_id, propriedade_id, created_at, updated_at')
+        .order('updated_at', { ascending: false, nullsFirst: false });
 
       if (auds) {
         setAllAuditorias(auds);
@@ -495,6 +499,25 @@ export default function DashboardTecnico() {
 
           // A fazenda é visível no portal do técnico
           const isMine = true;
+
+          // Calcular carimbo de última alteração composto
+          const propTimestamps = [
+            p.updated_at,
+            p.created_at,
+            latestAudit?.updated_at,
+            latestAudit?.created_at,
+            latestAudit?.data_agendamento
+          ].filter(Boolean);
+
+          let ultima_alteracao_at = new Date(0).toISOString();
+          propTimestamps.forEach(ts => {
+            if (ts && new Date(ts).getTime() > new Date(ultima_alteracao_at).getTime()) {
+              ultima_alteracao_at = ts;
+            }
+          });
+          if (new Date(ultima_alteracao_at).getTime() === 0) {
+            ultima_alteracao_at = new Date().toISOString();
+          }
 
           let geom = p.geom;
 
@@ -640,12 +663,20 @@ export default function DashboardTecnico() {
               color: featureColor,
               isMine: isMineFarm,
               status: auditStatus,
-              produtor: p.nome_produtor || 'Produtor Rural'
+              produtor: p.nome_produtor || 'Produtor Rural',
+              ultima_alteracao_at: ultima_alteracao_at
             },
             geometry: geom
           };
         })
       );
+
+      // Ordenar estritamente por última alteração (mais recente PRIMEIRO)
+      features.sort((a, b) => {
+        const timeA = new Date(a.properties.ultima_alteracao_at || 0).getTime();
+        const timeB = new Date(b.properties.ultima_alteracao_at || 0).getTime();
+        return timeB - timeA;
+      });
 
       setFarmsData({ type: 'FeatureCollection', features });
     } catch (err) {
@@ -785,13 +816,16 @@ export default function DashboardTecnico() {
 
         // 2b. Inserir cada propriedade na tabela 'propriedades'
         for (const p of processedProps) {
+          const nowIso = new Date().toISOString();
           const propInsertPayload: any = {
             nome_fazenda: p.nome_fazenda,
             nome_produtor: prodNome,
             produtor_id: isUUID(prodId) ? prodId : null,
             codigo_car: p.origem === 'CAR' ? p.codigo_car : null,
             codigo_sigef: p.origem === 'SIGEF' ? p.codigo_sigef : null,
-            origem_cadastro: p.origem || 'CAR'
+            origem_cadastro: p.origem || 'CAR',
+            created_at: nowIso,
+            updated_at: nowIso
           };
 
           if (p.geom) {
@@ -873,11 +907,14 @@ export default function DashboardTecnico() {
     }
 
     try {
+      const nowIso = new Date().toISOString();
       const payload = {
         propriedade_id: auditFormData.propriedade_id,
         tecnico_responsavel_id: user?.id,
         data_agendamento: auditFormData.data_agendamento,
-        status: 'Visita de Campo'
+        status: 'Visita de Campo',
+        created_at: nowIso,
+        updated_at: nowIso
       };
 
       const { error: err } = await supabase
@@ -886,10 +923,17 @@ export default function DashboardTecnico() {
 
       if (err) throw err;
 
+      // Atualizar também a data de alteração da propriedade
+      await supabase
+        .from('propriedades')
+        .update({ updated_at: nowIso })
+        .eq('id', auditFormData.propriedade_id);
+
       success('Vistoria agendada e atribuída com sucesso!');
       setShowScheduleAuditModal(false);
       
       fetchAudits();
+      fetchCollaborativeMapData();
     } catch (err: any) {
       console.error('Erro ao agendar vistoria:', err);
       error('Erro ao agendar vistoria: ' + err.message);
@@ -900,13 +944,30 @@ export default function DashboardTecnico() {
     try {
       const target = auditorias.find(a => a.id === auditId);
       const propId = target?.propriedade_id || target?.propriedades?.id;
+      const nowIso = new Date().toISOString();
+
       if (propId) {
-        await persistFarmEtapa(propId, auditId, novaEtapa);
+        await persistFarmEtapa(propId, novaEtapa);
+        await supabase.from('propriedades').update({ updated_at: nowIso }).eq('id', propId);
       }
-      setAuditorias(prev => prev.map(a => a.id === auditId ? { ...a, etapa: novaEtapa } : a));
-      success(`Etapa alterada para "${novaEtapa}" com sucesso!`);
+
+      if (auditId && !auditId.startsWith('v-audit-') && !auditId.startsWith('mock-')) {
+        await supabase.from('auditorias').update({ etapa: novaEtapa, updated_at: nowIso }).eq('id', auditId);
+      }
+
+      setAuditorias(prev => prev.map(a => {
+        if (a.id === auditId) {
+          return { ...a, etapa: novaEtapa, ultima_alteracao_at: nowIso };
+        }
+        return a;
+      }));
+
+      success(`Etapa atualizada para ${novaEtapa} com sucesso!`);
+      fetchAudits();
+      fetchCollaborativeMapData();
     } catch (err: any) {
-      error('Erro ao atualizar etapa: ' + err.message);
+      console.error('Erro ao alterar etapa:', err);
+      error('Falha ao atualizar etapa da auditoria.');
     }
   };
 
@@ -946,7 +1007,7 @@ export default function DashboardTecnico() {
       // 1. Buscar todas as propriedades
       const { data: propsData } = await supabase
         .from('propriedades')
-        .select('id, nome_fazenda, nome_produtor, codigo_car, municipio');
+        .select('id, nome_fazenda, nome_produtor, codigo_car, municipio, created_at, updated_at');
 
       // 2. Buscar todas as auditorias
       const { data: auditsData } = await supabase
@@ -957,14 +1018,19 @@ export default function DashboardTecnico() {
           status,
           tecnico_responsavel_id,
           propriedade_id,
+          created_at,
+          updated_at,
           propriedades (
             id,
             nome_fazenda,
             nome_produtor,
             codigo_car,
-            municipio
+            municipio,
+            created_at,
+            updated_at
           )
-        `);
+        `)
+        .order('updated_at', { ascending: false, nullsFirst: false });
 
       const userEmail = (user?.email || '').toLowerCase();
       const userName = (user?.user_metadata?.full_name || user?.nome || '').toLowerCase();
@@ -979,9 +1045,12 @@ export default function DashboardTecnico() {
         const propId = a.propriedade_id || propFound?.id;
         const resolvedEtapa = resolveFarmEtapa(propId, propFound?.etapa, a.etapa);
 
+        const lastTs = a.updated_at || a.created_at || a.data_agendamento || propFound?.updated_at || propFound?.created_at || new Date().toISOString();
+
         allList.push({
           ...a,
           etapa: resolvedEtapa,
+          ultima_alteracao_at: lastTs,
           propriedades: propFound || { nome_fazenda: 'Fazenda', nome_produtor: 'Produtor' }
         });
       });
@@ -990,6 +1059,7 @@ export default function DashboardTecnico() {
       const existingPropIds = new Set(allList.map(a => a.propriedade_id));
       (propsData || []).forEach(p => {
         if (!existingPropIds.has(p.id)) {
+          const lastTs = p.updated_at || p.created_at || new Date().toISOString();
           allList.push({
             id: `v-audit-${p.id}`,
             propriedade_id: p.id,
@@ -997,6 +1067,7 @@ export default function DashboardTecnico() {
             data_agendamento: new Date().toISOString(),
             status: 'Autoavaliação',
             etapa: p.etapa || 'Prospecção',
+            ultima_alteracao_at: lastTs,
             propriedades: p
           });
         }
@@ -1019,6 +1090,13 @@ export default function DashboardTecnico() {
         if (userEmail.includes('tecnico@ms') && tecId === 'bb03c918-ed79-479c-87bf-c8f65a95ac2c') return true;
 
         return false;
+      });
+
+      // Ordenar estritamente por última alteração (mais recente PRIMEIRO)
+      filteredForTech.sort((a: any, b: any) => {
+        const timeA = new Date(a.ultima_alteracao_at || a.updated_at || a.created_at || 0).getTime();
+        const timeB = new Date(b.ultima_alteracao_at || b.updated_at || b.created_at || 0).getTime();
+        return timeB - timeA;
       });
 
       setAuditorias(filteredForTech);
@@ -1169,7 +1247,7 @@ export default function DashboardTecnico() {
   const sampleEvidenceSVG = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><rect width="800" height="600" fill="%230f172a"/><rect x="40" y="40" width="720" height="520" rx="16" fill="%231e293b" stroke="%23334155" stroke-width="2"/><circle cx="400" cy="240" r="80" fill="%2310b981" opacity="0.2"/><path d="M400 180 L440 220 L420 220 L420 280 L380 280 L380 220 L360 220 Z" fill="%2310b981"/><text x="400" y="360" font-family="sans-serif" font-size="24" font-weight="bold" fill="%23f8fafc" text-anchor="middle">Evidência de Campo RTRS</text><text x="400" y="400" font-family="sans-serif" font-size="16" fill="%2394a3b8" text-anchor="middle">Comprovante de Conformidade Ambiental e Social</text><rect x="250" y="450" width="300" height="44" rx="22" fill="%2310b981"/><text x="400" y="478" font-family="sans-serif" font-size="14" font-weight="bold" fill="%23ffffff" text-anchor="middle">Documento Verificado ✓</text></svg>`;
 
   const handleOpenEvidencia = (url?: string | null) => {
-    if (!url || !url.trim()) {
+    if (!url || !url.trim() || url.trim() === 'resolvido' || url.trim() === 'comprovante' || url.trim().length < 5) {
       setFotoAmpliada(sampleEvidenceSVG);
       return;
     }
@@ -1304,105 +1382,117 @@ export default function DashboardTecnico() {
   const filteredFarmsGeoJSON: FeatureCollection = { type: 'FeatureCollection', features: filteredFarms };
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto animate-fade-in">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 border-b border-border pb-6">
+    <div className="space-y-6 max-w-7xl mx-auto animate-fade-in-up">
+      {/* Header Executivo do Técnico com Motion */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-3xl border border-slate-200/80 shadow-xs">
         <div>
-          <h1 className="text-3xl font-extrabold text-foreground tracking-tight">Portal do Técnico</h1>
-          <p className="text-muted-foreground mt-1 text-lg">Gestão de vistorias, auditorias e acompanhamento de fazendas.</p>
+          <div className="inline-flex items-center gap-2 bg-[#1B7547]/10 text-[#1B7547] px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider mb-2">
+            <ClipboardList className="w-3.5 h-3.5" />
+            <span>Módulo Técnico de Vistorias In-Loco</span>
+          </div>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Portal do Técnico de Campo</h1>
+          <p className="text-slate-500 mt-1 text-sm font-medium">Gestão de vistorias, auditorias RTRS e acompanhamento geoespacial de fazendas.</p>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3 shrink-0">
           <button
             onClick={handleOpenCreateFarmModal}
-            className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground font-bold text-sm rounded-lg shadow-md transition-all cursor-pointer active:scale-[0.98]"
+            className="group relative flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white font-extrabold text-xs rounded-2xl shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-300 cursor-pointer overflow-hidden"
           >
-            <Plus className="w-4 h-4" />
-            Cadastrar Fazenda
+            <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+            <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
+            <span>Cadastrar Fazenda</span>
           </button>
+
           <button
             onClick={() => {
               setAuditFormData({ propriedade_id: properties[0]?.id || '', data_agendamento: new Date().toISOString().split('T')[0] });
               setShowScheduleAuditModal(true);
             }}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-lg shadow-md transition-all cursor-pointer active:scale-[0.98]"
+            className="group relative flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white font-extrabold text-xs rounded-2xl shadow-md shadow-indigo-600/20 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-300 cursor-pointer overflow-hidden"
           >
-            <CalendarDays className="w-4 h-4" />
-            Iniciar Vistoria
+            <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+            <CalendarDays className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
+            <span>Iniciar Vistoria</span>
           </button>
-          <div className="flex items-center gap-2 bg-secondary text-secondary-foreground px-4 py-2 rounded-lg text-sm font-semibold border border-border shadow-sm">
-            <CalendarDays className="w-4 h-4 text-primary" />
+
+          <div className="flex items-center gap-2 bg-slate-100 text-slate-700 px-4 py-2.5 rounded-2xl text-xs font-extrabold border border-slate-200 shadow-2xs">
+            <CalendarDays className="w-4 h-4 text-[#1B7547]" />
             <span>Hoje, {new Date().toLocaleDateString('pt-BR')}</span>
           </div>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="bg-muted/50 p-1 rounded-xl inline-flex gap-1 border border-border/50">
+      {/* Tabs Principais com Motion Design Padronizado */}
+      <div className="bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 inline-flex flex-wrap gap-2 shadow-2xs">
         <button
           onClick={() => setActiveTab('mapa')}
-          className={`px-6 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
+          className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
             activeTab === 'mapa'
-              ? 'bg-card text-foreground shadow-sm font-semibold'
-              : 'text-muted-foreground hover:text-foreground'
+              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          <MapIcon className="w-4 h-4 text-emerald-600" />
-          Mapa & Propriedades
+          <MapIcon className="w-4 h-4" />
+          <span>Mapa & Propriedades</span>
         </button>
         <button
           onClick={() => setActiveTab('auditorias')}
-          className={`px-6 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
+          className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
             activeTab === 'auditorias'
-              ? 'bg-card text-foreground shadow-sm font-semibold'
-              : 'text-muted-foreground hover:text-foreground'
+              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          <ClipboardList className="w-4 h-4 text-indigo-600" />
-          Auditorias
+          <ClipboardList className="w-4 h-4" />
+          <span>Auditorias & Visitas</span>
         </button>
         <button
           onClick={() => setActiveTab('documentacao')}
-          className={`px-6 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
+          className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
             activeTab === 'documentacao'
-              ? 'bg-card text-foreground shadow-sm font-semibold'
-              : 'text-muted-foreground hover:text-foreground'
+              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          <FolderOpen className="w-4 h-4 text-amber-600" />
-          Histórico de Documentação & Evidências
+          <FolderOpen className="w-4 h-4" />
+          <span>Histórico de Documentação & Evidências</span>
         </button>
       </div>
 
-      {/* ====== TAB: MAPA & PROPRIEDADES ====== */}
-      <div className={activeTab === 'mapa' ? 'block' : 'hidden'}>
+      {/* ====== TAB: MAPA & PROPRIEDADES COM MOTION FLUIDO ====== */}
+      <div key={`tab-mapa-${activeTab}`} className={activeTab === 'mapa' ? 'block animate-fade-in-up duration-300' : 'hidden'}>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left Panel: Farm List */}
           <div className="lg:col-span-1 space-y-4">
-            {/* Filter Toggle */}
-            <div className="flex gap-1 bg-muted/60 p-0.5 rounded-lg border border-border/50">
+            {/* Filter Toggle com Motion Padronizado */}
+            <div className="flex gap-2 bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 shadow-2xs">
               <button
                 onClick={() => {
                   setFilterMode('minhas');
                   setSelectedFarmId(null);
                 }}
-                className={`flex-1 py-2 px-3 rounded-md text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  filterMode === 'minhas' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-extrabold transition-all duration-300 flex items-center justify-center gap-1.5 cursor-pointer ${
+                  filterMode === 'minhas' 
+                    ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                 }`}
               >
-                <MapPin className="w-3.5 h-3.5 text-emerald-600" />
-                Minhas Fazendas
+                <MapPin className="w-3.5 h-3.5" />
+                <span>Minhas Fazendas</span>
               </button>
               <button
                 onClick={() => {
                   setFilterMode('todas');
                   setSelectedFarmId(null);
                 }}
-                className={`flex-1 py-2 px-3 rounded-md text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  filterMode === 'todas' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-extrabold transition-all duration-300 flex items-center justify-center gap-1.5 cursor-pointer ${
+                  filterMode === 'todas' 
+                    ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                 }`}
               >
-                <Eye className="w-3.5 h-3.5 text-indigo-600" />
-                Todas as Fazendas
+                <Eye className="w-3.5 h-3.5" />
+                <span>Todas as Fazendas</span>
               </button>
             </div>
 
@@ -1483,6 +1573,18 @@ export default function DashboardTecnico() {
                             {props.status}
                           </span>
                         </div>
+
+                        {/* Indicador de Última Alteração */}
+                        <div className="mt-2.5 pt-2 border-t border-slate-100/80 flex items-center justify-between text-[10px] text-slate-500 font-medium">
+                          <div className="flex items-center gap-1.5 text-slate-700 font-bold">
+                            <Clock className="w-3.5 h-3.5 text-[#1B7547] shrink-0" />
+                            <span>Última alteração:</span>
+                            <span className="text-[#1B7547] font-black">{formatUltimaAlteracao(props.ultima_alteracao_at).relative}</span>
+                          </div>
+                          <span className="text-[9px] font-extrabold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200/80">
+                            {formatUltimaAlteracao(props.ultima_alteracao_at).fullDate} {formatUltimaAlteracao(props.ultima_alteracao_at).timeStr}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   );
@@ -1544,27 +1646,29 @@ export default function DashboardTecnico() {
         </div>
       </div>
 
-      {/* ====== TAB: AUDITORIAS ====== */}
-      <div className={activeTab === 'auditorias' ? 'block space-y-6' : 'hidden'}>
-        {/* SUB-ABAS DAS 3 ETAPAS */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      {/* ====== TAB: AUDITORIAS COM MOTION FLUIDO ====== */}
+      <div key={`tab-audits-${activeTab}`} className={activeTab === 'auditorias' ? 'block space-y-6 animate-fade-in-up duration-300' : 'hidden'}>
+        {/* SUB-ABAS DAS 3 ETAPAS COM MOTION DESIGN */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <button
             type="button"
             onClick={() => setTechnicalEtapaTab('Prospecção')}
-            className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer flex items-center justify-between ${
+            className={`p-5 rounded-3xl border text-left transition-all duration-300 cursor-pointer flex items-center justify-between group ${
               technicalEtapaTab === 'Prospecção'
-                ? 'bg-amber-50 border-amber-300 ring-2 ring-amber-400/30 shadow-sm'
-                : 'bg-card border-border hover:bg-muted/50'
+                ? 'bg-gradient-to-br from-amber-50 to-white border-amber-300 ring-4 ring-amber-400/20 shadow-lg scale-102'
+                : 'bg-white border-slate-200/80 hover:bg-slate-50 hover:shadow-md'
             }`}
           >
             <div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-5 h-5 rounded-full bg-amber-200 text-amber-900 text-[10px] font-black flex items-center justify-center">1</span>
-                <h4 className="font-bold text-xs text-foreground">1. Prospecção</h4>
+              <div className="flex items-center gap-2.5">
+                <span className={`w-7 h-7 rounded-2xl text-xs font-extrabold flex items-center justify-center transition-transform group-hover:scale-110 ${
+                  technicalEtapaTab === 'Prospecção' ? 'bg-[#C59B27] text-white shadow-md' : 'bg-amber-100 text-amber-900'
+                }`}>1</span>
+                <h4 className="font-extrabold text-sm text-slate-900">1. Prospecção</h4>
               </div>
-              <p className="text-[10px] text-muted-foreground mt-0.5 font-medium">Onboarding e cadastro inicial</p>
+              <p className="text-[11px] text-slate-500 mt-1.5 font-medium">Onboarding e cadastro de fazendas</p>
             </div>
-            <span className="text-sm font-black text-amber-700 bg-amber-100/80 px-2.5 py-0.5 rounded-lg">
+            <span className="text-base font-extrabold text-[#C59B27] bg-[#C59B27]/10 px-3 py-1.5 rounded-2xl border border-[#C59B27]/20 shadow-2xs">
               {auditorias.filter(a => (a.etapa === 'Auditoria Prévia' || a.etapa === 'Auditoria Oficial' ? a.etapa : 'Prospecção') === 'Prospecção').length}
             </span>
           </button>
@@ -1572,20 +1676,22 @@ export default function DashboardTecnico() {
           <button
             type="button"
             onClick={() => setTechnicalEtapaTab('Auditoria Prévia')}
-            className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer flex items-center justify-between ${
+            className={`p-5 rounded-3xl border text-left transition-all duration-300 cursor-pointer flex items-center justify-between group ${
               technicalEtapaTab === 'Auditoria Prévia'
-                ? 'bg-blue-50 border-blue-300 ring-2 ring-blue-400/30 shadow-sm'
-                : 'bg-card border-border hover:bg-muted/50'
+                ? 'bg-gradient-to-br from-blue-50 to-white border-blue-300 ring-4 ring-blue-400/20 shadow-lg scale-102'
+                : 'bg-white border-slate-200/80 hover:bg-slate-50 hover:shadow-md'
             }`}
           >
             <div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-5 h-5 rounded-full bg-blue-200 text-blue-900 text-[10px] font-black flex items-center justify-center">2</span>
-                <h4 className="font-bold text-xs text-foreground">2. Auditoria Prévia</h4>
+              <div className="flex items-center gap-2.5">
+                <span className={`w-7 h-7 rounded-2xl text-xs font-extrabold flex items-center justify-center transition-transform group-hover:scale-110 ${
+                  technicalEtapaTab === 'Auditoria Prévia' ? 'bg-blue-600 text-white shadow-md' : 'bg-blue-100 text-blue-900'
+                }`}>2</span>
+                <h4 className="font-extrabold text-sm text-slate-900">2. Auditoria Prévia</h4>
               </div>
-              <p className="text-[10px] text-muted-foreground mt-0.5 font-medium">Diagnóstico e autoavaliação</p>
+              <p className="text-[11px] text-slate-500 mt-1.5 font-medium">Diagnóstico prévio e autoavaliação</p>
             </div>
-            <span className="text-sm font-black text-blue-700 bg-blue-100/80 px-2.5 py-0.5 rounded-lg">
+            <span className="text-base font-extrabold text-blue-700 bg-blue-100/80 px-3 py-1.5 rounded-2xl border border-blue-200 shadow-2xs">
               {auditorias.filter(a => (a.etapa === 'Auditoria Prévia' || a.etapa === 'Auditoria Oficial' ? a.etapa : 'Prospecção') === 'Auditoria Prévia').length}
             </span>
           </button>
@@ -1593,20 +1699,22 @@ export default function DashboardTecnico() {
           <button
             type="button"
             onClick={() => setTechnicalEtapaTab('Auditoria Oficial')}
-            className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer flex items-center justify-between ${
+            className={`p-5 rounded-3xl border text-left transition-all duration-300 cursor-pointer flex items-center justify-between group ${
               technicalEtapaTab === 'Auditoria Oficial'
-                ? 'bg-emerald-50 border-emerald-300 ring-2 ring-emerald-400/30 shadow-sm'
-                : 'bg-card border-border hover:bg-muted/50'
+                ? 'bg-gradient-to-br from-emerald-50 to-white border-emerald-300 ring-4 ring-emerald-400/20 shadow-lg scale-102'
+                : 'bg-white border-slate-200/80 hover:bg-slate-50 hover:shadow-md'
             }`}
           >
             <div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-5 h-5 rounded-full bg-emerald-200 text-emerald-900 text-[10px] font-black flex items-center justify-center">3</span>
-                <h4 className="font-bold text-xs text-foreground">3. Auditoria Oficial</h4>
+              <div className="flex items-center gap-2.5">
+                <span className={`w-7 h-7 rounded-2xl text-xs font-extrabold flex items-center justify-center transition-transform group-hover:scale-110 ${
+                  technicalEtapaTab === 'Auditoria Oficial' ? 'bg-[#1B7547] text-white shadow-md' : 'bg-emerald-100 text-emerald-900'
+                }`}>3</span>
+                <h4 className="font-extrabold text-sm text-slate-900">3. Auditoria Oficial</h4>
               </div>
-              <p className="text-[10px] text-muted-foreground mt-0.5 font-medium">Vistoria in-loco e certificação</p>
+              <p className="text-[11px] text-slate-500 mt-1.5 font-medium">Vistoria técnica final & Certificação</p>
             </div>
-            <span className="text-sm font-black text-emerald-700 bg-emerald-100/80 px-2.5 py-0.5 rounded-lg">
+            <span className="text-base font-extrabold text-[#1B7547] bg-[#1B7547]/10 px-3 py-1.5 rounded-2xl border border-[#1B7547]/20 shadow-2xs">
               {auditorias.filter(a => (a.etapa === 'Auditoria Prévia' || a.etapa === 'Auditoria Oficial' ? a.etapa : 'Prospecção') === 'Auditoria Oficial').length}
             </span>
           </button>
@@ -1671,6 +1779,18 @@ export default function DashboardTecnico() {
                           <p className="text-sm font-medium text-muted-foreground mt-1.5 flex items-center gap-1.5">
                             Produtor: <strong className="text-foreground font-semibold">{prop?.nome_produtor || 'Não informado'}</strong>
                           </p>
+
+                          {/* Indicador de Última Alteração */}
+                          <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+                            <div className="flex items-center gap-1.5 font-extrabold text-slate-700">
+                              <Clock className="w-3.5 h-3.5 text-[#1B7547] shrink-0" />
+                              <span>Última alteração:</span>
+                              <span className="text-[#1B7547] font-black">{formatUltimaAlteracao(auditoria.ultima_alteracao_at || auditoria.updated_at || auditoria.created_at).relative}</span>
+                            </div>
+                            <span className="text-[10px] font-extrabold text-slate-600 bg-slate-100 px-2.5 py-0.5 rounded-full border border-slate-200 shadow-2xs">
+                              {formatUltimaAlteracao(auditoria.ultima_alteracao_at || auditoria.updated_at || auditoria.created_at).fullDate} às {formatUltimaAlteracao(auditoria.ultima_alteracao_at || auditoria.updated_at || auditoria.created_at).timeStr}
+                            </span>
+                          </div>
                         </div>
 
                         <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0 group-hover/card:bg-primary group-hover/card:text-white group-hover/card:scale-110 group-hover/card:shadow-md transition-all duration-300">
@@ -1680,50 +1800,52 @@ export default function DashboardTecnico() {
                     </div>
                   </div>
 
-                  <div className="p-6 pt-0 border-t border-border/30 mt-2 flex flex-col gap-2">
+                  <div className="p-6 pt-0 border-t border-slate-100 mt-2 flex flex-col gap-2">
                     <div className="flex flex-col gap-2">
                       <div className="flex gap-2">
                         <button
                           onClick={() => handleOpenPendencias(prop)}
-                          className="flex-1 py-2 bg-amber-50 hover:bg-amber-100/80 text-amber-950 border border-amber-200 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-xs"
+                          className="group/btn flex-1 py-2.5 bg-amber-100/80 hover:bg-amber-200/80 text-amber-950 border border-amber-300/80 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs"
                         >
-                          <ClipboardList className="w-4 h-4 text-amber-800" />
-                          Pendências
+                          <ClipboardList className="w-4 h-4 text-[#C59B27] transition-transform group-hover/btn:scale-110 duration-300" />
+                          <span>Pendências</span>
                         </button>
 
                         {auditoria.status === 'Visita de Campo' || auditoria.status === 'Autoavaliação' ? (
                           <button
                             onClick={() => handleStartAuditoria(auditoria)}
-                            className="flex-1 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-xs active:scale-[0.98]"
+                            className="group relative flex-1 py-2.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
                           >
-                            <ClipboardList className="w-4 h-4" />
-                            Realizar Visita
+                            <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+                            <ClipboardList className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
+                            <span>Realizar Visita</span>
                           </button>
                         ) : auditoria.status === 'Em Análise' ? (
                           <button
                             onClick={() => handleStartAuditoria(auditoria)}
-                            className="flex-1 py-2 bg-indigo-50 border border-indigo-200 text-indigo-800 hover:bg-indigo-100 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-xs"
+                            className="group/btn flex-1 py-2.5 bg-indigo-50 border border-indigo-200 text-indigo-800 hover:bg-indigo-100 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs"
                           >
-                            <Clock className="w-4 h-4 text-indigo-600" />
-                            Em Análise do Gestor
+                            <Clock className="w-4 h-4 text-indigo-600 transition-transform group-hover/btn:scale-110 duration-300" />
+                            <span>Em Análise do Gestor</span>
                           </button>
                         ) : auditoria.status === 'Acompanhamento' ? (
-                          <div className="flex-1 py-2 bg-purple-50 border border-purple-200 text-purple-800 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm shadow-xs">
+                          <div className="flex-1 py-2.5 bg-purple-50 border border-purple-200 text-purple-800 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs shadow-2xs">
                             <Clock className="w-4 h-4 text-purple-600 animate-pulse" />
-                            Acompanhamento
+                            <span>Acompanhamento</span>
                           </div>
                         ) : auditoria.status === 'Certificada' ? (
-                          <div className="flex-1 py-2 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm shadow-xs">
-                            <CheckCircle2 className="w-4 h-4" />
-                            Certificada
+                          <div className="flex-1 py-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs shadow-2xs">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                            <span>Certificada</span>
                           </div>
                         ) : (
                           <button
                             onClick={() => handleStartAuditoria(auditoria)}
-                            className="flex-1 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg flex items-center justify-center gap-1.5 font-bold text-sm transition-all cursor-pointer shadow-xs"
+                            className="group relative flex-1 py-2.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
                           >
-                            <ClipboardList className="w-4 h-4" />
-                            Realizar Visita
+                            <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+                            <ClipboardList className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
+                            <span>Realizar Visita</span>
                           </button>
                         )}
                       </div>
@@ -1747,38 +1869,41 @@ export default function DashboardTecnico() {
         )}
       </div>
 
-      {/* ====== TAB: DOCUMENTAÇÃO & EVIDÊNCIAS ====== */}
-      <div className={activeTab === 'documentacao' ? 'block space-y-6' : 'hidden'}>
-        <div className="bg-card p-6 rounded-2xl border border-border shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+      {/* ====== TAB: DOCUMENTAÇÃO & EVIDÊNCIAS COM MOTION FLUIDO ====== */}
+      <div key={`tab-docs-${activeTab}`} className={activeTab === 'documentacao' ? 'block space-y-6 animate-fade-in-up duration-300' : 'hidden'}>
+        <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div>
-            <h2 className="text-xl font-bold text-foreground flex items-center gap-2">
-              <FolderOpen className="w-5 h-5 text-emerald-600" />
+            <div className="inline-flex items-center gap-2 bg-[#1B7547]/10 text-[#1B7547] px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider mb-2">
+              <FolderOpen className="w-3.5 h-3.5" />
+              <span>Repositório Técnico de Arquivos</span>
+            </div>
+            <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
               Histórico de Documentação & Evidências
             </h2>
-            <p className="text-muted-foreground text-xs mt-1">
+            <p className="text-slate-500 text-xs mt-1 font-medium">
               Central de controle de laudos, licenças, CAR, fotos e comprovantes de conformidade RTRS das propriedades.
             </p>
           </div>
         </div>
 
-        {/* Filtros da Tabela */}
-        <div className="bg-card p-4 rounded-2xl border border-border flex flex-col md:flex-row items-center justify-between gap-3 shadow-xs">
+        {/* Filtros da Tabela com Motion */}
+        <div className="bg-white p-4 rounded-3xl border border-slate-200/80 flex flex-col md:flex-row items-center justify-between gap-3 shadow-xs">
           <div className="relative w-full md:w-80">
-            <Search className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
+            <Search className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
             <input
               type="text"
               placeholder="Buscar por documento, critério ou fazenda..."
               value={docSearchQuery}
               onChange={(e) => setDocSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-background border border-input rounded-xl text-xs font-medium focus:ring-2 focus:ring-primary outline-none transition-all"
+              className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-xs font-medium focus:outline-none focus:ring-4 focus:ring-[#1B7547]/15 focus:border-[#1B7547] shadow-xs transition-all"
             />
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+          <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
             <select
               value={selectedDocPropId}
               onChange={(e) => setSelectedDocPropId(e.target.value)}
-              className="px-3 py-2 bg-background border border-input rounded-xl text-xs font-bold text-foreground outline-none cursor-pointer"
+              className="px-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-xs font-extrabold text-slate-800 outline-none cursor-pointer focus:ring-4 focus:ring-[#1B7547]/15 focus:border-[#1B7547] transition-all shadow-2xs"
             >
               <option value="">Todas as Minhas Fazendas</option>
               {properties
@@ -1794,7 +1919,7 @@ export default function DashboardTecnico() {
             <select
               value={selectedDocCategoria}
               onChange={(e) => setSelectedDocCategoria(e.target.value)}
-              className="px-3 py-2 bg-background border border-input rounded-xl text-xs font-bold text-foreground outline-none cursor-pointer"
+              className="px-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-xs font-extrabold text-slate-800 outline-none cursor-pointer focus:ring-4 focus:ring-[#1B7547]/15 focus:border-[#1B7547] transition-all shadow-2xs"
             >
               <option value="">Todas as Categorias</option>
               <option value="CAR">CAR</option>
@@ -1807,32 +1932,32 @@ export default function DashboardTecnico() {
           </div>
         </div>
 
-        {/* Tabela de Arquivos */}
-        <div className="bg-card rounded-2xl border border-border shadow-xs overflow-hidden">
+        {/* Tabela de Arquivos com Motion */}
+        <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
           {loadingDocs ? (
-            <div className="py-12 text-center text-muted-foreground flex flex-col items-center gap-2">
-              <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
-              <span className="text-xs font-bold">Carregando histórico de arquivos...</span>
+            <div className="py-12 text-center text-slate-500 flex flex-col items-center gap-2">
+              <Loader2 className="w-6 h-6 animate-spin text-[#1B7547]" />
+              <span className="text-xs font-extrabold">Carregando histórico de arquivos...</span>
             </div>
           ) : documentos.length === 0 ? (
-            <div className="py-12 text-center text-muted-foreground">
-              <FolderOpen className="w-8 h-8 mx-auto mb-2 text-muted-foreground/40" />
-              <p className="font-bold text-sm">Nenhum documento encontrado</p>
+            <div className="py-12 text-center text-slate-400 font-medium">
+              <FolderOpen className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+              <p className="font-extrabold text-sm text-slate-700">Nenhum documento encontrado</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto p-2">
               <table className="w-full text-left text-xs font-medium">
-                <thead className="bg-muted/50 border-b border-border text-muted-foreground font-bold text-[11px] uppercase">
+                <thead className="bg-slate-50 border-b border-slate-100 text-slate-500 font-extrabold text-[10px] uppercase tracking-wider">
                   <tr>
-                    <th className="px-6 py-3.5">Documento / Critério</th>
-                    <th className="px-6 py-3.5">Propriedade</th>
-                    <th className="px-6 py-3.5">Categoria</th>
-                    <th className="px-6 py-3.5">Origem</th>
-                    <th className="px-6 py-3.5">Data Envio</th>
-                    <th className="px-6 py-3.5 text-center">Arquivo</th>
+                    <th className="px-6 py-4">Documento / Critério</th>
+                    <th className="px-6 py-4">Propriedade</th>
+                    <th className="px-6 py-4">Categoria</th>
+                    <th className="px-6 py-4">Origem</th>
+                    <th className="px-6 py-4">Data Envio</th>
+                    <th className="px-6 py-4 text-center">Arquivo</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-border">
+                <tbody className="divide-y divide-slate-100">
                   {documentos
                     .filter(doc => {
                       const matchSearch = docSearchQuery === '' || 
@@ -1843,30 +1968,35 @@ export default function DashboardTecnico() {
                       return matchSearch && matchProp && matchCat;
                     })
                     .map((doc) => (
-                      <tr key={doc.id} className="hover:bg-muted/30 transition-colors">
-                        <td className="px-6 py-3.5 text-foreground font-bold">{doc.nome}</td>
-                        <td className="px-6 py-3.5 text-muted-foreground font-semibold">{doc.fazendaNome}</td>
-                        <td className="px-6 py-3.5">
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-slate-100 text-slate-700 border border-slate-200">
+                      <tr key={doc.id} className="hover:bg-slate-50/80 transition-colors duration-200 group">
+                        <td className="px-6 py-4 text-slate-900 font-extrabold">{doc.nome}</td>
+                        <td className="px-6 py-4 text-slate-700 font-bold">{doc.fazendaNome}</td>
+                        <td className="px-6 py-4">
+                          <span className="px-3 py-1 rounded-full text-[10px] font-extrabold uppercase bg-slate-100 text-slate-700 border border-slate-200/80 shadow-2xs">
                             {doc.categoria}
                           </span>
                         </td>
-                        <td className="px-6 py-3.5 text-muted-foreground text-xs">{doc.origem}</td>
-                        <td className="px-6 py-3.5 text-muted-foreground text-xs">{new Date(doc.data).toLocaleDateString('pt-BR')}</td>
-                        <td className="px-6 py-3.5 text-center">
+                        <td className="px-6 py-4 text-slate-500 text-xs font-medium">{doc.origem}</td>
+                        <td className="px-6 py-4 text-slate-700 font-bold">
+                          <div className="flex flex-col">
+                            <span className="text-xs text-slate-800 font-extrabold">{formatUltimaAlteracao(doc.data).fullDate} às {formatUltimaAlteracao(doc.data).timeStr}</span>
+                            <span className="text-[10px] text-[#1B7547] font-bold">{formatUltimaAlteracao(doc.data).relative}</span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-center">
                           <button
                             type="button"
                             onClick={() => handleOpenEvidencia(doc.arquivo_url)}
-                            className="inline-flex items-center gap-1 text-xs text-emerald-700 hover:text-emerald-900 font-bold underline cursor-pointer"
+                            className="group/btn inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-[#1B7547]/10 hover:bg-[#1B7547]/20 text-[#1B7547] rounded-xl text-xs font-extrabold transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
                           >
                             {doc.arquivo_url?.toLowerCase().includes('.pdf') ? (
                               <>
-                                <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
+                                <FileText className="w-3.5 h-3.5 text-[#1B7547] shrink-0 transition-transform group-hover/btn:scale-110 duration-300" />
                                 <span>Abrir PDF</span>
                               </>
                             ) : (
                               <>
-                                <ImageIcon className="w-4 h-4 text-emerald-600 shrink-0" />
+                                <ImageIcon className="w-3.5 h-3.5 text-[#1B7547] shrink-0 transition-transform group-hover/btn:scale-110 duration-300" />
                                 <span>Ver Imagem</span>
                               </>
                             )}
@@ -2181,15 +2311,26 @@ export default function DashboardTecnico() {
                       className="w-full px-3 py-2 bg-background border border-input rounded-xl text-sm focus:ring-2 focus:ring-primary focus:border-transparent focus:outline-none text-foreground"
                     />
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-muted-foreground uppercase">E-mail</label>
+                      <label className="text-[10px] font-bold text-muted-foreground uppercase">E-mail de Contato</label>
                       <input
                         required={produtorOption === 'novo'}
                         type="email"
                         placeholder="produtor@email.com"
-                        value={novoProdutorData.email}
+                        value={novoProdutorData.email || ''}
                         onChange={e => setNovoProdutorData({...novoProdutorData, email: e.target.value})}
+                        className="w-full px-3 py-2 bg-background border border-input rounded-xl text-sm focus:ring-2 focus:ring-primary focus:border-transparent focus:outline-none text-foreground"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-muted-foreground uppercase">Telefone / WhatsApp</label>
+                      <input
+                        required={produtorOption === 'novo'}
+                        type="tel"
+                        placeholder="(67) 99999-9999"
+                        value={novoProdutorData.telefone || ''}
+                        onChange={e => setNovoProdutorData({...novoProdutorData, telefone: e.target.value})}
                         className="w-full px-3 py-2 bg-background border border-input rounded-xl text-sm focus:ring-2 focus:ring-primary focus:border-transparent focus:outline-none text-foreground"
                       />
                     </div>
@@ -2256,6 +2397,23 @@ export default function DashboardTecnico() {
                         setPropertiesList(newList);
                       }}
                     />
+
+                    <div className="space-y-1 mt-3">
+                      <label className="text-[10px] font-bold text-slate-600 uppercase">Área Plantada de Soja da Fazenda (ha)</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        placeholder="Ex: 850 (hectares)"
+                        value={prop.area_soja_ha || ''}
+                        onChange={e => {
+                          const newList = [...propertiesList];
+                          newList[idx] = { ...newList[idx], area_soja_ha: e.target.value };
+                          setPropertiesList(newList);
+                        }}
+                        className="w-full px-3 py-2 bg-background border border-input rounded-xl text-sm focus:ring-2 focus:ring-primary focus:border-transparent focus:outline-none text-foreground font-medium"
+                      />
+                    </div>
+
                     {prop.errorCar && (
                       <span className="text-[10px] text-red-600 font-bold block mt-2 leading-normal">
                         {prop.errorCar}
@@ -2381,53 +2539,74 @@ export default function DashboardTecnico() {
         actionType="danger"
       />
 
-      {/* Modal Lightbox de Foto Ampliada */}
-      {fotoAmpliada && (
-        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn transition-all" onClick={() => setFotoAmpliada(null)}>
-          <div className="relative max-w-4xl max-h-[90vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
-            <button type="button" onClick={() => setFotoAmpliada(null)} className="absolute -top-10 right-0 text-white bg-black/50 hover:bg-black/70 p-2 rounded-full transition-all cursor-pointer shadow-md">
-              <X className="w-6 h-6" />
+      {/* Modal Lightbox de Foto Ampliada em Portal z-[9999] */}
+      {fotoAmpliada && createPortal(
+        <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn transition-all" onClick={() => setFotoAmpliada(null)}>
+          <div className="relative max-w-4xl max-h-[90vh] flex flex-col items-center bg-slate-900/90 p-4 rounded-3xl border border-slate-700 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <button 
+              type="button" 
+              onClick={() => setFotoAmpliada(null)} 
+              className="absolute -top-3 -right-3 text-white bg-slate-800 hover:bg-slate-700 p-2 rounded-full transition-all cursor-pointer shadow-xl border border-slate-600 z-10"
+              title="Fechar"
+            >
+              <X className="w-5 h-5" />
             </button>
-            <img 
-              src={fotoAmpliada} 
-              alt="Evidência Ampliada" 
-              onError={(e) => {
-                (e.target as HTMLImageElement).src = sampleEvidenceSVG;
-              }}
-              className="max-w-full max-h-[85vh] rounded-xl shadow-2xl object-contain border border-slate-700/60 bg-slate-900/40" 
-            />
-            {fotoAmpliada.startsWith('http') && (
-              <a href={fotoAmpliada} target="_blank" rel="noreferrer" className="mt-3 text-xs text-emerald-300 underline font-bold hover:text-white flex items-center gap-1 bg-black/40 px-3 py-1 rounded-full border border-white/10">
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>Abrir imagem original em nova guia</span>
-              </a>
-            )}
+
+            <div className="relative max-h-[75vh] overflow-hidden rounded-2xl flex items-center justify-center bg-slate-950">
+              <img 
+                src={fotoAmpliada} 
+                alt="Evidência Ampliada" 
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = sampleEvidenceSVG;
+                }}
+                className="max-w-full max-h-[75vh] object-contain rounded-xl" 
+              />
+            </div>
+
+            <div className="mt-3 flex items-center justify-between w-full px-2 gap-4">
+              <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                Evidência Comprovatória de Conformidade
+              </span>
+              {fotoAmpliada.startsWith('http') && !fotoAmpliada.includes('data:image/svg') && (
+                <a 
+                  href={fotoAmpliada} 
+                  target="_blank" 
+                  rel="noreferrer" 
+                  className="text-xs text-emerald-400 hover:text-white underline font-bold flex items-center gap-1 bg-white/10 px-3 py-1.5 rounded-full border border-white/10 transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Abrir em nova guia</span>
+                </a>
+              )}
+            </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {/* Modal Viewer de PDF */}
-      {pdfAmpliado && (
-        <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn" onClick={() => setPdfAmpliado(null)}>
-          <div className="relative w-full max-w-5xl h-[88vh] flex flex-col bg-slate-900 rounded-2xl overflow-hidden border border-slate-700 shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-6 py-3.5 bg-slate-800 border-b border-slate-700 text-white">
+      {/* Modal Viewer de PDF em Portal z-[9999] */}
+      {pdfAmpliado && createPortal(
+        <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn" onClick={() => setPdfAmpliado(null)}>
+          <div className="relative w-full max-w-5xl h-[88vh] flex flex-col bg-slate-900 rounded-3xl overflow-hidden border border-slate-700 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 bg-slate-800 border-b border-slate-700 text-white">
               <div className="flex items-center gap-2">
                 <FileText className="w-5 h-5 text-emerald-400" />
-                <span className="font-bold text-sm">Visualizador de Documento PDF</span>
+                <span className="font-extrabold text-sm">Visualizador de Documento Evidência PDF</span>
               </div>
               <div className="flex items-center gap-3">
                 <a
                   href={pdfAmpliado}
-                  download="documento.pdf"
+                  download="evidencia-documento.pdf"
                   target="_blank"
                   rel="noreferrer"
-                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm"
+                  className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold transition-all flex items-center gap-1.5 shadow-sm"
                 >
                   <Download className="w-4 h-4" />
-                  <span>Baixar / Abrir PDF</span>
+                  <span>Baixar PDF</span>
                 </a>
-                <button type="button" onClick={() => setPdfAmpliado(null)} className="text-slate-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer">
-                  <X className="w-6 h-6" />
+                <button type="button" onClick={() => setPdfAmpliado(null)} className="text-slate-400 hover:text-white p-1.5 rounded-full hover:bg-slate-700 transition-colors cursor-pointer">
+                  <X className="w-5 h-5" />
                 </button>
               </div>
             </div>

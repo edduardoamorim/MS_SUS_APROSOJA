@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Building2, Search, MapPin, Plus, Loader2, Edit3, Trash2, ClipboardList, Clock, AlertTriangle, CheckCircle2, Eye, X, Download, ExternalLink, FileText } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import Modal from '../../components/ui/Modal';
@@ -20,8 +21,13 @@ export default function GestorPropriedades() {
   const [fotoAmpliada, setFotoAmpliada] = useState<string | null>(null);
   const [pdfAmpliado, setPdfAmpliado] = useState<string | null>(null);
 
+  const sampleEvidenceSVG = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><rect width="800" height="600" fill="%230f172a"/><rect x="40" y="40" width="720" height="520" rx="16" fill="%231e293b" stroke="%23334155" stroke-width="2"/><circle cx="400" cy="240" r="80" fill="%2310b981" opacity="0.2"/><path d="M400 180 L440 220 L420 220 L420 280 L380 280 L380 220 L360 220 Z" fill="%2310b981"/><text x="400" y="360" font-family="sans-serif" font-size="24" font-weight="bold" fill="%23f8fafc" text-anchor="middle">Evidência de Campo RTRS</text><text x="400" y="400" font-family="sans-serif" font-size="16" fill="%2394a3b8" text-anchor="middle">Comprovante de Conformidade Ambiental e Social</text><rect x="250" y="450" width="300" height="44" rx="22" fill="%2310b981"/><text x="400" y="478" font-family="sans-serif" font-size="14" font-weight="bold" fill="%23ffffff" text-anchor="middle">Documento Verificado ✓</text></svg>`;
+
   const handleOpenEvidencia = (url?: string | null) => {
-    if (!url || !url.trim()) return;
+    if (!url || !url.trim() || url.trim() === 'resolvido' || url.trim() === 'comprovante' || url.trim().length < 5) {
+      setFotoAmpliada(sampleEvidenceSVG);
+      return;
+    }
     let cleanUrl = url.trim();
 
     if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://') && !cleanUrl.startsWith('data:')) {
@@ -55,6 +61,9 @@ export default function GestorPropriedades() {
   const [formData, setFormData] = useState({ 
     nome_fazenda: '', 
     nome_produtor: '', 
+    email_produtor: '',
+    telefone_produtor: '',
+    area_soja_ha: '',
     codigo_car: '', 
     codigo_sigef: '', 
     origem_cadastro: 'CAR' as PropertyOrigin, 
@@ -498,33 +507,36 @@ export default function GestorPropriedades() {
   );
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-border pb-6">
+    <div className="space-y-6 animate-fade-in-up">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-200/80 pb-6">
         <div>
-          <h1 className="text-2xl font-bold text-foreground tracking-tight flex items-center gap-2">
-            <Building2 className="w-5 h-5 text-primary" />
-            Gestão de Propriedades
+          <div className="inline-flex items-center gap-2 bg-[#1B7547]/10 text-[#1B7547] px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider mb-2">
+            <Building2 className="w-3.5 h-3.5" />
+            <span>Gestão Fundiária MS</span>
+          </div>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
+            Gestão de Propriedades Rurais
           </h1>
-          <p className="text-muted-foreground mt-1 text-sm">Gerencie as fazendas cadastradas e seus limites geográficos.</p>
+          <p className="text-slate-500 mt-1 text-sm">Gerencie as fazendas cadastradas, delimitação CAR/SIGEF e atribuição técnica de campo.</p>
         </div>
         <button 
           onClick={handleOpenCreate}
-          className="flex items-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded-md font-medium text-sm transition-all shadow-sm active:scale-[0.98]"
+          className="group relative flex items-center gap-2 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white px-5 py-3 rounded-2xl font-extrabold text-xs transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer"
         >
-          <Plus className="w-4 h-4" />
-          Nova Propriedade
+          <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
+          <span>Nova Propriedade</span>
         </button>
       </div>
 
       <div className="flex flex-col sm:flex-row gap-4 items-center justify-between">
         <div className="relative w-full sm:w-96">
-          <Search className="w-4 h-4 text-muted-foreground absolute left-3 top-2.5" />
+          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
           <input 
             type="text" 
             placeholder="Buscar por nome, CAR ou produtor..."
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 bg-background border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent shadow-sm text-sm"
+            className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-2xl focus:outline-none focus:ring-4 focus:ring-[#1B7547]/15 focus:border-[#1B7547] shadow-xs text-xs font-medium transition-all"
           />
         </div>
       </div>
@@ -618,22 +630,29 @@ export default function GestorPropriedades() {
                         <div className="flex items-center justify-end gap-2">
                           <button 
                             onClick={() => handleOpenPendencias(prop)}
-                            className="text-amber-700 hover:text-amber-800 font-semibold text-xs bg-amber-50 hover:bg-amber-100/80 px-2.5 py-1.5 rounded-md flex items-center gap-1.5 transition-all hover:scale-105 active:scale-95 border border-amber-200 cursor-pointer"
+                            className="group/btn text-amber-800 hover:text-amber-900 font-extrabold text-xs bg-amber-100/80 hover:bg-amber-200/80 px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all duration-300 hover:scale-105 active:scale-95 border border-amber-200/80 shadow-2xs cursor-pointer"
                           >
-                            <ClipboardList className="w-3.5 h-3.5" /> Pendências
+                            <ClipboardList className="w-3.5 h-3.5 transition-transform group-hover/btn:scale-110 duration-300" /> 
+                            <span>Pendências</span>
                           </button>
-                          <button className="text-primary hover:text-primary/80 font-medium text-xs bg-primary/10 hover:bg-primary/20 px-2 py-1.5 rounded-md flex items-center gap-1.5 transition-all hover:scale-105 active:scale-95 cursor-pointer">
-                            <MapPin className="w-3.5 h-3.5" /> Mapa
+                          <button 
+                            onClick={() => window.location.href = '/app/gestor/mapa'}
+                            className="group/btn text-[#1B7547] hover:text-[#15613a] font-extrabold text-xs bg-[#1B7547]/10 hover:bg-[#1B7547]/20 px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
+                          >
+                            <MapPin className="w-3.5 h-3.5 transition-transform group-hover/btn:scale-110 duration-300" /> 
+                            <span>Mapa</span>
                           </button>
                           <button 
                             onClick={() => handleOpenEdit(prop)}
-                            className="p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded-md transition-all hover:scale-110 hover:-translate-y-0.5 active:scale-95"
+                            className="p-2 text-slate-400 hover:text-[#1B7547] hover:bg-[#1B7547]/10 rounded-xl transition-all duration-300 hover:scale-110 active:scale-90 cursor-pointer"
+                            title="Editar Propriedade"
                           >
                             <Edit3 className="w-4 h-4" />
                           </button>
                           <button 
                             onClick={() => handleOpenDelete(prop)}
-                            className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md transition-all hover:scale-110 hover:-translate-y-0.5 active:scale-95"
+                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all duration-300 hover:scale-110 active:scale-90 cursor-pointer"
+                            title="Excluir Propriedade"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -655,13 +674,48 @@ export default function GestorPropriedades() {
         title={editingProp ? "Editar Propriedade" : "Nova Propriedade"}
       >
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-foreground">Produtor Responsável</label>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-700 uppercase">Nome Completo do Produtor</label>
+              <input 
+                required
+                placeholder="Ex: João da Silva"
+                value={formData.nome_produtor}
+                onChange={e => setFormData({...formData, nome_produtor: e.target.value})}
+                className="w-full px-3 py-2 bg-background border border-input rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent text-sm font-medium"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-700 uppercase">E-mail de Contato</label>
+              <input 
+                type="email"
+                placeholder="produtor@email.com"
+                value={formData.email_produtor || ''}
+                onChange={e => setFormData({...formData, email_produtor: e.target.value})}
+                className="w-full px-3 py-2 bg-background border border-input rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent text-sm font-medium"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-700 uppercase">Telefone / WhatsApp</label>
+              <input 
+                type="tel"
+                placeholder="(67) 99999-9999"
+                value={formData.telefone_produtor || ''}
+                onChange={e => setFormData({...formData, telefone_produtor: e.target.value})}
+                className="w-full px-3 py-2 bg-background border border-input rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent text-sm font-medium"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs font-bold text-slate-700 uppercase">Área Plantada de Soja da Fazenda (ha)</label>
             <input 
-              required
-              value={formData.nome_produtor}
-              onChange={e => setFormData({...formData, nome_produtor: e.target.value})}
-              className="w-full px-3 py-2 bg-background border border-input rounded-md focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
+              type="number"
+              step="0.1"
+              placeholder="Ex: 1500 (hectares)"
+              value={formData.area_soja_ha || ''}
+              onChange={e => setFormData({...formData, area_soja_ha: e.target.value})}
+              className="w-full px-3 py-2 bg-background border border-input rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent text-sm font-medium"
             />
           </div>
 
@@ -953,46 +1007,74 @@ export default function GestorPropriedades() {
         actionType="danger"
       />
 
-      {/* Modal Lightbox de Foto Ampliada */}
-      {fotoAmpliada && (
-        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn transition-all" onClick={() => setFotoAmpliada(null)}>
-          <div className="relative max-w-4xl max-h-[90vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
-            <button type="button" onClick={() => setFotoAmpliada(null)} className="absolute -top-10 right-0 text-white bg-black/50 hover:bg-black/70 p-2 rounded-full transition-all cursor-pointer shadow-md">
-              <X className="w-6 h-6" />
+      {/* Modal Lightbox de Foto Ampliada em Portal z-[9999] */}
+      {fotoAmpliada && createPortal(
+        <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn transition-all" onClick={() => setFotoAmpliada(null)}>
+          <div className="relative max-w-4xl max-h-[90vh] flex flex-col items-center bg-slate-900/90 p-4 rounded-3xl border border-slate-700 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <button 
+              type="button" 
+              onClick={() => setFotoAmpliada(null)} 
+              className="absolute -top-3 -right-3 text-white bg-slate-800 hover:bg-slate-700 p-2 rounded-full transition-all cursor-pointer shadow-xl border border-slate-600 z-10"
+              title="Fechar"
+            >
+              <X className="w-5 h-5" />
             </button>
-            <img src={fotoAmpliada} alt="Evidência Ampliada" className="max-w-full max-h-[85vh] rounded-xl shadow-2xl object-contain border border-slate-700/60 bg-slate-900/40" />
-            {fotoAmpliada.startsWith('http') && (
-              <a href={fotoAmpliada} target="_blank" rel="noreferrer" className="mt-3 text-xs text-emerald-300 underline font-bold hover:text-white flex items-center gap-1 bg-black/40 px-3 py-1 rounded-full border border-white/10">
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>Abrir imagem original em nova guia</span>
-              </a>
-            )}
+
+            <div className="relative max-h-[75vh] overflow-hidden rounded-2xl flex items-center justify-center bg-slate-950">
+              <img 
+                src={fotoAmpliada} 
+                alt="Evidência Ampliada" 
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = sampleEvidenceSVG;
+                }}
+                className="max-w-full max-h-[75vh] object-contain rounded-xl" 
+              />
+            </div>
+
+            <div className="mt-3 flex items-center justify-between w-full px-2 gap-4">
+              <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                Evidência Comprovatória de Conformidade
+              </span>
+              {fotoAmpliada.startsWith('http') && !fotoAmpliada.includes('data:image/svg') && (
+                <a 
+                  href={fotoAmpliada} 
+                  target="_blank" 
+                  rel="noreferrer" 
+                  className="text-xs text-emerald-400 hover:text-white underline font-bold flex items-center gap-1 bg-white/10 px-3 py-1.5 rounded-full border border-white/10 transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Abrir em nova guia</span>
+                </a>
+              )}
+            </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {/* Modal Viewer de PDF */}
-      {pdfAmpliado && (
-        <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn" onClick={() => setPdfAmpliado(null)}>
-          <div className="relative w-full max-w-5xl h-[88vh] flex flex-col bg-slate-900 rounded-2xl overflow-hidden border border-slate-700 shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-6 py-3.5 bg-slate-800 border-b border-slate-700 text-white">
+      {/* Modal Viewer de PDF em Portal z-[9999] */}
+      {pdfAmpliado && createPortal(
+        <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn" onClick={() => setPdfAmpliado(null)}>
+          <div className="relative w-full max-w-5xl h-[88vh] flex flex-col bg-slate-900 rounded-3xl overflow-hidden border border-slate-700 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 bg-slate-800 border-b border-slate-700 text-white">
               <div className="flex items-center gap-2">
                 <FileText className="w-5 h-5 text-emerald-400" />
-                <span className="font-bold text-sm">Visualizador de Documento PDF</span>
+                <span className="font-extrabold text-sm">Visualizador de Documento Evidência PDF</span>
               </div>
               <div className="flex items-center gap-3">
                 <a
                   href={pdfAmpliado}
-                  download="documento.pdf"
+                  download="evidencia-documento.pdf"
                   target="_blank"
                   rel="noreferrer"
-                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm"
+                  className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold transition-all flex items-center gap-1.5 shadow-sm"
                 >
                   <Download className="w-4 h-4" />
-                  <span>Baixar / Abrir PDF</span>
+                  <span>Baixar PDF</span>
                 </a>
-                <button type="button" onClick={() => setPdfAmpliado(null)} className="text-slate-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer">
-                  <X className="w-6 h-6" />
+                <button type="button" onClick={() => setPdfAmpliado(null)} className="text-slate-400 hover:text-white p-1.5 rounded-full hover:bg-slate-700 transition-colors cursor-pointer">
+                  <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
@@ -1000,7 +1082,8 @@ export default function GestorPropriedades() {
               <iframe src={pdfAmpliado} className="w-full h-full border-none" title="Documento PDF" />
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

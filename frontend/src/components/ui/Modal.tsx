@@ -16,20 +16,21 @@ export default function Modal({ isOpen, onClose, title, children, maxWidth = "ma
   return createPortal(
     <div 
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs animate-fade-in p-4 overflow-y-auto cursor-pointer"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md animate-fade-in p-4 overflow-y-auto cursor-pointer"
     >
       <div 
         onClick={e => e.stopPropagation()}
-        className={`bg-card w-full ${maxWidth} rounded-2xl shadow-2xl border border-border p-6 relative animate-zoom-in my-auto max-h-[90vh] overflow-y-auto cursor-default`}
+        className={`bg-white w-full ${maxWidth} rounded-3xl shadow-2xl border border-slate-200 p-6 sm:p-8 relative animate-zoom-in my-auto max-h-[92vh] overflow-y-auto cursor-default`}
       >
         {title ? (
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-xl font-bold text-foreground">{title}</h2>
+          <div className="flex justify-between items-center mb-6 pb-3 border-b border-slate-100">
+            <h2 className="text-xl font-extrabold text-slate-900 tracking-tight">{title}</h2>
             <button 
               onClick={onClose}
-              className="text-muted-foreground hover:text-foreground hover:bg-muted p-1.5 rounded-md transition-colors cursor-pointer"
+              className="text-slate-400 hover:text-slate-700 bg-slate-100 hover:bg-slate-200 p-2.5 rounded-full transition-all duration-300 hover:scale-110 hover:rotate-90 active:scale-90 cursor-pointer"
+              title="Fechar"
             >
-              <X className="w-5 h-5" />
+              <X className="w-4 h-4" />
             </button>
           </div>
         ) : null}

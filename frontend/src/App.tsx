@@ -1,4 +1,3 @@
-
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
 import { AuthProvider } from './context/AuthContext';
@@ -8,6 +7,8 @@ import PublicLayout from './components/layout/PublicLayout';
 import BaseLayout from './components/layout/BaseLayout';
 
 import LandingPage from './pages/public/LandingPage';
+import TermosUso from './pages/public/TermosUso';
+import PoliticaPrivacidade from './pages/public/PoliticaPrivacidade';
 import Login from './pages/Login';
 import Register from './pages/auth/Register';
 import ForgotPassword from './pages/auth/ForgotPassword';
@@ -36,6 +37,8 @@ function App() {
             {/* Rotas Abertas / Públicas */}
             <Route element={<PublicLayout />}>
               <Route path="/" element={<LandingPage />} />
+              <Route path="/termos" element={<TermosUso />} />
+              <Route path="/privacidade" element={<PoliticaPrivacidade />} />
               <Route path="/login" element={<Login />} />
               <Route path="/cadastro" element={<Register />} />
               <Route path="/esqueci-a-senha" element={<ForgotPassword />} />
@@ -43,27 +46,27 @@ function App() {
               <Route path="/unauthorized" element={<Unauthorized />} />
             </Route>
 
-            {/* Rotas Privadas */}
-            <Route element={<BaseLayout />}>
+            {/* Rotas Privadas da Intranet / App */}
+            <Route path="/app" element={<BaseLayout />}>
               
-              {/* O perfil pode ser acessado por qualquer role logada */}
+              {/* Perfil compartilhado */}
               <Route element={<ProtectedRoute allowedRoles={['produtor', 'tecnico', 'gestor']} />}>
-                <Route path="/perfil" element={<ProfileSettings />} />
+                <Route path="perfil" element={<ProfileSettings />} />
               </Route>
 
               {/* Portal do Produtor */}
               <Route element={<ProtectedRoute allowedRoles={['produtor']} />}>
-                <Route path="/produtor" element={<DashboardProdutor />} />
+                <Route path="produtor" element={<DashboardProdutor />} />
               </Route>
 
               {/* Portal do Técnico */}
               <Route element={<ProtectedRoute allowedRoles={['tecnico']} />}>
-                <Route path="/tecnico" element={<DashboardTecnico />} />
+                <Route path="tecnico" element={<DashboardTecnico />} />
               </Route>
 
               {/* Portal do Gestor */}
               <Route element={<ProtectedRoute allowedRoles={['gestor']} />}>
-                <Route path="/gestor" element={<GestorLayout />}>
+                <Route path="gestor" element={<GestorLayout />}>
                   <Route index element={<DashboardGestor />} />
                   <Route path="propriedades" element={<GestorPropriedades />} />
                   <Route path="auditorias" element={<GestorAuditorias />} />
@@ -75,6 +78,12 @@ function App() {
               </Route>
               
             </Route>
+
+            {/* Redirecionamentos de Compatibilidade (Retrocompatibilidade com URLs antigas) */}
+            <Route path="/produtor/*" element={<Navigate to="/app/produtor" replace />} />
+            <Route path="/tecnico/*" element={<Navigate to="/app/tecnico" replace />} />
+            <Route path="/gestor/*" element={<Navigate to="/app/gestor" replace />} />
+            <Route path="/perfil" element={<Navigate to="/app/perfil" replace />} />
 
             {/* Fallback Geral */}
             <Route path="*" element={<Navigate to="/" replace />} />

@@ -48,3 +48,70 @@ export const getRemainingTimeLabel = (prazo: string | null | undefined, status: 
     };
   }
 };
+
+/**
+ * Formata a data de última alteração para exibição no Portal do Técnico
+ * Ex: "Há 12 min (31/07/2026 14:35)" ou "Hoje às 14:35"
+ */
+export function formatUltimaAlteracao(dateInput: string | Date | null | undefined): {
+  relative: string;
+  fullDate: string;
+  timeStr: string;
+  badgeText: string;
+  rawDate: Date;
+} {
+  if (!dateInput) {
+    const now = new Date();
+    return {
+      relative: 'Recentemente',
+      fullDate: now.toLocaleDateString('pt-BR'),
+      timeStr: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+      badgeText: 'Editado recentemente',
+      rawDate: now
+    };
+  }
+
+  const d = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
+  if (isNaN(d.getTime())) {
+    const now = new Date();
+    return {
+      relative: 'Recentemente',
+      fullDate: now.toLocaleDateString('pt-BR'),
+      timeStr: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+      badgeText: 'Editado recentemente',
+      rawDate: now
+    };
+  }
+
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMin = Math.floor(diffMs / (1000 * 60));
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  const fullDate = d.toLocaleDateString('pt-BR');
+  const timeStr = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+  let relative = '';
+  if (diffMin < 1) {
+    relative = 'Há poucos segundos';
+  } else if (diffMin < 60) {
+    relative = `Há ${diffMin} min`;
+  } else if (diffHours < 24 && now.getDate() === d.getDate()) {
+    relative = `Hoje às ${timeStr}`;
+  } else if (diffDays === 1 || (diffHours < 48 && now.getDate() - d.getDate() === 1)) {
+    relative = `Ontem às ${timeStr}`;
+  } else {
+    relative = `${fullDate} às ${timeStr}`;
+  }
+
+  const badgeText = `${relative} (${fullDate} ${timeStr})`;
+
+  return {
+    relative,
+    fullDate,
+    timeStr,
+    badgeText,
+    rawDate: d
+  };
+}

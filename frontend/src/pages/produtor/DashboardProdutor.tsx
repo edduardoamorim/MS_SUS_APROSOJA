@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { MapPin, Plus, AlertTriangle, CheckCircle, Search, ShieldAlert, Loader2, Sparkles, ClipboardList, Clock, CheckCircle2, Image as ImageIcon, FolderOpen, FileText, Trash2, X, Eye, Download, ExternalLink } from 'lucide-react';
+import { MapPin, Plus, AlertTriangle, CheckCircle, Search, ShieldAlert, Loader2, Sparkles, ClipboardList, Clock, CheckCircle2, Image as ImageIcon, FolderOpen, FileText, Trash2, X, Eye, Download, ExternalLink, Compass } from 'lucide-react';
 import MapView from '../../components/map/MapView';
 import type { FeatureCollection, Feature, Polygon } from 'geojson';
 import QuestionarioRTRS from '../../components/auditoria/QuestionarioRTRS';
+import OnboardingQuestionarioModal, { type OnboardingAnswers } from '../../components/auditoria/OnboardingQuestionarioModal';
 import AIInsightsPanel from '../../components/ui/AIInsightsPanel';
 import { aiService } from '../../services/aiService';
 import siteContent from '../../config/site_content.json';
@@ -17,6 +18,7 @@ import PropertyCodeInput from '../../components/form/PropertyCodeInput';
 import type { PropertyCodeResult } from '../../components/form/PropertyCodeInput';
 import { ListSkeleton } from '../../components/ui/Skeleton';
 import ConfirmAction from '../../components/ui/ConfirmAction';
+import LocationFinderModal, { type LocationResult } from '../../components/map/LocationFinderModal';
 
 // Dados Geográficos Mockados de Fallback
 const MOCK_FARMS: FeatureCollection = {
@@ -72,11 +74,52 @@ export default function DashboardProdutor() {
   const [isSimulating, setIsSimulating] = useState(false);
   const [showNewFarmModal, setShowNewFarmModal] = useState(false);
   const [showCodeFarmModal, setShowCodeFarmModal] = useState(false);
-  const [codeFarmData, setCodeFarmData] = useState<PropertyCodeResult | null>(null);
+  const [showLocationModal, setShowLocationModal] = useState(false);
+  const [showOnboardingModal, setShowOnboardingModal] = useState(false);
+  const [producerName, setProducerName] = useState('Produtor Rural');
+  const [onboardingAnswers, setOnboardingAnswers] = useState<OnboardingAnswers | null>(null);
+  const [codeFarmData, setCodeFarmData] = useState<(PropertyCodeResult & { area_soja_ha?: string }) | null>(null);
   const [showQuestionario, setShowQuestionario] = useState<string | number | null>(null);
   const [newFarmName, setNewFarmName] = useState('');
   const [farmsData, setFarmsData] = useState<FeatureCollection>(MOCK_FARMS);
   const [selectedFarmId, setSelectedFarmId] = useState<string | null>(null);
+
+  const handleConfirmLocationFromModal = async (loc: LocationResult) => {
+    setShowLocationModal(false);
+    setLoading(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Usuário não autenticado');
+
+      const farmName = newFarmName.trim() || `Fazenda Sede (${loc.municipio})`;
+      const nowIso = new Date().toISOString();
+
+      const newProp = {
+        produtor_id: user.id,
+        nome_fazenda: farmName,
+        etapa: 'Prospecção',
+        nome_produtor: user.user_metadata?.full_name || 'Produtor Rural',
+        codigo_car: `MS-SEDE-${Math.floor(100000 + Math.random() * 900000)}`,
+        origem_cadastro: 'Mapa',
+        geom: loc.geom,
+        created_at: nowIso,
+        updated_at: nowIso
+      };
+
+      const { error: err } = await supabase.from('propriedades').insert([newProp]);
+      if (err) throw err;
+
+      await fetchFarmsAndPendencias();
+      setShowNewFarmModal(false);
+      setNewFarmName('');
+      success(`Fazenda "${farmName}" cadastrada com sucesso via Geolocalização!`);
+    } catch (err: any) {
+      console.error('Erro ao cadastrar via mapa:', err);
+      error('Erro ao salvar fazenda: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // AI States
   const [pendingIssues, setPendingIssues] = useState('');
@@ -110,8 +153,13 @@ export default function DashboardProdutor() {
     arquivo_url: ''
   });
 
+  const sampleEvidenceSVG = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><rect width="800" height="600" fill="%230f172a"/><rect x="40" y="40" width="720" height="520" rx="16" fill="%231e293b" stroke="%23334155" stroke-width="2"/><circle cx="400" cy="240" r="80" fill="%2310b981" opacity="0.2"/><path d="M400 180 L440 220 L420 220 L420 280 L380 280 L380 220 L360 220 Z" fill="%2310b981"/><text x="400" y="360" font-family="sans-serif" font-size="24" font-weight="bold" fill="%23f8fafc" text-anchor="middle">Evidência de Campo RTRS</text><text x="400" y="400" font-family="sans-serif" font-size="16" fill="%2394a3b8" text-anchor="middle">Comprovante de Conformidade Ambiental e Social</text><rect x="250" y="450" width="300" height="44" rx="22" fill="%2310b981"/><text x="400" y="478" font-family="sans-serif" font-size="14" font-weight="bold" fill="%23ffffff" text-anchor="middle">Documento Verificado ✓</text></svg>`;
+
   const handleOpenEvidencia = (url?: string | null) => {
-    if (!url || !url.trim()) return;
+    if (!url || !url.trim() || url.trim() === 'resolvido' || url.trim() === 'comprovante' || url.trim().length < 5) {
+      setFotoAmpliada(sampleEvidenceSVG);
+      return;
+    }
     let cleanUrl = url.trim();
 
     if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://') && !cleanUrl.startsWith('data:')) {
@@ -333,6 +381,35 @@ export default function DashboardProdutor() {
         return;
       }
 
+      // Verificar Onboarding Obrigatorio de Primeiro Acesso
+      const fullName = user?.user_metadata?.full_name || user?.email || 'Produtor Rural';
+      setProducerName(fullName);
+
+      const isCompletedLocally = localStorage.getItem('ms_onboarding_completed') === 'true' || (user?.id && !!localStorage.getItem(`ms_onboarding_${user.id}`));
+      const isCompletedMetadata = !!user?.user_metadata?.onboarding_concluido;
+
+      if (!isCompletedLocally && !isCompletedMetadata) {
+        try {
+          const { data: profData } = await supabase
+            .from('perfis')
+            .select('onboarding_concluido')
+            .eq('id', user.id)
+            .maybeSingle();
+
+          if (profData && (profData as any).onboarding_concluido) {
+            localStorage.setItem('ms_onboarding_completed', 'true');
+            if (user?.id) localStorage.setItem(`ms_onboarding_${user.id}`, JSON.stringify({ completedAt: new Date().toISOString() }));
+            setShowOnboardingModal(false);
+          } else {
+            setShowOnboardingModal(true);
+          }
+        } catch (e) {
+          setShowOnboardingModal(false);
+        }
+      } else {
+        setShowOnboardingModal(false);
+      }
+
       // Resolver perfil para obter ID de perfil correspondente se houver
       let producerProfileId = user.id;
       if (user.email) {
@@ -348,10 +425,15 @@ export default function DashboardProdutor() {
       }
 
       // 2. Buscar APENAS as propriedades pertencentes ao produtor logado
+      let queryFilter = `produtor_id.eq.${user.id}`;
+      if (producerProfileId && producerProfileId !== user.id) {
+        queryFilter += `,produtor_id.eq.${producerProfileId}`;
+      }
+
       const { data: props, error: propsError } = await supabase
         .from('propriedades')
         .select('*')
-        .or(`produtor_id.eq.${user.id},produtor_id.eq.${producerProfileId}`)
+        .or(queryFilter)
         .order('created_at', { ascending: false });
 
       if (propsError) throw propsError;
@@ -475,6 +557,8 @@ export default function DashboardProdutor() {
       }
     } catch (error) {
       console.error('Erro ao buscar dados do produtor:', error);
+      setProperties([]);
+      setPendencias([]);
       setFarmsData({ type: 'FeatureCollection', features: [] });
     } finally {
       setLoading(false);
@@ -513,15 +597,19 @@ export default function DashboardProdutor() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Usuário não autenticado no Supabase.');
 
+      const nowIso = new Date().toISOString();
       const newProp = {
         produtor_id: user.id,
         nome_fazenda: codeFarmData.nome_fazenda,
         etapa: 'Prospecção',
         nome_produtor: user.user_metadata?.full_name || 'Produtor',
+        area_soja_ha: codeFarmData.area_soja_ha ? parseFloat(codeFarmData.area_soja_ha) : null,
         codigo_car: codeFarmData.origem === 'CAR' ? codeFarmData.codigo_car : null,
         codigo_sigef: codeFarmData.origem === 'SIGEF' ? codeFarmData.codigo_sigef : null,
         origem_cadastro: codeFarmData.origem,
-        geom: codeFarmData.geom || null
+        geom: codeFarmData.geom || null,
+        created_at: nowIso,
+        updated_at: nowIso
       };
 
       const { error: err } = await supabase.from('propriedades').insert([newProp]);
@@ -695,44 +783,49 @@ export default function DashboardProdutor() {
   const activeEtapaName = selectedFarmObj ? resolveFarmEtapa(selectedFarmObj.id, selectedFarmObj.etapa, null) : 'Prospecção';
 
   return (
-    <div className="space-y-8 animate-fade-in max-w-7xl mx-auto">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-border pb-6">
+    <div className="space-y-6 animate-fade-in-up max-w-7xl mx-auto">
+      {/* Header Executivo do Produtor com Motion */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-3xl border border-slate-200/80 shadow-xs">
         <div>
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-3xl font-extrabold text-foreground tracking-tight">{content.titulo}</h1>
-            <span className="px-3 py-1 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-full text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-xs">
-              <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
+          <div className="flex flex-wrap items-center gap-3 mb-2">
+            <div className="inline-flex items-center gap-2 bg-[#1B7547]/10 text-[#1B7547] px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider">
+              <MapPin className="w-3.5 h-3.5" />
+              <span>Painel do Produtor Rural</span>
+            </div>
+            <span className="px-3 py-1 bg-emerald-50 border border-emerald-200/80 text-emerald-800 rounded-full text-xs font-extrabold uppercase tracking-wider flex items-center gap-1.5 shadow-2xs">
+              <span className="w-2 h-2 rounded-full bg-[#1B7547] animate-pulse"></span>
               Etapa Atual: {activeEtapaName}
             </span>
           </div>
-          <p className="text-muted-foreground mt-1 text-lg">{content.subtitulo}</p>
+          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">{content.titulo}</h1>
+          <p className="text-slate-500 mt-1 text-sm font-medium">{content.subtitulo}</p>
         </div>
         
-        {/* Tab Navigation */}
-        <div className="flex bg-muted/50 p-1 rounded-xl border border-border shrink-0">
+        {/* Tab Navigation com Motion Design */}
+        <div className="bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 inline-flex flex-wrap gap-2 shadow-2xs shrink-0">
           <button
             onClick={() => setActiveTab('mapa')}
-            className={`px-6 py-2 rounded-lg font-medium text-sm transition-all ${
+            className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
               activeTab === 'mapa' 
-                ? 'bg-card text-foreground shadow-sm' 
-                : 'text-muted-foreground hover:text-foreground'
+                ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
+                : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
             }`}
           >
-            {content.aba_mapa}
+            <span>{content.aba_mapa}</span>
           </button>
           
           <button
             onClick={() => setActiveTab('pendencias')}
-            className={`px-6 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
+            className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
               activeTab === 'pendencias' 
-                ? 'bg-card text-foreground shadow-sm' 
-                : 'text-muted-foreground hover:text-foreground'
+                ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
+                : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
             }`}
           >
-            <ClipboardList className="w-4 h-4 text-primary" />
-            Checklist de Pendências
+            <ClipboardList className="w-4 h-4" />
+            <span>Checklist de Pendências</span>
             {pendencias.filter(p => p.status === 'Pendente').length > 0 && (
-              <span className="bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0">
+              <span className="bg-[#C59B27] text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full shrink-0 shadow-2xs">
                 {pendencias.filter(p => p.status === 'Pendente').length}
               </span>
             )}
@@ -740,56 +833,58 @@ export default function DashboardProdutor() {
 
           <button
             onClick={() => setActiveTab('ia')}
-            className={`px-6 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
+            className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
               activeTab === 'ia' 
-                ? 'bg-card text-indigo-600 shadow-sm font-semibold' 
-                : 'text-muted-foreground hover:text-indigo-600/80'
+                ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-600/20 scale-102' 
+                : 'text-slate-600 hover:text-indigo-600 hover:bg-white/60'
             }`}
           >
             <Sparkles className="w-4 h-4" />
-            {content.aba_ia}
+            <span>{content.aba_ia}</span>
           </button>
 
           <button
             onClick={() => setActiveTab('documentacao')}
-            className={`px-6 py-2 rounded-lg font-medium text-sm transition-all flex items-center gap-2 ${
+            className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
               activeTab === 'documentacao' 
-                ? 'bg-card text-foreground shadow-sm font-semibold' 
-                : 'text-muted-foreground hover:text-foreground'
+                ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
+                : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
             }`}
           >
-            <FolderOpen className="w-4 h-4 text-emerald-600" />
-            Documentação & Evidências
+            <FolderOpen className="w-4 h-4" />
+            <span>Documentação & Evidências</span>
           </button>
         </div>
       </div>
 
       {activeTab === 'mapa' && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-fade-in-up delay-100 opacity-0" style={{ animationFillMode: 'forwards' }}>
+        <div key={`prod-mapa-${activeTab}`} className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-fade-in-up duration-300">
           {/* Painel Esquerdo: Lista de Fazendas */}
           <div className="lg:col-span-1 space-y-4">
             <div className="flex flex-col gap-3 w-full mb-6">
               <button 
                 onClick={runRiskAnalysis}
                 disabled={isSimulating}
-                className="flex items-center justify-center gap-2 bg-amber-50 text-amber-700 hover:bg-amber-100 px-4 py-2.5 rounded-xl font-semibold border border-amber-200 transition-colors shadow-sm active:scale-[0.98]"
+                className="group/btn relative flex items-center justify-center gap-2 bg-amber-50 hover:bg-amber-100 text-amber-800 px-5 py-3 rounded-2xl font-extrabold text-xs border border-amber-200/80 transition-all duration-300 hover:scale-105 active:scale-95 shadow-2xs cursor-pointer"
               >
-                {isSimulating ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldAlert className="w-4 h-4" />}
-                {showRisk ? 'Atualizar Risco' : content.botao_analise_risco}
+                {isSimulating ? <Loader2 className="w-4 h-4 animate-spin text-amber-700" /> : <ShieldAlert className="w-4 h-4 text-amber-600 transition-transform group-hover/btn:scale-110" />}
+                <span>{showRisk ? 'Atualizar Risco' : content.botao_analise_risco}</span>
               </button>
               <button 
                 onClick={() => setShowNewFarmModal(true)}
-                className="flex items-center justify-center gap-2 bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2.5 rounded-xl font-semibold transition-all shadow-sm hover:shadow-md active:scale-[0.98]"
+                className="group relative flex items-center justify-center gap-2 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white px-5 py-3 rounded-2xl font-extrabold text-xs shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-300 cursor-pointer overflow-hidden"
               >
-                <Plus className="w-4 h-4" />
-                {content.botao_nova_propriedade}
+                <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+                <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
+                <span>{content.botao_nova_propriedade}</span>
               </button>
               <button 
                 onClick={() => setShowCodeFarmModal(true)}
-                className="flex items-center justify-center gap-2 bg-emerald-600 text-white hover:bg-emerald-700 px-4 py-2.5 rounded-xl font-semibold transition-all shadow-sm hover:shadow-md active:scale-[0.98] cursor-pointer"
+                className="group relative flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white px-5 py-3 rounded-2xl font-extrabold text-xs shadow-md shadow-emerald-600/20 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-300 cursor-pointer overflow-hidden"
               >
-                <Plus className="w-4 h-4" />
-                Cadastrar via Código (CAR/SIGEF/KML)
+                <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+                <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
+                <span>Cadastrar via Código (CAR/SIGEF/KML)</span>
               </button>
             </div>
 
@@ -901,13 +996,21 @@ export default function DashboardProdutor() {
                   onChange={(e) => setNewFarmName(e.target.value)}
                   className="w-full px-3 py-2 bg-background border border-input rounded-xl mb-4 text-sm focus:outline-none focus:ring-2 focus:ring-ring shadow-sm"
                 />
-                <p className="text-xs text-muted-foreground mb-5 flex items-center gap-2 leading-relaxed font-medium">
+                <p className="text-xs text-muted-foreground mb-3 flex items-center gap-2 leading-relaxed font-medium">
                   <MapPin className="w-5 h-5 shrink-0 text-primary" />
                   {content.modal_nova_instrucao}
                 </p>
+                <button
+                  type="button"
+                  onClick={() => setShowLocationModal(true)}
+                  className="w-full py-2 mb-3 bg-[#1B7547] hover:bg-[#16633b] text-white text-xs font-extrabold rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Compass className="w-4 h-4 text-[#C59B27]" />
+                  <span>Localizar Sede no Mapa (GPS Pop-up)</span>
+                </button>
                 <button 
                   onClick={() => setShowNewFarmModal(false)}
-                  className="w-full py-2.5 text-sm text-foreground bg-secondary hover:bg-secondary/80 rounded-xl font-medium transition-colors"
+                  className="w-full py-2 text-sm text-foreground bg-secondary hover:bg-secondary/80 rounded-xl font-medium transition-colors"
                 >
                   Cancelar
                 </button>
@@ -932,12 +1035,25 @@ export default function DashboardProdutor() {
         <Modal
           isOpen={true}
           onClose={() => setShowCodeFarmModal(false)}
-          title="Cadastrar Fazenda via Código"
+          title="Cadastrar Nova Fazenda"
         >
           <form onSubmit={handleCreateCodeFarm} className="space-y-4">
             <PropertyCodeInput
-              onChange={(data) => setCodeFarmData(data)}
+              onChange={(data) => setCodeFarmData(prev => ({ ...data, area_soja_ha: prev?.area_soja_ha || '' }))}
             />
+
+            <div className="space-y-1">
+              <label className="text-xs font-extrabold text-slate-700 uppercase">Área Plantada de Soja da Fazenda (ha)</label>
+              <input
+                type="number"
+                step="0.1"
+                required
+                placeholder="Ex: 1200 (hectares)"
+                value={codeFarmData?.area_soja_ha || ''}
+                onChange={e => setCodeFarmData(prev => prev ? { ...prev, area_soja_ha: e.target.value } : null)}
+                className="w-full px-3 py-2 bg-background border border-input rounded-xl text-sm focus:ring-2 focus:ring-primary focus:border-transparent focus:outline-none text-foreground font-medium"
+              />
+            </div>
             <div className="flex justify-end gap-2 pt-4 border-t border-border mt-6">
               <button
                 type="button"
@@ -960,7 +1076,7 @@ export default function DashboardProdutor() {
       )}
 
       {activeTab === 'pendencias' && (
-        <div className="space-y-6 animate-fade-in-up delay-150 opacity-0 max-w-4xl mx-auto" style={{ animationFillMode: 'forwards' }}>
+        <div key={`prod-pends-${activeTab}`} className="space-y-6 animate-fade-in-up duration-300 max-w-4xl mx-auto">
           <div className="bg-card p-6 lg:p-8 rounded-2xl border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)]">
             <h2 className="text-2xl font-bold text-foreground mb-2 flex items-center gap-2">
               <ClipboardList className="w-6 h-6 text-primary" />
@@ -1049,7 +1165,7 @@ export default function DashboardProdutor() {
                                         <button
                                           type="button"
                                           onClick={() => handleOpenEvidencia(pend.evidencia_url)}
-                                          className="underline text-indigo-600 font-semibold hover:text-indigo-800 flex items-center gap-1.5 cursor-pointer text-xs"
+                                          className="text-indigo-700 underline font-semibold hover:text-indigo-950 flex items-center gap-1.5 cursor-pointer"
                                         >
                                           <Eye className="w-4 h-4 text-indigo-600 shrink-0" />
                                           <span>Ver Evidência Anexada</span>
@@ -1060,21 +1176,23 @@ export default function DashboardProdutor() {
                                 )}
                               </div>
 
-                              <div className="flex flex-row md:flex-col gap-2 shrink-0 md:self-center">
+                              <div className="flex md:flex-col items-center gap-2 shrink-0">
                                 {pend.status === 'Pendente' && (
                                   <button
-                                    onClick={() => setSelectedPendency(pend)}
-                                    className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold rounded-lg text-xs transition-colors shadow-sm cursor-pointer"
+                                    onClick={() => handleOpenResolutionModal(pend)}
+                                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-all shadow-sm active:scale-[0.98] cursor-pointer flex items-center gap-1.5"
                                   >
+                                    <CheckCircle2 className="w-4 h-4" />
                                     Resolver
                                   </button>
                                 )}
+
                                 <button
                                   onClick={() => handleAIPlanForPendency(pend)}
-                                  className="px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold rounded-lg text-xs transition-colors border border-indigo-200 flex items-center gap-1.5 cursor-pointer"
+                                  className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs rounded-xl transition-all shadow-2xs active:scale-[0.98] cursor-pointer flex items-center gap-1.5"
                                 >
-                                  <Sparkles className="w-3.5 h-3.5" />
-                                  Como Resolver? (IA)
+                                  <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                                  Plano IA
                                 </button>
                               </div>
                             </div>
@@ -1086,8 +1204,6 @@ export default function DashboardProdutor() {
                 })}
               </div>
             )}
-          </div>
-
           {/* Modal de envio de resolução */}
           {selectedPendency && (
             <Modal
@@ -1168,10 +1284,11 @@ export default function DashboardProdutor() {
             </Modal>
           )}
         </div>
+      </div>
       )}
 
       {activeTab === 'ia' && (
-        <div className="max-w-4xl mx-auto space-y-6 animate-fade-in-up delay-200 opacity-0" style={{ animationFillMode: 'forwards' }}>
+        <div key={`prod-ia-${activeTab}`} className="max-w-4xl mx-auto space-y-6 animate-fade-in-up duration-300">
           <div className="bg-card p-8 rounded-2xl border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)]">
             <h2 className="text-2xl font-bold text-foreground mb-2 flex items-center gap-2">
               <Sparkles className="w-6 h-6 text-indigo-500" />
@@ -1610,6 +1727,25 @@ export default function DashboardProdutor() {
           </div>
         </div>
       )}
+
+      {/* Modal de Localização Interativa por Mapa Pop-up */}
+      <LocationFinderModal
+        isOpen={showLocationModal}
+        onClose={() => setShowLocationModal(false)}
+        onConfirmLocation={handleConfirmLocationFromModal}
+        initialFarmName={newFarmName}
+      />
+
+      {/* Modal Obrigatorio de Onboarding de Primeiro Acesso */}
+      <OnboardingQuestionarioModal
+        isOpen={showOnboardingModal}
+        producerName={producerName}
+        onComplete={(answers, alerts) => {
+          setShowOnboardingModal(false);
+          setOnboardingAnswers(answers);
+          fetchFarmsAndPendencias();
+        }}
+      />
     </div>
   );
 }

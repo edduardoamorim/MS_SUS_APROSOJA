@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Upload, Loader2, MapPin, FileText, X, Building2 } from 'lucide-react';
+import { Search, Upload, Loader2, MapPin, FileText, X, Building2, Navigation, Compass } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import LocationFinderModal, { type LocationResult } from '../map/LocationFinderModal';
 
-export type PropertyOrigin = 'CAR' | 'SIGEF' | 'KML' | 'Manual';
+export type PropertyOrigin = 'CAR' | 'SIGEF' | 'KML' | 'Mapa' | 'Manual';
 
 export interface PropertyCodeResult {
   nome_fazenda: string;
@@ -134,7 +135,9 @@ async function parseKmlFile(file: File): Promise<{ name: string; geom: any } | n
 // ============================================================================
 
 export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', initialCodigoCar = '' }: Props) {
-  const [mode, setMode] = useState<'CAR' | 'SIGEF' | 'KML'>('CAR');
+  const [mode, setMode] = useState<'CAR' | 'SIGEF' | 'KML' | 'Mapa'>('CAR');
+  const [showLocationModal, setShowLocationModal] = useState(false);
+  const [selectedLocation, setSelectedLocation] = useState<LocationResult | null>(null);
 
   // CAR State
   const [carRaw, setCarRaw] = useState(stripNonAlphanumeric(initialCodigoCar));
@@ -158,6 +161,21 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
   // Nome da fazenda e Geometria ativa
   const [nomeFazenda, setNomeFazenda] = useState(initialNomeFazenda);
   const [activeGeom, setActiveGeom] = useState<any>(null);
+
+  const handleConfirmMapLocation = (loc: LocationResult) => {
+    setSelectedLocation(loc);
+    setActiveGeom(loc.geom);
+    const finalName = nomeFazenda.trim() || `Fazenda Sede (${loc.municipio})`;
+    if (!nomeFazenda.trim()) setNomeFazenda(finalName);
+    
+    onChange({
+      nome_fazenda: finalName,
+      codigo_car: `MS-SEDE-${Math.floor(100000 + Math.random() * 900000)}`,
+      codigo_sigef: '',
+      origem: 'Mapa',
+      geom: loc.geom
+    });
+  };
 
   // ---- CAR Auto-format and Autocomplete ----
 
@@ -526,7 +544,7 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
   };
 
   // ---- Reset on mode change ----
-  const handleModeChange = (newMode: 'CAR' | 'SIGEF' | 'KML') => {
+  const handleModeChange = (newMode: 'CAR' | 'SIGEF' | 'KML' | 'Mapa') => {
     setMode(newMode);
     // Reset all states
     setCarRaw('');
@@ -540,12 +558,16 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
     setKmlData(null);
     setNomeFazenda('');
 
-    setActiveGeom(null);
+    if (newMode !== 'Mapa') {
+      setSelectedLocation(null);
+      setActiveGeom(null);
+    }
+
     onChange({
       nome_fazenda: '',
       codigo_car: '',
       codigo_sigef: '',
-      origem: newMode === 'KML' ? 'KML' : newMode === 'SIGEF' ? 'SIGEF' : 'CAR',
+      origem: newMode === 'KML' ? 'KML' : newMode === 'SIGEF' ? 'SIGEF' : newMode === 'Mapa' ? 'Mapa' : 'CAR',
       geom: null
     });
   };
@@ -571,23 +593,37 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
 
       {/* Seletor de Modo */}
       <div className="space-y-2">
-        <label className="text-[10px] font-bold text-slate-600 uppercase">Fonte do Imóvel Rural</label>
+        <div className="flex items-center justify-between">
+          <label className="text-[10px] font-bold text-slate-600 uppercase">Fonte de Identificação do Imóvel Rural</label>
+          <button
+            type="button"
+            onClick={() => setShowLocationModal(true)}
+            className="text-[11px] font-extrabold text-[#1B7547] hover:text-[#16633b] flex items-center gap-1 cursor-pointer hover:underline"
+          >
+            <Compass className="w-3.5 h-3.5 text-[#C59B27]" />
+            <span>📍 Localizar Sede no Mapa (Pop-up)</span>
+          </button>
+        </div>
         <div className="flex bg-slate-200/60 p-1 rounded-xl">
-          {(['CAR', 'SIGEF', 'KML'] as const).map(m => (
+          {(['CAR', 'SIGEF', 'KML', 'Mapa'] as const).map(m => (
             <button
               key={m}
               type="button"
-              onClick={() => handleModeChange(m)}
+              onClick={() => {
+                handleModeChange(m);
+                if (m === 'Mapa') setShowLocationModal(true);
+              }}
               className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1 ${
                 mode === m
                   ? 'bg-white text-slate-800 shadow-sm'
                   : 'text-slate-500 hover:text-slate-700'
               }`}
             >
-              {m === 'CAR' && <MapPin className="w-3 h-3" />}
-              {m === 'SIGEF' && <Search className="w-3 h-3" />}
-              {m === 'KML' && <Upload className="w-3 h-3" />}
-              {m === 'CAR' ? 'CAR (SICAR)' : m === 'SIGEF' ? 'SIGEF (INCRA)' : 'KML / KMZ'}
+              {m === 'CAR' && <MapPin className="w-3 h-3 text-[#1B7547]" />}
+              {m === 'SIGEF' && <Search className="w-3 h-3 text-[#1B7547]" />}
+              {m === 'KML' && <Upload className="w-3 h-3 text-[#1B7547]" />}
+              {m === 'Mapa' && <Navigation className="w-3 h-3 text-[#C59B27]" />}
+              {m === 'CAR' ? 'CAR' : m === 'SIGEF' ? 'SIGEF' : m === 'KML' ? 'KML' : 'Mapa Pop-up'}
             </button>
           ))}
         </div>
@@ -799,6 +835,46 @@ export default function PropertyCodeInput({ onChange, initialNomeFazenda = '', i
           )}
         </div>
       )}
+
+      {/* ---- MODO MAPA POP-UP ---- */}
+      {mode === 'Mapa' && (
+        <div className="p-4 bg-emerald-50/80 rounded-2xl border border-emerald-200/80 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-xs font-extrabold text-emerald-950">
+              <Navigation className="w-4 h-4 text-[#C59B27]" />
+              <span>Localização da Sede via Mapa Pop-up</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowLocationModal(true)}
+              className="px-3 py-1.5 bg-[#1B7547] hover:bg-[#16633b] text-white text-xs font-extrabold rounded-xl transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+            >
+              <Compass className="w-3.5 h-3.5 text-[#C59B27]" />
+              <span>{selectedLocation ? 'Reabrir Mapa' : 'Abrir Mapa Pop-up'}</span>
+            </button>
+          </div>
+
+          {selectedLocation ? (
+            <div className="text-xs text-slate-700 font-medium bg-white p-3 rounded-xl border border-slate-200 space-y-1">
+              <p className="font-bold text-[#1B7547]">✅ Ponto da Sede Definido!</p>
+              <p>{selectedLocation.addressLabel}</p>
+              <p className="text-[11px] text-slate-500 font-mono">Município: {selectedLocation.municipio}</p>
+            </div>
+          ) : (
+            <p className="text-xs text-slate-600">
+              Clique no botão acima para abrir a janela flutuante com o mapa interativo, puxar seu GPS atual e definir o ponto exato da sede da sua fazenda.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Modal de Mapa Interativo da Sede */}
+      <LocationFinderModal
+        isOpen={showLocationModal}
+        onClose={() => setShowLocationModal(false)}
+        onConfirmLocation={handleConfirmMapLocation}
+        initialFarmName={nomeFazenda}
+      />
     </div>
   );
 }
