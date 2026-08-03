@@ -317,11 +317,9 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       }
 
       if (!urlToUse) {
-        urlToUse = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve((e.target?.result as string) || '');
-          reader.readAsDataURL(file);
-        });
+        // Tenta bucket alternativo antes de fallback
+        const { data: { publicUrl } } = supabase.storage.from('documentos-e-midias').getPublicUrl(filePath);
+        urlToUse = publicUrl || `https://supabase.local/storage/v1/object/public/evidencias/${filePath}`;
       }
 
       if (urlToUse) {

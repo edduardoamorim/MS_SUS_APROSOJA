@@ -1,14 +1,14 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useNavigate, Link } from 'react-router-dom';
-import { ShieldCheck, Loader2, Play, Users, Eye, EyeOff } from 'lucide-react';
+import { ShieldCheck, Loader2, Eye, EyeOff } from 'lucide-react';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 
 export default function Login() {
   const navigate = useNavigate();
   const { info } = useToast();
-  const { setFallbackSession } = useAuth();
+  const { setFallbackSession } = useAuth(); // Mantido para login resiliente
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -108,26 +108,7 @@ export default function Login() {
     setLoading(false);
   };
 
-  const handleQuickLogin = async (selectedEmail: string) => {
-    setLoading(true);
-    setError('');
-    setEmail(selectedEmail);
-    setPassword('Senha@123');
 
-    const cleanEmail = selectedEmail.trim().toLowerCase();
-    const success = await attemptResilientLogin(cleanEmail, 'Senha@123');
-
-    if (!success) {
-      setError('Não foi possível autenticar a conta de teste.');
-    }
-    setLoading(false);
-  };
-
-  const handleCreateTestUsers = async () => {
-    setLoading(true);
-    info('Contas de teste verificadas e prontas no ambiente local!');
-    setLoading(false);
-  };
 
   return (
     <div className="min-h-[80vh] flex flex-col justify-center py-12 sm:px-6 lg:px-8">
@@ -226,53 +207,7 @@ export default function Login() {
           </div>
         </div>
 
-        {/* Painel de Desenvolvimento/Testes */}
-        <div className="mt-6 bg-slate-50 border border-slate-200 rounded-xl p-5 shadow-sm space-y-4 animate-fade-in-up delay-100" style={{ animationFillMode: 'both' }}>
-          <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
-            <Users className="w-5 h-5 text-emerald-800" />
-            <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wide">
-              Painel de Testes & Desenvolvimento
-            </h3>
-          </div>
-          
-          <p className="text-xs text-slate-600 leading-relaxed font-medium">
-            Selecione uma conta para acessar diretamente o painel correspondente:
-          </p>
 
-          <div className="flex flex-col gap-2.5">
-            <button
-              onClick={handleCreateTestUsers}
-              disabled={loading}
-              className="w-full py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-xs font-bold transition-all cursor-pointer shadow-sm flex items-center justify-center gap-1.5 disabled:opacity-70"
-            >
-              <Play className="w-3.5 h-3.5 fill-current" /> Garantir Acesso a Todas as Contas
-            </button>
-
-            <div className="grid grid-cols-3 gap-2 pt-1">
-              <button
-                onClick={() => handleQuickLogin('gestor@ms.gov.br')}
-                disabled={loading}
-                className="py-2 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 rounded text-[11px] font-bold transition-all cursor-pointer shadow-sm disabled:opacity-70"
-              >
-                Gestor
-              </button>
-              <button
-                onClick={() => handleQuickLogin('analistacampo1@aprosojams.org.br')}
-                disabled={loading}
-                className="py-2 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 rounded text-[11px] font-bold transition-all cursor-pointer shadow-sm disabled:opacity-70"
-              >
-                Técnico (Patrícia)
-              </button>
-              <button
-                onClick={() => handleQuickLogin('produtor@ms.gov.br')}
-                disabled={loading}
-                className="py-2 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 rounded text-[11px] font-bold transition-all cursor-pointer shadow-sm disabled:opacity-70"
-              >
-                Produtor
-              </button>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   );

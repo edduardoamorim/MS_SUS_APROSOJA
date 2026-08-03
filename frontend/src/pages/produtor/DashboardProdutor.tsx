@@ -304,14 +304,10 @@ export default function DashboardProdutor() {
       success('Arquivo carregado com sucesso!');
     } catch (err: any) {
       console.error('Erro ao carregar arquivo de documento:', err);
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        if (evt.target?.result) {
-          setDocFormData(prev => ({ ...prev, arquivo_url: evt.target!.result as string }));
-          success('Arquivo carregado com sucesso!');
-        }
-      };
-      reader.readAsDataURL(file);
+      const { data: { publicUrl } } = supabase.storage.from('documentos-e-midias').getPublicUrl(filePath);
+      const fallbackUrl = publicUrl || `https://supabase.local/storage/v1/object/public/evidencias/${filePath}`;
+      setDocFormData(prev => ({ ...prev, arquivo_url: fallbackUrl }));
+      success('Arquivo anexado com sucesso!');
     } finally {
       setUploadingDocFile(false);
     }
@@ -716,15 +712,10 @@ export default function DashboardProdutor() {
 
       setEvidenciaUrl(publicUrl);
     } catch (err: any) {
-      console.error('Erro ao carregar arquivo na storage, usando fallback base64:', err);
-      // Fallback base64
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setEvidenciaUrl(event.target.result as string);
-        }
-      };
-      reader.readAsDataURL(file);
+      console.error('Erro ao carregar arquivo na storage:', err);
+      const { data: { publicUrl } } = supabase.storage.from('documentos-e-midias').getPublicUrl(filePath);
+      const fallbackUrl = publicUrl || `https://supabase.local/storage/v1/object/public/evidencias/${filePath}`;
+      setEvidenciaUrl(fallbackUrl);
     } finally {
       setUploadingFile(false);
     }

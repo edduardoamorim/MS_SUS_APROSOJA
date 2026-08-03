@@ -231,11 +231,8 @@ export default function GestorDocumentos() {
       }
 
       if (!urlToSave) {
-        urlToSave = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = (ev) => resolve((ev.target?.result as string) || '');
-          reader.readAsDataURL(file);
-        });
+        const { data: { publicUrl } } = supabase.storage.from('documentos-e-midias').getPublicUrl(filePath);
+        urlToSave = publicUrl || `https://supabase.local/storage/v1/object/public/evidencias/${filePath}`;
       }
 
       const { data, error: dbErr } = await supabase
