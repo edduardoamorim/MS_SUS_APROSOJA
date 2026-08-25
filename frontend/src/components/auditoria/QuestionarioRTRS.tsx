@@ -61,7 +61,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     async function fetchPerguntas() {
       const { data, error } = await supabase
         .from('perguntas_rtrs')
-        .select('id, secao, numero_criterio, enunciado, criterio, ponderacao, orientacao, interpretacao_nacional, ativo')
+        .select('*')
         .eq('ativo', true);
         
       if (error) {
