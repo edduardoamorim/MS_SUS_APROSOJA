@@ -22,6 +22,7 @@ interface Pergunta {
   criterio: string;
   ponderacao: string;
   orientacao: string;
+  interpretacao_nacional?: string;
   ativo?: boolean;
 }
 
@@ -60,7 +61,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     async function fetchPerguntas() {
       const { data, error } = await supabase
         .from('perguntas_rtrs')
-        .select('id, secao, numero_criterio, enunciado, criterio, ponderacao, orientacao, ativo')
+        .select('id, secao, numero_criterio, enunciado, criterio, ponderacao, orientacao, interpretacao_nacional, ativo')
         .eq('ativo', true);
         
       if (error) {
@@ -784,17 +785,69 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                     
                     <h3 className="text-xs sm:text-base font-bold text-gray-900 leading-snug">{pergunta.enunciado || pergunta.criterio}</h3>
                     
-                    {pergunta.orientacao && (
-                      <div className="bg-slate-50 rounded-lg sm:rounded-xl border border-slate-200 overflow-hidden">
-                        <button type="button" onClick={() => setExpandedOrientacoes(prev => ({ ...prev, [pergunta.id]: !prev[pergunta.id] }))} className="w-full px-3 py-1.5 sm:px-4 sm:py-2.5 text-left text-xs font-bold text-slate-700 flex items-center justify-between hover:bg-slate-100 transition-colors">
-                          <span className="flex items-center gap-1 text-emerald-800">Ver Orientação / Diretrizes</span>
-                          <span className="text-slate-400 font-extrabold text-sm">{expandedOrientacoes[pergunta.id] ? '−' : '+'}</span>
-                        </button>
-                        {expandedOrientacoes[pergunta.id] && (
-                          <div className="px-3 pb-2.5 pt-1 text-xs text-slate-600 leading-relaxed border-t border-slate-200/60 bg-white">{pergunta.orientacao}</div>
-                        )}
-                      </div>
-                    )}
+                    {(() => {
+                      const parseOrientacoes = (orientacao?: string, interpretacao_nacional?: string) => {
+                        let nat = (interpretacao_nacional || '').trim();
+                        let ori = (orientacao || '').trim();
+
+                        if (!nat && ori.includes('[INTERPRETAÇÃO NACIONAL - BRASIL]')) {
+                          const parts = ori.split('[DIRETRIZES GERAIS]');
+                          const natPart = parts[0].replace('[INTERPRETAÇÃO NACIONAL - BRASIL]', '').trim();
+                          const genPart = parts[1] ? parts[1].trim() : '';
+                          nat = natPart;
+                          ori = genPart;
+                        }
+
+                        return {
+                          interpretacaoNacional: nat,
+                          orientacaoGeral: ori
+                        };
+                      };
+
+                      const { interpretacaoNacional, orientacaoGeral } = parseOrientacoes(pergunta.orientacao, pergunta.interpretacao_nacional);
+                      if (!interpretacaoNacional && !orientacaoGeral) return null;
+
+                      return (
+                        <div className="bg-slate-50 rounded-lg sm:rounded-xl border border-slate-200 overflow-hidden shadow-2xs">
+                          <button 
+                            type="button" 
+                            onClick={() => setExpandedOrientacoes(prev => ({ ...prev, [pergunta.id]: !prev[pergunta.id] }))} 
+                            className="w-full px-3 py-2 sm:px-4 sm:py-2.5 text-left text-xs font-bold text-slate-700 flex items-center justify-between hover:bg-slate-100/80 transition-colors cursor-pointer"
+                          >
+                            <span className="text-emerald-800 font-extrabold uppercase tracking-wide text-[11px]">
+                              {expandedOrientacoes[pergunta.id] ? 'Ocultar Orientação' : 'Ver Orientação / Diretrizes'}
+                            </span>
+                            <span className="text-slate-400 font-extrabold text-sm">{expandedOrientacoes[pergunta.id] ? '−' : '+'}</span>
+                          </button>
+                          {expandedOrientacoes[pergunta.id] && (
+                            <div className="px-3 py-3 sm:px-4 sm:py-3 space-y-2.5 border-t border-slate-200 bg-white">
+                              {interpretacaoNacional && (
+                                <div className="bg-gradient-to-br from-amber-50/90 to-amber-50/40 border border-amber-200/90 rounded-lg p-2.5 sm:p-3 shadow-2xs">
+                                  <div className="flex items-center gap-1.5 text-[10px] font-black text-amber-900 uppercase tracking-wider mb-1">
+                                    <span>🇧🇷</span>
+                                    <span>Orientações para as Interpretações Nacionais (Brasil)</span>
+                                  </div>
+                                  <p className="text-[11px] sm:text-xs text-amber-950 leading-relaxed font-medium whitespace-pre-line">
+                                    {interpretacaoNacional}
+                                  </p>
+                                </div>
+                              )}
+                              {orientacaoGeral && (
+                                <div className="bg-slate-50/70 border border-slate-200/70 rounded-lg p-2.5 sm:p-3 shadow-2xs">
+                                  <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                                    <span>📋</span>
+                                    <span>Diretrizes e Orientações Gerais</span>
+                                  </div>
+                                  <p className="text-[11px] sm:text-xs text-slate-700 leading-relaxed font-medium whitespace-pre-line">
+                                    {orientacaoGeral}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                     
                     <div className="grid grid-cols-2 gap-2 sm:gap-3 pt-1">
                       <button type="button" onClick={() => handleResposta(pergunta.id, true)} className={`py-2.5 px-2 sm:py-3 sm:px-4 rounded-xl font-extrabold text-[11px] sm:text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer ${isConforme ? 'bg-emerald-600 text-white shadow-md ring-2 ring-emerald-600 ring-offset-1' : 'bg-white border-2 border-emerald-200 text-emerald-800 hover:bg-emerald-50'}`}>

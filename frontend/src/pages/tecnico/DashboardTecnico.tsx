@@ -505,8 +505,7 @@ export default function DashboardTecnico() {
             p.updated_at,
             p.created_at,
             latestAudit?.updated_at,
-            latestAudit?.created_at,
-            latestAudit?.data_agendamento
+            latestAudit?.created_at
           ].filter(Boolean);
 
           let ultima_alteracao_at = new Date(0).toISOString();
@@ -664,7 +663,8 @@ export default function DashboardTecnico() {
               isMine: isMineFarm,
               status: auditStatus,
               produtor: p.nome_produtor || 'Produtor Rural',
-              ultima_alteracao_at: ultima_alteracao_at
+              ultima_alteracao_at: ultima_alteracao_at,
+              data_agendamento: latestAudit?.data_agendamento || null
             },
             geometry: geom
           };
@@ -1045,7 +1045,7 @@ export default function DashboardTecnico() {
         const propId = a.propriedade_id || propFound?.id;
         const resolvedEtapa = resolveFarmEtapa(propId, propFound?.etapa, a.etapa);
 
-        const lastTs = a.updated_at || a.created_at || a.data_agendamento || propFound?.updated_at || propFound?.created_at || new Date().toISOString();
+        const lastTs = a.updated_at || a.created_at || propFound?.updated_at || propFound?.created_at || new Date().toISOString();
 
         allList.push({
           ...a,
@@ -1071,6 +1071,31 @@ export default function DashboardTecnico() {
             propriedades: p
           });
         }
+      });
+
+      // 3. Buscar pendências ativas com prazo para exibir no card
+      const propIds = allList.map(a => a.propriedade_id).filter(Boolean);
+      const pendenciasPrazoMap = new Map<string, string>();
+      if (propIds.length > 0) {
+        const { data: pendsData } = await supabase
+          .from('pendencias')
+          .select('propriedade_id, prazo, status')
+          .in('propriedade_id', propIds)
+          .not('prazo', 'is', null)
+          .neq('status', 'Resolvida');
+        
+        (pendsData || []).forEach((pend: any) => {
+          if (!pend.prazo || !pend.propriedade_id) return;
+          const existing = pendenciasPrazoMap.get(pend.propriedade_id);
+          if (!existing || new Date(pend.prazo).getTime() < new Date(existing).getTime()) {
+            pendenciasPrazoMap.set(pend.propriedade_id, pend.prazo);
+          }
+        });
+      }
+
+      // Enriquecer cada item com prazo_pendencia
+      allList.forEach(a => {
+        a.prazo_pendencia = pendenciasPrazoMap.get(a.propriedade_id) || null;
       });
 
       // Filtrar estritamente apenas as propriedades/auditorias atribuídas a este técnico pelo Gestor
@@ -1574,16 +1599,21 @@ export default function DashboardTecnico() {
                           </span>
                         </div>
 
-                        {/* Indicador de Última Alteração */}
+                        {/* Indicador de Visita Agendada ou Última Alteração */}
                         <div className="mt-2.5 pt-2 border-t border-slate-100/80 flex items-center justify-between text-[10px] text-slate-500 font-medium">
-                          <div className="flex items-center gap-1.5 text-slate-700 font-bold">
-                            <Clock className="w-3.5 h-3.5 text-[#1B7547] shrink-0" />
-                            <span>Última alteração:</span>
-                            <span className="text-[#1B7547] font-black">{formatUltimaAlteracao(props.ultima_alteracao_at).relative}</span>
-                          </div>
-                          <span className="text-[9px] font-extrabold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200/80">
-                            {formatUltimaAlteracao(props.ultima_alteracao_at).fullDate} {formatUltimaAlteracao(props.ultima_alteracao_at).timeStr}
-                          </span>
+                          {props.data_agendamento ? (
+                            <div className="flex items-center gap-1.5 text-slate-700 font-bold">
+                              <CalendarDays className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                              <span>Visita agendada:</span>
+                              <span className="text-blue-700 font-black">{new Date(props.data_agendamento).toLocaleDateString('pt-BR')}</span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1.5 text-slate-700 font-bold">
+                              <Clock className="w-3.5 h-3.5 text-[#1B7547] shrink-0" />
+                              <span>Última alteração:</span>
+                              <span className="text-[#1B7547] font-black">{formatUltimaAlteracao(props.ultima_alteracao_at).relative}</span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1780,16 +1810,33 @@ export default function DashboardTecnico() {
                             Produtor: <strong className="text-foreground font-semibold">{prop?.nome_produtor || 'Não informado'}</strong>
                           </p>
 
-                          {/* Indicador de Última Alteração */}
-                          <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
-                            <div className="flex items-center gap-1.5 font-extrabold text-slate-700">
-                              <Clock className="w-3.5 h-3.5 text-[#1B7547] shrink-0" />
+                          {/* Indicadores de datas relevantes */}
+                          <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-col gap-1.5 text-xs">
+                            {/* Última alteração (sempre) */}
+                            <div className="flex items-center gap-1.5 font-bold text-slate-600">
+                              <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                               <span>Última alteração:</span>
-                              <span className="text-[#1B7547] font-black">{formatUltimaAlteracao(auditoria.ultima_alteracao_at || auditoria.updated_at || auditoria.created_at).relative}</span>
+                              <span className="text-slate-800 font-extrabold">{formatUltimaAlteracao(auditoria.ultima_alteracao_at || auditoria.updated_at || auditoria.created_at).relative}</span>
                             </div>
-                            <span className="text-[10px] font-extrabold text-slate-600 bg-slate-100 px-2.5 py-0.5 rounded-full border border-slate-200 shadow-2xs">
-                              {formatUltimaAlteracao(auditoria.ultima_alteracao_at || auditoria.updated_at || auditoria.created_at).fullDate} às {formatUltimaAlteracao(auditoria.ultima_alteracao_at || auditoria.updated_at || auditoria.created_at).timeStr}
-                            </span>
+                            {/* Visita agendada (quando houver) */}
+                            {auditoria.data_agendamento && (
+                              <div className="flex items-center gap-1.5 font-bold text-slate-600">
+                                <CalendarDays className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                <span>Visita agendada:</span>
+                                <span className="text-blue-700 font-extrabold">{new Date(auditoria.data_agendamento).toLocaleDateString('pt-BR')}</span>
+                              </div>
+                            )}
+                            {/* Prazo de pendência (quando houver) */}
+                            {auditoria.prazo_pendencia && (
+                              <div className="flex items-center gap-1.5 font-bold text-slate-600">
+                                <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                                <span>Prazo pendência:</span>
+                                <span className={`font-extrabold ${new Date(auditoria.prazo_pendencia) < new Date() ? 'text-red-600' : 'text-amber-700'}`}>
+                                  {new Date(auditoria.prazo_pendencia).toLocaleDateString('pt-BR')}
+                                  {new Date(auditoria.prazo_pendencia) < new Date() && ' (vencido)'}
+                                </span>
+                              </div>
+                            )}
                           </div>
                         </div>
 

@@ -32,6 +32,7 @@ async function main() {
     enunciado: q.enunciado,
     ponderacao: q.ponderacao,
     orientacao: q.orientacao,
+    interpretacao_nacional: q.interpretacao_nacional,
     ativo: true,
     ordem: idx + 1
   }));

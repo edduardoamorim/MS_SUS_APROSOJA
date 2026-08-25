@@ -24,12 +24,30 @@ export default function GestorQuestionarios() {
   const [itemToDelete, setItemToDelete] = useState<any>(null);
 
   // Form States
-  const [formData, setFormData] = useState({ numero_criterio: '', enunciado: '', criterio: '', ponderacao: '', orientacao: '' });
+  const [formData, setFormData] = useState({ numero_criterio: '', enunciado: '', criterio: '', ponderacao: '', orientacao: '', interpretacao_nacional: '' });
   const [secaoName, setSecaoName] = useState('');
   const [expandedOrientacoes, setExpandedOrientacoes] = useState<Record<string, boolean>>({});
 
   const toggleOrientacao = (id: string) => {
     setExpandedOrientacoes(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const parseOrientacoes = (orientacao?: string, interpretacao_nacional?: string) => {
+    let nat = (interpretacao_nacional || '').trim();
+    let ori = (orientacao || '').trim();
+
+    if (!nat && ori.includes('[INTERPRETAÇÃO NACIONAL - BRASIL]')) {
+      const parts = ori.split('[DIRETRIZES GERAIS]');
+      const natPart = parts[0].replace('[INTERPRETAÇÃO NACIONAL - BRASIL]', '').trim();
+      const genPart = parts[1] ? parts[1].trim() : '';
+      nat = natPart;
+      ori = genPart;
+    }
+
+    return {
+      interpretacaoNacional: nat,
+      orientacaoGeral: ori
+    };
   };
 
   useEffect(() => {
@@ -136,19 +154,22 @@ export default function GestorQuestionarios() {
       enunciado: '',
       criterio: '',
       ponderacao: 'Imediata',
-      orientacao: ''
+      orientacao: '',
+      interpretacao_nacional: ''
     });
     setIsFormOpen(true);
   };
 
   const handleOpenEdit = (item: any) => {
     setEditingItem(item);
+    const { interpretacaoNacional, orientacaoGeral } = parseOrientacoes(item.orientacao, item.interpretacao_nacional);
     setFormData({ 
       numero_criterio: item.numero_criterio, 
       enunciado: item.enunciado,
       criterio: item.criterio || '',
       ponderacao: item.ponderacao || 'Imediata',
-      orientacao: item.orientacao || ''
+      orientacao: orientacaoGeral,
+      interpretacao_nacional: interpretacaoNacional
     });
     setIsFormOpen(true);
   };
@@ -195,17 +216,23 @@ export default function GestorQuestionarios() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const combinedOrientacao = formData.interpretacao_nacional?.trim()
+      ? `[INTERPRETAÇÃO NACIONAL - BRASIL]\n${formData.interpretacao_nacional.trim()}\n\n[DIRETRIZES GERAIS]\n${formData.orientacao?.trim() || ''}`.trim()
+      : formData.orientacao;
+
     if (editingItem) {
+      const updatePayload: any = {
+        numero_criterio: formData.numero_criterio,
+        enunciado: formData.enunciado,
+        criterio: formData.criterio,
+        ponderacao: formData.ponderacao,
+        orientacao: combinedOrientacao,
+        secao: secaoAtiva
+      };
+
       const { error: err } = await supabase
         .from('perguntas_rtrs')
-        .update({
-          numero_criterio: formData.numero_criterio,
-          enunciado: formData.enunciado,
-          criterio: formData.criterio,
-          ponderacao: formData.ponderacao,
-          orientacao: formData.orientacao,
-          secao: secaoAtiva
-        })
+        .update(updatePayload)
         .eq('id', editingItem.id);
 
       if (err) {
@@ -217,24 +244,27 @@ export default function GestorQuestionarios() {
           enunciado: formData.enunciado,
           criterio: formData.criterio,
           ponderacao: formData.ponderacao,
-          orientacao: formData.orientacao
+          orientacao: combinedOrientacao,
+          interpretacao_nacional: formData.interpretacao_nacional
         } : p));
         success('Critério atualizado!');
       }
     } else {
       const newOrder = perguntas.length + 1;
+      const insertPayload: any = {
+        secao: secaoAtiva,
+        numero_criterio: formData.numero_criterio,
+        enunciado: formData.enunciado,
+        criterio: formData.criterio,
+        ponderacao: formData.ponderacao,
+        orientacao: combinedOrientacao,
+        ativo: true,
+        ordem: newOrder
+      };
+
       const { data, error: err } = await supabase
         .from('perguntas_rtrs')
-        .insert([{
-          secao: secaoAtiva,
-          numero_criterio: formData.numero_criterio,
-          enunciado: formData.enunciado,
-          criterio: formData.criterio,
-          ponderacao: formData.ponderacao,
-          orientacao: formData.orientacao,
-          ativo: true,
-          ordem: newOrder
-        }])
+        .insert([insertPayload])
         .select();
 
       if (err) {
@@ -491,29 +521,51 @@ export default function GestorQuestionarios() {
                                       <p className={`text-sm font-bold leading-relaxed ${isAtivo ? 'text-slate-800' : 'text-slate-400 line-through'}`}>
                                         {p.enunciado}
                                       </p>
+                                      {(() => {
+                                        const { interpretacaoNacional, orientacaoGeral } = parseOrientacoes(p.orientacao, p.interpretacao_nacional);
+                                        if (!interpretacaoNacional && !orientacaoGeral) return null;
 
-                                      {/* Accordion de Orientação com Animação Fluida via CSS Grid */}
-                                      {p.orientacao && (
-                                        <div className="border border-slate-200/70 rounded-xl overflow-hidden bg-slate-50/70 transition-colors">
-                                          <button 
-                                            type="button"
-                                            onClick={() => toggleOrientacao(p.id)}
-                                            className="w-full flex items-center justify-between text-[11px] font-bold text-emerald-800 uppercase tracking-wider cursor-pointer px-3.5 py-2.5 hover:bg-emerald-50/50 transition-colors"
-                                          >
-                                            <span>{isExpanded ? 'Ocultar Orientação' : 'Ver Orientação / Diretrizes'}</span>
-                                            <ChevronDown className={`w-4 h-4 text-emerald-700 transition-transform duration-300 ease-out ${isExpanded ? 'rotate-180' : ''}`} />
-                                          </button>
-                                          <div className={`grid transition-all duration-300 ease-in-out ${isExpanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
-                                            <div className="overflow-hidden">
-                                              <div className="p-3.5 pt-1 border-t border-slate-200/60">
-                                                <p className="leading-relaxed font-medium whitespace-pre-line text-slate-600 text-[11px] bg-white p-3 rounded-lg border border-slate-200/60 shadow-2xs">
-                                                  {p.orientacao}
-                                                </p>
+                                        return (
+                                          <div className="border border-slate-200/70 rounded-xl overflow-hidden bg-slate-50/70 transition-colors">
+                                            <button 
+                                              type="button"
+                                              onClick={() => toggleOrientacao(p.id)}
+                                              className="w-full flex items-center justify-between text-[11px] font-bold text-emerald-800 uppercase tracking-wider cursor-pointer px-3.5 py-2.5 hover:bg-emerald-50/50 transition-colors"
+                                            >
+                                              <span>{isExpanded ? 'Ocultar Orientação' : 'Ver Orientação / Diretrizes'}</span>
+                                              <ChevronDown className={`w-4 h-4 text-emerald-700 transition-transform duration-300 ease-out ${isExpanded ? 'rotate-180' : ''}`} />
+                                            </button>
+                                            <div className={`grid transition-all duration-300 ease-in-out ${isExpanded ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+                                              <div className="overflow-hidden">
+                                                <div className="p-3.5 pt-1 space-y-2.5 border-t border-slate-200/60">
+                                                  {interpretacaoNacional && (
+                                                    <div className="bg-gradient-to-br from-amber-50/80 to-amber-50/40 border border-amber-200/90 rounded-xl p-3 shadow-2xs">
+                                                      <div className="flex items-center gap-1.5 text-[10px] font-black text-amber-900 uppercase tracking-wider mb-1.5">
+                                                        <span className="text-xs">🇧🇷</span>
+                                                        <span>Orientações para as Interpretações Nacionais (Brasil)</span>
+                                                      </div>
+                                                      <p className="leading-relaxed font-medium whitespace-pre-line text-amber-950 text-[11px]">
+                                                        {interpretacaoNacional}
+                                                      </p>
+                                                    </div>
+                                                  )}
+                                                  {orientacaoGeral && (
+                                                    <div className="bg-white border border-slate-200/70 rounded-xl p-3 shadow-2xs">
+                                                      <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
+                                                        <span>📋</span>
+                                                        <span>Diretrizes e Orientações Gerais de Auditoria</span>
+                                                      </div>
+                                                      <p className="leading-relaxed font-medium whitespace-pre-line text-slate-700 text-[11px]">
+                                                        {orientacaoGeral}
+                                                      </p>
+                                                    </div>
+                                                  )}
+                                                </div>
                                               </div>
                                             </div>
                                           </div>
-                                        </div>
-                                      )}
+                                        );
+                                      })()}
                                     </div>
                                     
                                     {/* Botões de Ação Padronizados com Motion */}
@@ -650,12 +702,25 @@ export default function GestorQuestionarios() {
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">Orientação de Auditoria (Instruções)</label>
+            <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">Orientação de Auditoria (Instruções Gerais)</label>
             <textarea 
               value={formData.orientacao}
               onChange={e => setFormData({...formData, orientacao: e.target.value})}
               rows={3}
               placeholder="Instruções para verificação de evidências na propriedade..."
+              className="w-full px-3.5 py-2 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-600/30 focus:border-emerald-600 text-sm font-medium resize-none transition-all"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">Orientações para as Interpretações Nacionais (Brasil)</label>
+              <span className="text-[10px] font-extrabold text-amber-900 bg-amber-100 px-2 py-0.5 rounded border border-amber-300">Específico Brasil</span>
+            </div>
+            <textarea 
+              value={formData.interpretacao_nacional}
+              onChange={e => setFormData({...formData, interpretacao_nacional: e.target.value})}
+              rows={2}
+              placeholder="Orientações e especificidades para o contexto do Brasil (leis, escala, contexto)..."
               className="w-full px-3.5 py-2 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-600/30 focus:border-emerald-600 text-sm font-medium resize-none transition-all"
             />
           </div>

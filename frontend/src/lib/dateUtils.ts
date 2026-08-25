@@ -85,24 +85,45 @@ export function formatUltimaAlteracao(dateInput: string | Date | null | undefine
 
   const now = new Date();
   const diffMs = now.getTime() - d.getTime();
-  const diffMin = Math.floor(diffMs / (1000 * 60));
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
   const fullDate = d.toLocaleDateString('pt-BR');
   const timeStr = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
   let relative = '';
-  if (diffMin < 1) {
-    relative = 'Há poucos segundos';
-  } else if (diffMin < 60) {
-    relative = `Há ${diffMin} min`;
-  } else if (diffHours < 24 && now.getDate() === d.getDate()) {
-    relative = `Hoje às ${timeStr}`;
-  } else if (diffDays === 1 || (diffHours < 48 && now.getDate() - d.getDate() === 1)) {
-    relative = `Ontem às ${timeStr}`;
+
+  // Tratar datas FUTURAS (diffMs negativo)
+  if (diffMs < 0) {
+    const futureDiffMs = Math.abs(diffMs);
+    const futureDiffMin = Math.floor(futureDiffMs / (1000 * 60));
+    const futureDiffHours = Math.floor(futureDiffMs / (1000 * 60 * 60));
+    const futureDiffDays = Math.floor(futureDiffMs / (1000 * 60 * 60 * 24));
+
+    if (futureDiffMin < 60) {
+      relative = `Em ${futureDiffMin} min`;
+    } else if (futureDiffHours < 24) {
+      relative = `Hoje às ${timeStr}`;
+    } else if (futureDiffDays === 1) {
+      relative = `Amanhã às ${timeStr}`;
+    } else {
+      relative = `Em ${futureDiffDays} dias`;
+    }
   } else {
-    relative = `${fullDate} às ${timeStr}`;
+    // Datas PASSADAS (comportamento original)
+    const diffMin = Math.floor(diffMs / (1000 * 60));
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+    if (diffMin < 1) {
+      relative = 'Há poucos segundos';
+    } else if (diffMin < 60) {
+      relative = `Há ${diffMin} min`;
+    } else if (diffHours < 24 && now.getDate() === d.getDate()) {
+      relative = `Hoje às ${timeStr}`;
+    } else if (diffDays === 1 || (diffHours < 48 && now.getDate() - d.getDate() === 1)) {
+      relative = `Ontem às ${timeStr}`;
+    } else {
+      relative = `${fullDate} às ${timeStr}`;
+    }
   }
 
   const badgeText = `${relative} (${fullDate} ${timeStr})`;

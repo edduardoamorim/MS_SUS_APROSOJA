@@ -24,13 +24,11 @@ async function importRTRSQuestions() {
     console.log(`Lendo arquivo JSON: ${jsonPath}`);
     const questions = JSON.parse(readFileSync(jsonPath, 'utf-8'));
 
-    console.log(`Importando ${questions.length} perguntas...`);
-
     let count = 0;
     for (const q of questions) {
       const query = `
-        INSERT INTO public.perguntas_rtrs (secao, numero_criterio, enunciado, ponderacao, orientacao, criterio, ativo)
-        VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+        INSERT INTO public.perguntas_rtrs (secao, numero_criterio, enunciado, ponderacao, orientacao, interpretacao_nacional, criterio, ativo, ordem)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8)
       `;
       await client.query(query, [
         q.principle,
@@ -38,7 +36,9 @@ async function importRTRSQuestions() {
         q.enunciado,
         q.ponderacao,
         q.orientacao,
-        q.criterion
+        q.interpretacao_nacional,
+        q.criterion,
+        count + 1
       ]);
       count++;
     }
