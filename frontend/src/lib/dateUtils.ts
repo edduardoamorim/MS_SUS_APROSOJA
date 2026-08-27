@@ -91,8 +91,10 @@ export function formatUltimaAlteracao(dateInput: string | Date | null | undefine
 
   let relative = '';
 
-  // Tratar datas FUTURAS (diffMs negativo)
-  if (diffMs < 0) {
+  // Tratar datas ligeiramente no futuro (desvio de relógio entre cliente e servidor de até 2 minutos)
+  if (diffMs < 0 && Math.abs(diffMs) < 2 * 60 * 1000) {
+    relative = 'Há poucos segundos';
+  } else if (diffMs < 0) {
     const futureDiffMs = Math.abs(diffMs);
     const futureDiffMin = Math.floor(futureDiffMs / (1000 * 60));
     const futureDiffHours = Math.floor(futureDiffMs / (1000 * 60 * 60));

@@ -212,27 +212,40 @@ export default function GestorDocumentos() {
     setUploadingFile(true);
     try {
       const file = newDocData.file;
-      const fileExt = file.name.split('.').pop();
+      const rawExt = (file.name.split('.').pop() || 'pdf').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const fileExt = rawExt === 'jpeg' ? 'jpg' : (rawExt || 'pdf');
       const fileName = `doc_gestor_${newDocData.propriedade_id}_${Date.now()}.${fileExt}`;
       const filePath = `${fileName}`;
+      const mimeType = file.type && file.type !== 'text/plain'
+        ? file.type
+        : (fileExt === 'png' ? 'image/png' : fileExt === 'pdf' ? 'application/pdf' : fileExt === 'webp' ? 'image/webp' : 'image/jpeg');
 
       let urlToSave = '';
       try {
         const { error: upErr } = await supabase.storage
           .from('evidencias')
-          .upload(filePath, file, { cacheControl: '3600', upsert: true });
+          .upload(filePath, file, { cacheControl: '3600', upsert: true, contentType: mimeType });
 
         if (!upErr) {
           const { data: { publicUrl } } = supabase.storage.from('evidencias').getPublicUrl(filePath);
           urlToSave = publicUrl;
+        } else {
+          const { error: secErr } = await supabase.storage
+            .from('documentos-e-midias')
+            .upload(filePath, file, { cacheControl: '3600', upsert: true, contentType: mimeType });
+          if (!secErr) {
+            const { data: { publicUrl } } = supabase.storage.from('documentos-e-midias').getPublicUrl(filePath);
+            urlToSave = publicUrl;
+          }
         }
       } catch (stgErr) {
-        console.warn('Erro ao enviar para o storage, usando fallback:', stgErr);
+        console.warn('Erro ao enviar para o storage:', stgErr);
       }
 
       if (!urlToSave) {
-        const { data: { publicUrl } } = supabase.storage.from('documentos-e-midias').getPublicUrl(filePath);
-        urlToSave = publicUrl || `https://supabase.local/storage/v1/object/public/evidencias/${filePath}`;
+        error('Falha ao subir arquivo para a nuvem. Verifique sua conexão e tente novamente.');
+        setUploadingFile(false);
+        return;
       }
 
       const { data, error: dbErr } = await supabase

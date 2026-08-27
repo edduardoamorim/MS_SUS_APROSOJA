@@ -28,7 +28,7 @@ interface Pergunta {
 
 export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onComplete, auditoriaId, propriedadeId }: QuestionarioRTRSProps) {
   const { user } = useAuth();
-  const { success, error, warning } = useToast();
+  const { success, error, warning, info } = useToast();
   const [perguntas, setPerguntas] = useState<Pergunta[]>([]);
   const [loadingPerguntas, setLoadingPerguntas] = useState(true);
   const [respostas, setRespostas] = useState<Record<string, { conforme: boolean | null; observacao: string; evidenciaUrl: string | null }>>({});
@@ -161,6 +161,12 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       if (localDraft) {
         const parsed = JSON.parse(localDraft);
         if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+          // Sanitiza qualquer URL fantasma ou quebrada do cache local
+          Object.keys(parsed).forEach(k => {
+            if (parsed[k]?.evidenciaUrl && (parsed[k].evidenciaUrl.includes('supabase.local') || parsed[k].evidenciaUrl.includes('1787833477963'))) {
+              parsed[k].evidenciaUrl = null;
+            }
+          });
           setRespostas(parsed);
         }
       }
@@ -205,20 +211,35 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         if (targetAuditId && !targetAuditId.startsWith('mock-') && !targetAuditId.startsWith('assigned-pend-')) {
           const { data, error } = await supabase
             .from('respostas_auditoria')
-            .select('*')
+            .select(`
+              pergunta_id,
+              conforme,
+              observacoes,
+              evidencia_url,
+              perguntas_rtrs (
+                id,
+                numero_criterio
+              )
+            `)
             .eq('auditoria_id', targetAuditId);
 
           if (!error && data && data.length > 0) {
-            const loadedRespostas: Record<string, { conforme: boolean | null; observacao: string; evidenciaUrl: string | null }> = {};
+            const loadedRespostas: Record<string, { conforme: boolean | null; observacao: string; evidenciaUrl: string | null; numero_criterio?: string }> = {};
             data.forEach(r => {
-              const rawObs = (r as any).observacoes || (r as any).observacao || '';
+              const rawObs = (r as any).observacoes || '';
+              const numCrit = (r as any).perguntas_rtrs?.numero_criterio || '';
+              let evUrl = r.evidencia_url;
+              if (evUrl && (evUrl.includes('supabase.local') || evUrl.includes('1787833477963'))) {
+                evUrl = null;
+              }
               loadedRespostas[r.pergunta_id] = {
                 conforme: r.conforme,
                 observacao: rawObs,
-                evidenciaUrl: r.evidencia_url
+                evidenciaUrl: evUrl,
+                numero_criterio: numCrit
               };
             });
-            setRespostas(prev => ({ ...loadedRespostas, ...prev }));
+            setRespostas(prev => ({ ...prev, ...loadedRespostas }));
             try {
               localStorage.setItem(getCacheKey(), JSON.stringify(loadedRespostas));
             } catch (e) {}
@@ -233,6 +254,43 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     fetchExistingRespostas();
   }, [currentAuditoriaId, propriedadeId, propriedadeNome]);
 
+  // Reconciliação e limpeza automática de rascunhos com as perguntas ativas
+  useEffect(() => {
+    if (perguntas.length > 0 && Object.keys(respostas).length > 0) {
+      const validMap = new Map(perguntas.map(p => [p.id, p]));
+      const numMap = new Map(perguntas.map(p => [p.numero_criterio, p.id]));
+      
+      let needsCleanup = false;
+      const sanitized: Record<string, { conforme: boolean | null; observacao: string; evidenciaUrl: string | null; numero_criterio?: string }> = {};
+
+      Object.entries(respostas).forEach(([key, val]) => {
+        if (validMap.has(key)) {
+          sanitized[key] = {
+            ...val,
+            numero_criterio: validMap.get(key)!.numero_criterio
+          };
+        } else if (val && (val as any).numero_criterio && numMap.has((val as any).numero_criterio)) {
+          const newId = numMap.get((val as any).numero_criterio)!;
+          sanitized[newId] = {
+            ...val,
+            numero_criterio: (val as any).numero_criterio
+          };
+          needsCleanup = true;
+        } else {
+          // Chave órfã de IDs legados - ignora e limpa do estado
+          needsCleanup = true;
+        }
+      });
+
+      if (needsCleanup) {
+        setRespostas(sanitized);
+        try {
+          localStorage.setItem(getCacheKey(), JSON.stringify(sanitized));
+        } catch (e) {}
+      }
+    }
+  }, [perguntas]);
+
   // Auto-sync de respostas para LocalStorage a cada alteração
   useEffect(() => {
     if (Object.keys(respostas).length > 0) {
@@ -244,25 +302,121 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     }
   }, [respostas, propriedadeNome]);
 
+  const touchAuditoriaTimestamp = async (activeAuditId?: string | null) => {
+    const aid = activeAuditId || currentAuditoriaId;
+    const nowIso = new Date().toISOString();
+
+    // 1. Armazenamento instantâneo em LocalStorage com chave por nome da fazenda e por ID
+    try {
+      const cleanName = (propriedadeNome || '').split('-')[0].trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+      if (cleanName) {
+        localStorage.setItem(`rtrs_last_modified_${cleanName}`, nowIso);
+      }
+      if (aid && !aid.startsWith('mock-') && !aid.startsWith('assigned-pend-')) {
+        localStorage.setItem(`rtrs_last_modified_id_${aid}`, nowIso);
+      }
+    } catch (e) {}
+
+    // 2. Persistir updated_at em tempo real no Supabase
+    if (aid && !aid.startsWith('mock-') && !aid.startsWith('assigned-pend-')) {
+      supabase
+        .from('auditorias')
+        .update({ 
+          updated_at: nowIso,
+          status: modo === 'autoavaliacao' ? 'Autoavaliação' : 'Em Andamento',
+          ...(user?.id ? { tecnico_responsavel_id: user.id } : {})
+        })
+        .eq('id', aid)
+        .then(({ error: aErr }) => {
+          if (aErr) console.warn('Aviso ao atualizar timestamp da auditoria:', aErr);
+        });
+
+      if (propriedadeId && !propriedadeId.startsWith('mock-')) {
+        supabase
+          .from('propriedades')
+          .update({ updated_at: nowIso })
+          .eq('id', propriedadeId)
+          .then(({ error: pErr }) => {
+            if (pErr) console.warn('Aviso ao atualizar timestamp da propriedade:', pErr);
+          });
+      } else {
+        supabase
+          .from('auditorias')
+          .select('propriedade_id')
+          .eq('id', aid)
+          .maybeSingle()
+          .then(({ data: auditRow }) => {
+            if (auditRow?.propriedade_id) {
+              supabase.from('propriedades').update({ updated_at: nowIso }).eq('id', auditRow.propriedade_id).then(() => {});
+            }
+          });
+      }
+    }
+  };
+
   const handleResposta = (id: string, conforme: boolean) => {
+    const pergunta = perguntas.find(p => p.id === id);
     setRespostas(prev => {
       const next = {
         ...prev,
-        [id]: { ...prev[id], conforme, observacao: prev[id]?.observacao || '', evidenciaUrl: prev[id]?.evidenciaUrl || null }
+        [id]: { 
+          ...prev[id], 
+          conforme, 
+          observacao: prev[id]?.observacao || '', 
+          evidenciaUrl: prev[id]?.evidenciaUrl || null,
+          numero_criterio: pergunta?.numero_criterio || ''
+        }
       };
       try { localStorage.setItem(getCacheKey(), JSON.stringify(next)); } catch (e) {}
       return next;
     });
+
+    getOrCreateRealAuditoriaId().then(activeId => {
+      if (activeId && !activeId.startsWith('mock-') && !activeId.startsWith('assigned-pend-')) {
+        supabase.from('respostas_auditoria').upsert([{
+          auditoria_id: activeId,
+          pergunta_id: id,
+          conforme,
+          observacoes: respostas[id]?.observacao || '',
+          evidencia_url: respostas[id]?.evidenciaUrl || null
+        }], { onConflict: 'auditoria_id,pergunta_id' }).then(({ error: err }) => {
+          if (err) console.warn('Aviso no salvamento automático da resposta:', err);
+        });
+        touchAuditoriaTimestamp(activeId);
+      }
+    });
   };
 
   const handleObservacao = (id: string, observacao: string) => {
+    const pergunta = perguntas.find(p => p.id === id);
     setRespostas(prev => {
       const next = {
         ...prev,
-        [id]: { ...prev[id], conforme: prev[id]?.conforme ?? null, observacao, evidenciaUrl: prev[id]?.evidenciaUrl || null }
+        [id]: { 
+          ...prev[id], 
+          conforme: prev[id]?.conforme ?? null, 
+          observacao, 
+          evidenciaUrl: prev[id]?.evidenciaUrl || null,
+          numero_criterio: pergunta?.numero_criterio || ''
+        }
       };
       try { localStorage.setItem(getCacheKey(), JSON.stringify(next)); } catch (e) {}
       return next;
+    });
+
+    getOrCreateRealAuditoriaId().then(activeId => {
+      if (activeId && !activeId.startsWith('mock-') && !activeId.startsWith('assigned-pend-')) {
+        supabase.from('respostas_auditoria').upsert([{
+          auditoria_id: activeId,
+          pergunta_id: id,
+          conforme: respostas[id]?.conforme ?? null,
+          observacoes: observacao,
+          evidencia_url: respostas[id]?.evidenciaUrl || null
+        }], { onConflict: 'auditoria_id,pergunta_id' }).then(({ error: err }) => {
+          if (err) console.warn('Aviso no salvamento automático da observação:', err);
+        });
+        touchAuditoriaTimestamp(activeId);
+      }
     });
   };
 
@@ -291,19 +445,80 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     }
   };
 
+  // Compactador leve de imagem para fallback base64 (garante < 300KB para não estourar o limite de payload do PostgREST)
+  const compressImageForFallback = (file: File): Promise<string> => {
+    return new Promise((resolve) => {
+      if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const MAX_WIDTH = 1280;
+          const MAX_HEIGHT = 1280;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height = Math.round((height * MAX_WIDTH) / width);
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width = Math.round((width * MAX_HEIGHT) / height);
+              height = MAX_HEIGHT;
+            }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL('image/jpeg', 0.82));
+          } else {
+            resolve((e.target?.result as string) || '');
+          }
+        };
+        img.onerror = () => resolve((e.target?.result as string) || '');
+        img.src = (e.target?.result as string) || '';
+      };
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(file);
+    });
+  };
+
   const handleUploadEvidencia = async (id: string, file: File) => {
     setCameraLoadingId(id);
     try {
-      const fileExt = file.name.split('.').pop();
+      const rawExt = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const fileExt = rawExt === 'jpeg' ? 'jpg' : (rawExt || 'jpg');
       const fileName = `evidencia_${currentAuditoriaId || 'temp'}_${id}_${Date.now()}.${fileExt}`;
       const filePath = `${fileName}`;
 
+      const mimeType = file.type && file.type !== 'text/plain'
+        ? file.type
+        : (fileExt === 'png' ? 'image/png' : fileExt === 'pdf' ? 'application/pdf' : fileExt === 'webp' ? 'image/webp' : 'image/jpeg');
+
       let urlToUse = '';
 
+      // Tenta upload para o Supabase Storage principal ('evidencias')
       try {
         const { error: uploadError } = await supabase.storage
           .from('evidencias')
-          .upload(filePath, file, { cacheControl: '3600', upsert: true });
+          .upload(filePath, file, { 
+            cacheControl: '3600', 
+            upsert: true,
+            contentType: mimeType 
+          });
 
         if (!uploadError) {
           const { data: { publicUrl } } = supabase.storage
@@ -311,16 +526,31 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
             .getPublicUrl(filePath);
           urlToUse = publicUrl;
         } else {
-          console.warn('Upload storage falhou, tentando converter arquivo localmente:', uploadError);
+          console.warn('Upload falhou no bucket evidencias, tentando bucket secundario:', uploadError);
+          const { error: secError } = await supabase.storage
+            .from('documentos-e-midias')
+            .upload(filePath, file, { 
+              cacheControl: '3600', 
+              upsert: true,
+              contentType: mimeType 
+            });
+
+          if (!secError) {
+            const { data: { publicUrl } } = supabase.storage
+              .from('documentos-e-midias')
+              .getPublicUrl(filePath);
+            urlToUse = publicUrl;
+          } else {
+            console.warn('Upload falhou no bucket secundario:', secError);
+          }
         }
       } catch (stgErr) {
-        console.warn('Exceção ao enviar para storage:', stgErr);
+        console.warn('Storage indisponível, utilizando fallback em base64 otimizado:', stgErr);
       }
 
-      if (!urlToUse) {
-        // Tenta bucket alternativo antes de fallback
-        const { data: { publicUrl } } = supabase.storage.from('documentos-e-midias').getPublicUrl(filePath);
-        urlToUse = publicUrl || `https://supabase.local/storage/v1/object/public/evidencias/${filePath}`;
+      // Se ambos os storages falharem ou estiverem inacessíveis, fallback para base64 otimizado
+      if (!urlToUse || urlToUse.includes('supabase.local')) {
+        urlToUse = await compressImageForFallback(file);
       }
 
       if (urlToUse) {
@@ -347,15 +577,17 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               pergunta_id: id,
               conforme: updatedRespostas[id].conforme,
               observacoes: updatedRespostas[id].observacao || '',
-              observacao: updatedRespostas[id].observacao || '',
               evidencia_url: urlToUse
             }], { onConflict: 'auditoria_id,pergunta_id' }).then(({ error: err }) => {
               if (err) console.warn('Aviso no salvamento automático de evidência:', err);
             });
+            touchAuditoriaTimestamp(activeId);
           }
         });
 
         success('Evidência enviada e salva com sucesso!');
+      } else {
+        error('Falha ao processar o arquivo selecionado.');
       }
     } catch (err: any) {
       console.error('Erro ao processar evidência:', err);
@@ -363,6 +595,42 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     } finally {
       setCameraLoadingId(null);
     }
+  };
+
+  const handleRemoveEvidencia = (id: string) => {
+    setRespostas(prev => {
+      const next = {
+        ...prev,
+        [id]: {
+          ...prev[id],
+          evidenciaUrl: null
+        }
+      };
+      try {
+        localStorage.setItem(getCacheKey(), JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    });
+
+    getOrCreateRealAuditoriaId().then(activeId => {
+      if (activeId && !activeId.startsWith('mock-') && !activeId.startsWith('assigned-pend-')) {
+        supabase.from('respostas_auditoria')
+          .update({ evidencia_url: null })
+          .eq('auditoria_id', activeId)
+          .eq('pergunta_id', id)
+          .then(({ error: err }) => {
+            if (err) {
+              console.warn('Aviso ao remover evidência do banco:', err);
+            }
+          });
+        touchAuditoriaTimestamp(activeId);
+      }
+    });
+
+    const inputEl = document.getElementById(`file-input-${id}`) as HTMLInputElement | null;
+    if (inputEl) inputEl.value = '';
+
+    info('Evidência removida com sucesso.');
   };
 
   const getOrCreateRealAuditoriaId = async (): Promise<string | null> => {
@@ -457,21 +725,12 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         pergunta_id: id,
         conforme: respostas[id].conforme,
         observacoes: respostas[id].observacao || '',
-        observacao: respostas[id].observacao || '',
         evidencia_url: respostas[id].evidenciaUrl || null
       }));
 
-      let { error: upsertError } = await supabase
+      const { error: upsertError } = await supabase
         .from('respostas_auditoria')
         .upsert(insertPayload, { onConflict: 'auditoria_id,pergunta_id' });
-
-      if (upsertError && upsertError.message?.includes('observacao')) {
-        const fallbackPayload = insertPayload.map(({ observacao, ...rest }) => rest);
-        const { error: fallbackError } = await supabase
-          .from('respostas_auditoria')
-          .upsert(fallbackPayload, { onConflict: 'auditoria_id,pergunta_id' });
-        upsertError = fallbackError;
-      }
 
       if (upsertError) {
         console.error('Erro de upsert em respostas_auditoria:', upsertError);
@@ -483,10 +742,12 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           .from('auditorias')
           .update({ 
             status: 'Em Andamento',
+            updated_at: new Date().toISOString(),
             ...(user?.id ? { tecnico_responsavel_id: user.id } : {})
           })
           .eq('id', activeId);
       }
+      touchAuditoriaTimestamp(activeId);
 
       const timeStr = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
       setLastSavedTime(timeStr);
@@ -519,21 +780,12 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         pergunta_id: p.id,
         conforme: respostas[p.id]?.conforme || false,
         observacoes: respostas[p.id]?.observacao || '',
-        observacao: respostas[p.id]?.observacao || '',
         evidencia_url: respostas[p.id]?.evidenciaUrl || null
       }));
 
-      let { error: upsertError } = await supabase
+      const { error: upsertError } = await supabase
         .from('respostas_auditoria')
         .upsert(insertPayload, { onConflict: 'auditoria_id,pergunta_id' });
-
-      if (upsertError && upsertError.message?.includes('observacao')) {
-        const fallbackPayload = insertPayload.map(({ observacao, ...rest }) => rest);
-        const { error: fallbackError } = await supabase
-          .from('respostas_auditoria')
-          .upsert(fallbackPayload, { onConflict: 'auditoria_id,pergunta_id' });
-        upsertError = fallbackError;
-      }
 
       if (upsertError) throw upsertError;
 
@@ -571,9 +823,12 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         .from('auditorias')
         .update({ 
           status: nextStatus,
-          data_realizacao: new Date().toISOString()
+          data_realizacao: new Date().toISOString(),
+          updated_at: new Date().toISOString()
         })
         .eq('id', activeId);
+
+      touchAuditoriaTimestamp(activeId);
 
       success(modo === 'autoavaliacao' ? 'Autoavaliação concluída com sucesso!' : 'Relatório de Auditoria submetido com sucesso!');
       onComplete();
@@ -589,7 +844,10 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const perguntasFiltradas = perguntas.filter(p => p.secao === secaoAtiva);
 
   const totalPerguntas = perguntas.length;
-  const totalRespondidas = Object.values(respostas).filter(r => r.conforme !== null && r.conforme !== undefined).length;
+  const totalRespondidas = perguntas.filter(p => {
+    const r = respostas[p.id];
+    return r && r.conforme !== null && r.conforme !== undefined;
+  }).length;
   const percentualConcluido = totalPerguntas > 0 ? Math.round((totalRespondidas / totalPerguntas) * 100) : 0;
 
   return createPortal(
@@ -878,16 +1136,45 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                             </div>
                           ) : !resposta?.evidenciaUrl ? (
                             <div>
-                              <input type="file" id={`file-input-${pergunta.id}`} accept="image/*,application/pdf" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (file) handleUploadEvidencia(pergunta.id, file); }} />
+                              <input 
+                                type="file" 
+                                id={`file-input-${pergunta.id}`} 
+                                accept="image/png,image/jpeg,image/jpg,image/webp,image/*,application/pdf" 
+                                className="hidden" 
+                                onChange={(e) => { 
+                                  const file = e.target.files?.[0]; 
+                                  if (file) handleUploadEvidencia(pergunta.id, file); 
+                                  e.target.value = '';
+                                }} 
+                              />
                               <button type="button" onClick={() => document.getElementById(`file-input-${pergunta.id}`)?.click()} className="w-full flex items-center justify-center gap-1.5 py-2 border-2 border-dashed border-emerald-300 bg-emerald-50/50 text-emerald-700 rounded-xl hover:bg-emerald-100 hover:border-emerald-400 transition-all font-bold cursor-pointer text-xs">
                                 <Camera className="w-4 h-4 text-emerald-600 shrink-0" />
-                                <span>{modo === 'autoavaliacao' ? 'Enviar Evidência (Imagem/PDF)' : 'Tirar Foto / Enviar Evidência'}</span>
+                                <span>{modo === 'autoavaliacao' ? 'Enviar Evidência (PNG, JPEG ou PDF)' : 'Tirar Foto / Enviar Evidência (PNG, JPEG ou PDF)'}</span>
                               </button>
                             </div>
                           ) : (
                             <div className="flex items-center gap-2.5 bg-white p-2.5 rounded-xl border border-emerald-200 shadow-sm">
                               <div className="bg-emerald-100 rounded-lg overflow-hidden w-9 h-9 flex items-center justify-center shrink-0 cursor-pointer hover:opacity-85 transition-opacity border border-emerald-200" onClick={() => handleOpenEvidencia(resposta.evidenciaUrl!)}>
-                                {resposta.evidenciaUrl.toLowerCase().includes('.pdf') ? <FileText className="w-4 h-4 text-emerald-700" /> : <img src={resposta.evidenciaUrl} alt="Evidência" className="w-full h-full object-cover" />}
+                                {resposta.evidenciaUrl.toLowerCase().includes('.pdf') ? (
+                                  <FileText className="w-4 h-4 text-emerald-700" />
+                                ) : (
+                                  <img 
+                                    src={resposta.evidenciaUrl} 
+                                    alt="Evidência" 
+                                    className="w-full h-full object-cover" 
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = 'none';
+                                      const parent = e.currentTarget.parentElement;
+                                      if (parent && !parent.querySelector('.broken-indicator')) {
+                                        parent.classList.add('bg-amber-50');
+                                        const indicator = document.createElement('span');
+                                        indicator.className = 'broken-indicator text-[10px] font-extrabold text-amber-700';
+                                        indicator.innerText = 'FOTO';
+                                        parent.appendChild(indicator);
+                                      }
+                                    }}
+                                  />
+                                )}
                               </div>
                               <div className="flex-1 min-w-0">
                                 <p className="text-xs font-bold text-gray-900 truncate">Evidência Anexada</p>
@@ -895,7 +1182,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                               </div>
                               <div className="flex items-center gap-1 shrink-0">
                                 <CheckCircle2 className="w-5 h-5 text-emerald-500" />
-                                <button type="button" title="Remover" onClick={() => setRespostas(prev => ({ ...prev, [pergunta.id]: { ...prev[pergunta.id], evidenciaUrl: null } }))} className="text-gray-400 hover:text-red-500 transition-colors p-1 rounded-lg hover:bg-red-50 cursor-pointer"><X className="w-4 h-4" /></button>
+                                <button type="button" title="Remover e anexar novamente" onClick={() => handleRemoveEvidencia(pergunta.id)} className="text-gray-400 hover:text-red-500 transition-colors p-1 rounded-lg hover:bg-red-50 cursor-pointer"><X className="w-4 h-4" /></button>
                               </div>
                             </div>
                           )}
@@ -966,7 +1253,22 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn transition-all" onClick={() => setFotoAmpliada(null)}>
           <div className="relative max-w-4xl max-h-[90vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
             <button onClick={() => setFotoAmpliada(null)} className="absolute -top-10 right-0 text-white bg-black/50 hover:bg-black/70 p-2 rounded-full transition-all cursor-pointer shadow-md"><X className="w-6 h-6" /></button>
-            <img src={fotoAmpliada} alt="Evidência Ampliada" className="max-w-full max-h-[85vh] rounded-xl shadow-2xl object-contain border border-slate-700/60 bg-slate-900/40" />
+            <img 
+              src={fotoAmpliada} 
+              alt="Evidência Ampliada" 
+              className="max-w-full max-h-[85vh] rounded-xl shadow-2xl object-contain border border-slate-700/60 bg-slate-900/40" 
+              onError={(e) => {
+                const target = e.currentTarget;
+                target.style.display = 'none';
+                const parent = target.parentElement;
+                if (parent && !parent.querySelector('.img-error-card')) {
+                  const card = document.createElement('div');
+                  card.className = 'img-error-card bg-slate-900/95 border border-red-500/50 p-6 rounded-2xl text-center max-w-sm text-white shadow-2xl';
+                  card.innerHTML = '<p class="font-bold text-red-400 text-sm mb-1">Evidência Indisponível</p><p class="text-xs text-slate-300">Não foi possível carregar a imagem selecionada. Remova e anexe novamente pelo questionário.</p>';
+                  parent.appendChild(card);
+                }
+              }}
+            />
             {fotoAmpliada.startsWith('http') && <a href={fotoAmpliada} target="_blank" rel="noreferrer" className="mt-3 text-xs text-emerald-300 underline font-bold hover:text-white flex items-center gap-1 bg-black/40 px-3 py-1 rounded-full border border-white/10"><ExternalLink className="w-3.5 h-3.5" /><span>Abrir em nova guia</span></a>}
           </div>
         </div>

@@ -205,11 +205,15 @@ export default function GestorPropriedades() {
         .eq('propriedade_id', propId);
 
       if (existingAudits && existingAudits.length > 0) {
-        for (const a of existingAudits) {
-          await supabase
-            .from('auditorias')
-            .update({ tecnico_responsavel_id: newTechId || null })
-            .eq('id', a.id);
+        await supabase
+          .from('auditorias')
+          .update({ tecnico_responsavel_id: newTechId || null })
+          .eq('id', existingAudits[0].id);
+
+        if (existingAudits.length > 1) {
+          for (let i = 1; i < existingAudits.length; i++) {
+            await supabase.from('auditorias').delete().eq('id', existingAudits[i].id);
+          }
         }
       } else if (newTechId) {
         const { data: newAudit, error: err } = await supabase

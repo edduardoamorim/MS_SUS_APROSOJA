@@ -217,11 +217,26 @@ export default function GestorAuditorias() {
                          formData.etapa === 'Auditoria Prévia' ? 'Autoavaliação' : 'Prospecção';
       }
 
-      if (editingAudit) {
+      let targetAuditId = editingAudit?.id;
+      if (!targetAuditId && formData.propriedade_id) {
+        const { data: existing } = await supabase
+          .from('auditorias')
+          .select('id')
+          .eq('propriedade_id', formData.propriedade_id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (existing?.id) {
+          targetAuditId = existing.id;
+        }
+      }
+
+      if (targetAuditId) {
         const { error } = await supabase
           .from('auditorias')
           .update(payload)
-          .eq('id', editingAudit.id);
+          .eq('id', targetAuditId);
         if (error) throw error;
       } else {
         const { error } = await supabase

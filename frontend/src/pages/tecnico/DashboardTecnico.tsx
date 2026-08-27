@@ -116,7 +116,20 @@ export default function DashboardTecnico() {
   useEffect(() => {
     if (activeTab === 'documentacao') {
       fetchTechnicalDocuments();
+    } else if (activeTab === 'auditorias') {
+      fetchAudits();
+    } else if (activeTab === 'mapa') {
+      fetchCollaborativeMapData();
     }
+  }, [activeTab]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      if (activeTab === 'auditorias') fetchAudits();
+      else if (activeTab === 'mapa') fetchCollaborativeMapData();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
   }, [activeTab]);
 
   const getAssignedPropIdsForCurrentTech = async (): Promise<Set<string>> => {
@@ -243,7 +256,7 @@ export default function DashboardTecnico() {
       if (respData) {
         respData.forEach((r: any) => {
           const propId = r.auditorias?.propriedade_id;
-          if (propId && assignedSet.has(propId)) {
+          if (propId && (assignedSet.size === 0 || assignedSet.has(propId))) {
             list.push({
               id: `resp-${r.id}`,
               nome: `Princípio ${(r.perguntas_rtrs as any)?.secao || 'RTRS'} - Critério ${(r.perguntas_rtrs as any)?.numero_criterio || 'N/A'}`,
@@ -262,7 +275,7 @@ export default function DashboardTecnico() {
 
       if (pendsData) {
         pendsData.forEach((p: any) => {
-          if (assignedSet.has(p.propriedade_id)) {
+          if (p.propriedade_id && (assignedSet.size === 0 || assignedSet.has(p.propriedade_id))) {
             list.push({
               id: `pend-${p.id}`,
               nome: p.titulo,
@@ -436,6 +449,99 @@ export default function DashboardTecnico() {
     }
   }
 
+  async function fetchLatestActivityTimestamps(): Promise<{
+    auditRespMap: Map<string, string>;
+    propPendsMap: Map<string, string>;
+  }> {
+    const auditRespMap = new Map<string, string>();
+    const propPendsMap = new Map<string, string>();
+
+    try {
+      const [respRes, pendRes] = await Promise.all([
+        supabase.from('respostas_auditoria').select('auditoria_id, updated_at, created_at'),
+        supabase.from('pendencias').select('propriedade_id, updated_at, created_at')
+      ]);
+
+      if (respRes.data) {
+        respRes.data.forEach((r: any) => {
+          if (!r.auditoria_id) return;
+          const ts = r.updated_at || r.created_at;
+          if (!ts) return;
+          const currentMax = auditRespMap.get(r.auditoria_id);
+          if (!currentMax || new Date(ts).getTime() > new Date(currentMax).getTime()) {
+            auditRespMap.set(r.auditoria_id, ts);
+          }
+        });
+      }
+
+      if (pendRes.data) {
+        pendRes.data.forEach((p: any) => {
+          if (!p.propriedade_id) return;
+          const ts = p.updated_at || p.created_at;
+          if (!ts) return;
+          const currentMax = propPendsMap.get(p.propriedade_id);
+          if (!currentMax || new Date(ts).getTime() > new Date(currentMax).getTime()) {
+            propPendsMap.set(p.propriedade_id, ts);
+          }
+        });
+      }
+    } catch (err) {
+      console.warn('Erro ao carregar timestamps de atividade:', err);
+    }
+
+    return { auditRespMap, propPendsMap };
+  }
+
+  function computeCompositeUltimaAlteracao(params: {
+    auditUpdatedAt?: string | null;
+    auditCreatedAt?: string | null;
+    propUpdatedAt?: string | null;
+    propCreatedAt?: string | null;
+    auditId?: string | null;
+    propId?: string | null;
+    farmName?: string | null;
+    auditRespMap?: Map<string, string>;
+    propPendsMap?: Map<string, string>;
+  }): string {
+    const {
+      auditUpdatedAt,
+      auditCreatedAt,
+      propUpdatedAt,
+      propCreatedAt,
+      auditId,
+      propId,
+      farmName,
+      auditRespMap,
+      propPendsMap
+    } = params;
+
+    const cleanName = (farmName || '').split('-')[0].trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const localModTime = (cleanName ? localStorage.getItem(`rtrs_last_modified_${cleanName}`) : null) || 
+                         (auditId ? localStorage.getItem(`rtrs_last_modified_id_${auditId}`) : null);
+
+    const respTime = auditId && auditRespMap ? auditRespMap.get(auditId) : null;
+    const pendTime = propId && propPendsMap ? propPendsMap.get(propId) : null;
+
+    const candidates = [
+      auditUpdatedAt,
+      auditCreatedAt,
+      propUpdatedAt,
+      propCreatedAt,
+      respTime,
+      pendTime,
+      localModTime
+    ].filter(Boolean);
+
+    let maxTs = auditUpdatedAt || auditCreatedAt || propUpdatedAt || propCreatedAt || new Date().toISOString();
+    candidates.forEach(ts => {
+      if (ts && new Date(ts).getTime() > new Date(maxTs).getTime()) {
+        maxTs = ts;
+      }
+    });
+
+    return maxTs;
+  }
+
   async function fetchCollaborativeMapData() {
     try {
       // 1. Carregar TODAS as propriedades cadastradas na tabela 'propriedades'
@@ -455,6 +561,9 @@ export default function DashboardTecnico() {
       if (auds) {
         setAllAuditorias(auds);
       }
+
+      // 2.5 Buscar carimbos de atividade compostos
+      const { auditRespMap, propPendsMap } = await fetchLatestActivityTimestamps();
 
       // 3. Mapear técnicos e atribuir paleta de cores exclusiva
       const { data: tecsData } = await supabase
@@ -500,23 +609,18 @@ export default function DashboardTecnico() {
           // A fazenda é visível no portal do técnico
           const isMine = true;
 
-          // Calcular carimbo de última alteração composto
-          const propTimestamps = [
-            p.updated_at,
-            p.created_at,
-            latestAudit?.updated_at,
-            latestAudit?.created_at
-          ].filter(Boolean);
-
-          let ultima_alteracao_at = new Date(0).toISOString();
-          propTimestamps.forEach(ts => {
-            if (ts && new Date(ts).getTime() > new Date(ultima_alteracao_at).getTime()) {
-              ultima_alteracao_at = ts;
-            }
+          // Calcular carimbo de última alteração composto blindado
+          const ultima_alteracao_at = computeCompositeUltimaAlteracao({
+            auditUpdatedAt: latestAudit?.updated_at,
+            auditCreatedAt: latestAudit?.created_at,
+            propUpdatedAt: p.updated_at,
+            propCreatedAt: p.created_at,
+            auditId: latestAudit?.id,
+            propId: p.id,
+            farmName: p.nome_fazenda,
+            auditRespMap,
+            propPendsMap
           });
-          if (new Date(ultima_alteracao_at).getTime() === 0) {
-            ultima_alteracao_at = new Date().toISOString();
-          }
 
           let geom = p.geom;
 
@@ -862,15 +966,22 @@ export default function DashboardTecnico() {
 
           // 2c. Criar auditoria se auto_schedule estiver ativo
           if (isSuccess && insertedPropId && autoScheduleAudit) {
-            const auditPayload: any = {
-              propriedade_id: insertedPropId,
-              data_agendamento: new Date().toISOString().split('T')[0],
-              status: 'Visita de Campo'
-            };
-            if (isUUID(user?.id)) {
-              auditPayload.tecnico_responsavel_id = user.id;
+            const { data: existingAuds } = await supabase
+              .from('auditorias')
+              .select('id')
+              .eq('propriedade_id', insertedPropId);
+
+            if (!existingAuds || existingAuds.length === 0) {
+              const auditPayload: any = {
+                propriedade_id: insertedPropId,
+                data_agendamento: new Date().toISOString().split('T')[0],
+                status: 'Visita de Campo'
+              };
+              if (isUUID(user?.id)) {
+                auditPayload.tecnico_responsavel_id = user.id;
+              }
+              await supabase.from('auditorias').insert([auditPayload]);
             }
-            await supabase.from('auditorias').insert([auditPayload]);
           }
         }
       }
@@ -913,15 +1024,36 @@ export default function DashboardTecnico() {
         tecnico_responsavel_id: user?.id,
         data_agendamento: auditFormData.data_agendamento,
         status: 'Visita de Campo',
-        created_at: nowIso,
         updated_at: nowIso
       };
 
-      const { error: err } = await supabase
+      // 1. Verificar se já existe uma auditoria para esta fazenda
+      const { data: existingAudits } = await supabase
         .from('auditorias')
-        .insert([payload]);
+        .select('id')
+        .eq('propriedade_id', auditFormData.propriedade_id)
+        .order('created_at', { ascending: false });
 
-      if (err) throw err;
+      if (existingAudits && existingAudits.length > 0) {
+        const targetId = existingAudits[0].id;
+        const { error: err } = await supabase
+          .from('auditorias')
+          .update({
+            tecnico_responsavel_id: user?.id,
+            data_agendamento: auditFormData.data_agendamento,
+            status: 'Visita de Campo',
+            updated_at: nowIso
+          })
+          .eq('id', targetId);
+
+        if (err) throw err;
+      } else {
+        const { error: err } = await supabase
+          .from('auditorias')
+          .insert([{ ...payload, created_at: nowIso }]);
+
+        if (err) throw err;
+      }
 
       // Atualizar também a data de alteração da propriedade
       await supabase
@@ -1032,34 +1164,74 @@ export default function DashboardTecnico() {
         `)
         .order('updated_at', { ascending: false, nullsFirst: false });
 
+      // 2.5 Buscar carimbos de atividade compostos
+      const { auditRespMap, propPendsMap } = await fetchLatestActivityTimestamps();
+
       const userEmail = (user?.email || '').toLowerCase();
       const userName = (user?.user_metadata?.full_name || user?.nome || '').toLowerCase();
 
-      const allList: any[] = [];
-      const propMap = new Map();
-      (propsData || []).forEach(p => propMap.set(p.id, p));
+      // Mapear estritamente por propriedade_id para garantir unicidade absoluta (1 fazenda = no máximo 1 auditoria)
+      const auditByProp = new Map<string, any>();
 
       (auditsData || []).forEach((a: any) => {
         const propRel = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
         const propFound = propRel || propMap.get(a.propriedade_id);
         const propId = a.propriedade_id || propFound?.id;
+        if (!propId) return;
+
         const resolvedEtapa = resolveFarmEtapa(propId, propFound?.etapa, a.etapa);
 
-        const lastTs = a.updated_at || a.created_at || propFound?.updated_at || propFound?.created_at || new Date().toISOString();
+        const lastTs = computeCompositeUltimaAlteracao({
+          auditUpdatedAt: a.updated_at,
+          auditCreatedAt: a.created_at,
+          propUpdatedAt: propFound?.updated_at,
+          propCreatedAt: propFound?.created_at,
+          auditId: a.id,
+          propId: propId,
+          farmName: propFound?.nome_fazenda,
+          auditRespMap,
+          propPendsMap
+        });
 
-        allList.push({
+        const auditItem = {
           ...a,
           etapa: resolvedEtapa,
           ultima_alteracao_at: lastTs,
           propriedades: propFound || { nome_fazenda: 'Fazenda', nome_produtor: 'Produtor' }
-        });
+        };
+
+        const existing = auditByProp.get(propId);
+        if (!existing) {
+          auditByProp.set(propId, auditItem);
+        } else {
+          // Prioriza o registro que contém respostas preenchidas ou data de atualização mais recente
+          const existingHasResp = existing.id && auditRespMap.has(existing.id);
+          const newHasResp = a.id && auditRespMap.has(a.id);
+          if (!existingHasResp && newHasResp) {
+            auditByProp.set(propId, auditItem);
+          } else if (existingHasResp === newHasResp) {
+            const timeExisting = new Date(existing.ultima_alteracao_at || existing.updated_at || 0).getTime();
+            const timeNew = new Date(lastTs || a.updated_at || 0).getTime();
+            if (timeNew > timeExisting) {
+              auditByProp.set(propId, auditItem);
+            }
+          }
+        }
       });
+
+      const allList: any[] = Array.from(auditByProp.values());
 
       // Incluir propriedades que ainda não possuem auditoria agendada
       const existingPropIds = new Set(allList.map(a => a.propriedade_id));
       (propsData || []).forEach(p => {
         if (!existingPropIds.has(p.id)) {
-          const lastTs = p.updated_at || p.created_at || new Date().toISOString();
+          const lastTs = computeCompositeUltimaAlteracao({
+            propUpdatedAt: p.updated_at,
+            propCreatedAt: p.created_at,
+            propId: p.id,
+            farmName: p.nome_fazenda,
+            propPendsMap
+          });
           allList.push({
             id: `v-audit-${p.id}`,
             propriedade_id: p.id,
@@ -2062,9 +2234,18 @@ export default function DashboardTecnico() {
         <QuestionarioRTRS 
           modo="auditoria"
           propriedadeNome={activeAuditoria.propriedades?.nome_fazenda || "Fazenda Sol Nascente"}
-          onClose={() => setShowQuestionario(false)}
-          onComplete={() => handleComplete(activeAuditoria.id)}
+          onClose={() => {
+            setShowQuestionario(false);
+            fetchAudits();
+            fetchCollaborativeMapData();
+          }}
+          onComplete={() => {
+            handleComplete(activeAuditoria.id);
+            fetchAudits();
+            fetchCollaborativeMapData();
+          }}
           auditoriaId={activeAuditoria.id}
+          propriedadeId={activeAuditoria.propriedade_id || activeAuditoria.propriedades?.id}
         />
       )}
 

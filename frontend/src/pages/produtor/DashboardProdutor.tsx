@@ -286,30 +286,45 @@ export default function DashboardProdutor() {
     if (!file) return;
     setUploadingDocFile(true);
     try {
-      const fileExt = file.name.split('.').pop();
+      const rawExt = (file.name.split('.').pop() || 'pdf').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const fileExt = rawExt === 'jpeg' ? 'jpg' : (rawExt || 'pdf');
       const fileName = `doc-${Date.now()}.${fileExt}`;
       const filePath = `${fileName}`;
+      const mimeType = file.type && file.type !== 'text/plain'
+        ? file.type
+        : (fileExt === 'png' ? 'image/png' : fileExt === 'pdf' ? 'application/pdf' : fileExt === 'webp' ? 'image/webp' : 'image/jpeg');
 
-      const { data, error } = await supabase.storage
+      let urlToUse = '';
+
+      const { error: upErr } = await supabase.storage
         .from('evidencias')
-        .upload(filePath, file, { cacheControl: '3600', upsert: true });
+        .upload(filePath, file, { cacheControl: '3600', upsert: true, contentType: mimeType });
 
-      if (error) throw error;
+      if (!upErr) {
+        const { data: { publicUrl } } = supabase.storage.from('evidencias').getPublicUrl(filePath);
+        urlToUse = publicUrl;
+      } else {
+        const { error: secErr } = await supabase.storage
+          .from('documentos-e-midias')
+          .upload(filePath, file, { cacheControl: '3600', upsert: true, contentType: mimeType });
+        if (!secErr) {
+          const { data: { publicUrl } } = supabase.storage.from('documentos-e-midias').getPublicUrl(filePath);
+          urlToUse = publicUrl;
+        }
+      }
 
-      const { data: { publicUrl } } = supabase.storage
-        .from('evidencias')
-        .getPublicUrl(filePath);
-
-      setDocFormData(prev => ({ ...prev, arquivo_url: publicUrl }));
-      success('Arquivo carregado com sucesso!');
+      if (urlToUse) {
+        setDocFormData(prev => ({ ...prev, arquivo_url: urlToUse }));
+        success('Arquivo carregado com sucesso!');
+      } else {
+        error('Falha ao carregar arquivo na nuvem. Tente novamente.');
+      }
     } catch (err: any) {
       console.error('Erro ao carregar arquivo de documento:', err);
-      const { data: { publicUrl } } = supabase.storage.from('documentos-e-midias').getPublicUrl(filePath);
-      const fallbackUrl = publicUrl || `https://supabase.local/storage/v1/object/public/evidencias/${filePath}`;
-      setDocFormData(prev => ({ ...prev, arquivo_url: fallbackUrl }));
-      success('Arquivo anexado com sucesso!');
+      error('Erro ao processar arquivo.');
     } finally {
       setUploadingDocFile(false);
+      e.target.value = '';
     }
   };
 
@@ -696,28 +711,45 @@ export default function DashboardProdutor() {
     if (!file) return;
     setUploadingFile(true);
     try {
-      const fileExt = file.name.split('.').pop();
+      const rawExt = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const fileExt = rawExt === 'jpeg' ? 'jpg' : (rawExt || 'jpg');
       const fileName = `pendencia-${selectedPendency.id}-${Date.now()}.${fileExt}`;
       const filePath = `${fileName}`;
+      const mimeType = file.type && file.type !== 'text/plain'
+        ? file.type
+        : (fileExt === 'png' ? 'image/png' : fileExt === 'pdf' ? 'application/pdf' : fileExt === 'webp' ? 'image/webp' : 'image/jpeg');
 
-      const { data, error } = await supabase.storage
+      let urlToUse = '';
+
+      const { error: upErr } = await supabase.storage
         .from('evidencias')
-        .upload(filePath, file, { cacheControl: '3600', upsert: true });
+        .upload(filePath, file, { cacheControl: '3600', upsert: true, contentType: mimeType });
 
-      if (error) throw error;
+      if (!upErr) {
+        const { data: { publicUrl } } = supabase.storage.from('evidencias').getPublicUrl(filePath);
+        urlToUse = publicUrl;
+      } else {
+        const { error: secErr } = await supabase.storage
+          .from('documentos-e-midias')
+          .upload(filePath, file, { cacheControl: '3600', upsert: true, contentType: mimeType });
+        if (!secErr) {
+          const { data: { publicUrl } } = supabase.storage.from('documentos-e-midias').getPublicUrl(filePath);
+          urlToUse = publicUrl;
+        }
+      }
 
-      const { data: { publicUrl } } = supabase.storage
-        .from('evidencias')
-        .getPublicUrl(filePath);
-
-      setEvidenciaUrl(publicUrl);
+      if (urlToUse) {
+        setEvidenciaUrl(urlToUse);
+        success('Evidência carregada com sucesso!');
+      } else {
+        error('Falha ao enviar arquivo. Tente novamente.');
+      }
     } catch (err: any) {
       console.error('Erro ao carregar arquivo na storage:', err);
-      const { data: { publicUrl } } = supabase.storage.from('documentos-e-midias').getPublicUrl(filePath);
-      const fallbackUrl = publicUrl || `https://supabase.local/storage/v1/object/public/evidencias/${filePath}`;
-      setEvidenciaUrl(fallbackUrl);
+      error('Falha ao processar arquivo.');
     } finally {
       setUploadingFile(false);
+      e.target.value = '';
     }
   };
 
