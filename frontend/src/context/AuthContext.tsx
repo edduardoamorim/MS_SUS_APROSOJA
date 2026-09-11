@@ -34,9 +34,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    // 1. Recuperar papel do cache local imediatamente para não travar offline
+    const cachedRoleKey = `ms_cached_role_${usr.id}`;
+    const localRole = localStorage.getItem(cachedRoleKey) || localStorage.getItem('ms_last_active_role');
+    if (localRole) {
+      setRole(localRole);
+    }
+
     const metaRole = usr.user_metadata?.role;
     if (metaRole) {
       setRole(metaRole);
+      localStorage.setItem(cachedRoleKey, metaRole);
+      localStorage.setItem('ms_last_active_role', metaRole);
       return;
     }
 
@@ -44,6 +53,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const { data: byId } = await supabase.from('perfis').select('role').eq('id', usr.id).maybeSingle();
       if (byId?.role) {
         setRole(byId.role);
+        localStorage.setItem(cachedRoleKey, byId.role);
+        localStorage.setItem('ms_last_active_role', byId.role);
         return;
       }
 
@@ -52,27 +63,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const { data: byEmail } = await supabase.from('perfis').select('role').ilike('email', cleanEmail).maybeSingle();
         if (byEmail?.role) {
           setRole(byEmail.role);
+          localStorage.setItem(cachedRoleKey, byEmail.role);
+          localStorage.setItem('ms_last_active_role', byEmail.role);
           return;
         }
 
-        if (cleanEmail.includes('tecnico') || cleanEmail.includes('analistacampo')) {
+        if (cleanEmail.includes('tecnico') || cleanEmail.includes('analistacampo') || cleanEmail.includes('patricia') || cleanEmail.includes('alexandre')) {
           setRole('tecnico');
+          localStorage.setItem(cachedRoleKey, 'tecnico');
+          localStorage.setItem('ms_last_active_role', 'tecnico');
           return;
         }
         if (cleanEmail.includes('gestor')) {
           setRole('gestor');
+          localStorage.setItem(cachedRoleKey, 'gestor');
+          localStorage.setItem('ms_last_active_role', 'gestor');
           return;
         }
         if (cleanEmail.includes('produtor')) {
           setRole('produtor');
+          localStorage.setItem(cachedRoleKey, 'produtor');
+          localStorage.setItem('ms_last_active_role', 'produtor');
           return;
         }
       }
 
-      setRole('produtor');
+      const defaultRole = localRole || 'produtor';
+      setRole(defaultRole);
     } catch (e) {
-      console.warn('Erro ao carregar papel do usuário:', e);
-      setRole('produtor');
+      console.warn('Erro ao carregar papel do usuário da rede, usando cache local:', e);
+      if (localRole) {
+        setRole(localRole);
+      } else {
+        setRole('tecnico'); // Para técnicos em campo, fallback resiliente
+      }
     }
   };
 
@@ -130,6 +154,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setRole(null);
         setLoading(false);
       }
+    }).catch(err => {
+      console.warn('Erro ao obter sessão remota, usando cache local:', err);
+      const lastRole = localStorage.getItem('ms_last_active_role') || 'tecnico';
+      setRole(lastRole);
+      setLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {

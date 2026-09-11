@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { MapPin, ClipboardList, CheckCircle2, CalendarDays, Clock, Plus, Trash2, Loader2, Search, Map as MapIcon, AlertTriangle, Eye, FileText, ChevronRight, FolderOpen, Image as ImageIcon, Download, ExternalLink, X } from 'lucide-react';
@@ -13,11 +13,15 @@ import { getRemainingTimeLabel, formatUltimaAlteracao } from '../../lib/dateUtil
 import PropertyCodeInput from '../../components/form/PropertyCodeInput';
 import CityInput from '../../components/form/CityInput';
 import ProducerInput from '../../components/form/ProducerInput';
-import { ListSkeleton } from '../../components/ui/Skeleton';
+import { ListSkeleton, AuditCardSkeleton } from '../../components/ui/Skeleton';
 import ConfirmAction from '../../components/ui/ConfirmAction';
 import AuditDetailModal from '../../components/auditoria/AuditDetailModal';
 import { resolveMunicipioFromCarOrName } from '../../lib/geoUtils';
 import { resolveFarmEtapa, persistFarmEtapa } from '../../lib/etapaUtils';
+import { enqueueMutation, getCachedReadData, cacheReadData, generateUUID, getCachedAuditorias, bulkSaveAuditorias, useLiveAuditorias, updateCachedAuditoria, compareAuditoriasDeterministically, resetAuthFailedQueueItems } from '../../lib/offlineDb';
+import { prepareFieldModeData, getLastFieldPrepInfo } from '../../services/precacheService';
+import { DownloadCloud } from 'lucide-react';
+import { syncEngine } from '../../services/syncEngine';
 
 function formatMunicipioName(str?: string | null): string {
   if (!str || str.trim().length === 0) return 'Mato Grosso do Sul, MS';
@@ -91,6 +95,15 @@ function getTechnicianColor(nameOrId?: string, index: number = 0): string {
 export default function DashboardTecnico() {
   const { success, error, warning } = useToast();
   const { user } = useAuth();
+
+  // Limpeza reativa de erros de auth e reabilitação de fila local ao montar ou autenticar
+  useEffect(() => {
+    if (user) {
+      syncEngine.clearAuthError();
+      resetAuthFailedQueueItems().catch(e => console.warn('[DashboardTecnico] Erro ao resetar fila local:', e));
+    }
+  }, [user]);
+
   const [selectedAuditForDetail, setSelectedAuditForDetail] = useState<any>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const rawTab = searchParams.get('tab');
@@ -125,12 +138,26 @@ export default function DashboardTecnico() {
 
   useEffect(() => {
     const onFocus = () => {
-      if (activeTab === 'auditorias') fetchAudits();
-      else if (activeTab === 'mapa') fetchCollaborativeMapData();
+      const now = Date.now();
+      if (now - lastAuditsFetchRef.current > 30000) {
+        if (activeTab === 'auditorias') fetchAudits();
+        else if (activeTab === 'mapa') fetchCollaborativeMapData();
+        else if (activeTab === 'documentacao') fetchTechnicalDocuments();
+      }
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [activeTab]);
+
+  useEffect(() => {
+    const handleEvidenceUploaded = () => {
+      fetchTechnicalDocuments();
+    };
+    window.addEventListener('ms:evidence-uploaded', handleEvidenceUploaded);
+    return () => {
+      window.removeEventListener('ms:evidence-uploaded', handleEvidenceUploaded);
+    };
+  }, []);
 
   const getAssignedPropIdsForCurrentTech = async (): Promise<Set<string>> => {
     const set = new Set<string>();
@@ -169,133 +196,478 @@ export default function DashboardTecnico() {
   const fetchTechnicalDocuments = async () => {
     setLoadingDocs(true);
     try {
+      // 1. Carregamento IMEDIATO (0ms) do Dexie local para não travar a tela em spinner
+      const localList: any[] = [];
+      try {
+        const [cachedPergs, cachedAuds, localResps, localPends, localFiles, outboxMutations, localJournal] = await Promise.all([
+          db.cached_perguntas.toArray(),
+          db.cached_auditorias.toArray(),
+          db.cached_respostas.filter(r => !!r.evidencia_url).toArray(),
+          db.cached_pendencias.filter(p => !!p.evidencia_url).toArray(),
+          db.outbox_files.toArray(),
+          db.outbox_mutations.toArray(),
+          db.sync_journal.toArray()
+        ]);
+
+        const pergMap = new Map<string, any>();
+        cachedPergs.forEach(p => pergMap.set(p.id, p));
+
+        const auditMap = new Map<string, any>();
+        cachedAuds.forEach(a => auditMap.set(a.id, a));
+        (auditorias || []).forEach(a => auditMap.set(a.id, a));
+
+        const propMap = new Map<string, any>();
+        (auditorias || []).forEach(a => {
+          if (a.propriedade_id && a.propriedades) propMap.set(a.propriedade_id, a.propriedades);
+        });
+        (cachedAuds || []).forEach(a => {
+          if (a.propriedade_id && a.propriedades) propMap.set(a.propriedade_id, a.propriedades);
+        });
+        (properties || []).forEach(p => {
+          if (p.id) propMap.set(p.id, p);
+        });
+
+        // Mapeia blobs locais da outbox para gerar URLs funcionais (reconstituição no F5)
+        const outboxFilesMap = new Map<string, string>();
+        localFiles.forEach(f => {
+          if (f.file_blob) {
+            try {
+              const bUrl = URL.createObjectURL(f.file_blob);
+              outboxFilesMap.set(String(f.id), bUrl);
+              outboxFilesMap.set(f.storage_path, bUrl);
+              outboxFilesMap.set(f.file_name, bUrl);
+            } catch (e) {}
+          }
+        });
+
+        // Mapa de mutações pendentes para vincular arquivos e respostas
+        const mutationMap = new Map<string, any>();
+        const fileIdToMutationMap = new Map<string, any>();
+        outboxMutations.forEach(m => {
+          if (m.table === 'respostas_auditoria' && m.payload?.auditoria_id && m.payload?.pergunta_id) {
+            const key = `${m.payload.auditoria_id}-${m.payload.pergunta_id}`;
+            mutationMap.set(key, m);
+            if (m.file_ids && Array.isArray(m.file_ids)) {
+              m.file_ids.forEach((fid: any) => {
+                fileIdToMutationMap.set(String(fid), m);
+              });
+            }
+          }
+        });
+
+        const processedRespKeys = new Set<string>();
+
+        // 1. Respostas locais salvas no Dexie
+        localResps.forEach(r => {
+          const respKey = `${r.auditoria_id}-${r.pergunta_id}`;
+          processedRespKeys.add(respKey);
+
+          const audit = auditMap.get(r.auditoria_id);
+          const propRel = Array.isArray(audit?.propriedades) ? audit.propriedades[0] : audit?.propriedades;
+          const propId = audit?.propriedade_id || propRel?.id || r.auditoria_id;
+          const prop = propRel || propMap.get(propId) || {};
+          const perg = pergMap.get(r.pergunta_id);
+
+          let previewUrl = r.evidencia_url;
+          // Reconstituição de preview se for blob revogado pelo F5 ou apontamento do outbox
+          for (const [pathKey, blobUrl] of outboxFilesMap.entries()) {
+            if (pathKey.includes(r.pergunta_id) || (previewUrl && previewUrl.includes(pathKey))) {
+              previewUrl = blobUrl;
+              break;
+            }
+          }
+
+          const hasPendingOutbox = mutationMap.has(respKey) || localFiles.some(f => f.storage_path.includes(r.pergunta_id));
+          const isBlobOrB64 = previewUrl && (String(previewUrl).startsWith('blob:') || String(previewUrl).startsWith('data:'));
+          const isLocalPending = hasPendingOutbox || isBlobOrB64;
+
+          const numCrit = perg?.numero_criterio ? `Critério ${perg.numero_criterio} - ` : (r.numero_criterio ? `Critério ${r.numero_criterio} - ` : '');
+          const critTitle = perg?.enunciado ? `${numCrit}${perg.enunciado}` : (numCrit || `Critério RTRS`);
+          const dataEnvioReal = (r as any).evidencia_uploaded_at || r.updated_at || r.created_at || new Date().toISOString();
+
+          localList.push({
+            id: `resp-${r.auditoria_id}-${r.pergunta_id}`,
+            nome: critTitle,
+            categoria: 'CHECKLIST RTRS',
+            propriedade_id: propId,
+            fazendaNome: prop.nome_fazenda || audit?.propriedades?.nome_fazenda || 'Fazenda',
+            produtorNome: prop.nome_produtor || audit?.propriedades?.nome_produtor || 'Produtor',
+            arquivo_url: previewUrl,
+            origem: 'Auditoria In Loco',
+            data: dataEnvioReal,
+            dataEnvioReal: dataEnvioReal,
+            updated_at: r.updated_at,
+            created_at: r.created_at,
+            isLocalPending: !!isLocalPending,
+            podeDeletar: false
+          });
+        });
+
+        // 1.5. Processar itens do Unified WAL (db.sync_journal)
+        // Garante exibição híbrida imediata das evidências recém-anexadas (offline e pós-F5)
+        localJournal.forEach(jItem => {
+          if (!jItem.file_blob && !jItem.evidencia_url) return;
+
+          let previewUrl = jItem.evidencia_url || '';
+          if (jItem.file_blob) {
+            try {
+              previewUrl = URL.createObjectURL(jItem.file_blob);
+            } catch (e) {}
+          }
+
+          const audit = auditMap.get(jItem.auditoria_id);
+          const propRel = Array.isArray(audit?.propriedades) ? audit.propriedades[0] : audit?.propriedades;
+          const propId = audit?.propriedade_id || propRel?.id || jItem.auditoria_id;
+          const prop = propRel || propMap.get(propId) || {};
+          const perg = pergMap.get(jItem.pergunta_id);
+
+          const numCrit = perg?.numero_criterio ? `Critério ${perg.numero_criterio} - ` : (jItem.numero_criterio ? `Critério ${jItem.numero_criterio} - ` : '');
+          const critTitle = perg?.enunciado ? `${numCrit}${perg.enunciado}` : (numCrit || `Critério RTRS`);
+          const dataEnvioReal = jItem.updated_at || new Date(jItem.created_at || Date.now()).toISOString();
+
+          const docId = `resp-${jItem.auditoria_id}-${jItem.pergunta_id}`;
+          const existingIdx = localList.findIndex(x => x.id === docId);
+          if (existingIdx >= 0) {
+            localList[existingIdx].isLocalPending = true;
+            if (previewUrl && (previewUrl.startsWith('blob:') || !localList[existingIdx].arquivo_url)) {
+              localList[existingIdx].arquivo_url = previewUrl;
+            }
+            localList[existingIdx].dataEnvioReal = dataEnvioReal;
+            localList[existingIdx].data = dataEnvioReal;
+            localList[existingIdx].updated_at = jItem.updated_at;
+          } else {
+            processedRespKeys.add(`${jItem.auditoria_id}-${jItem.pergunta_id}`);
+            localList.push({
+              id: docId,
+              nome: critTitle,
+              categoria: 'CHECKLIST RTRS',
+              propriedade_id: propId,
+              fazendaNome: prop.nome_fazenda || audit?.propriedades?.nome_fazenda || 'Fazenda',
+              produtorNome: prop.nome_produtor || audit?.propriedades?.nome_produtor || 'Produtor',
+              arquivo_url: previewUrl,
+              origem: 'Auditoria In Loco',
+              data: dataEnvioReal,
+              dataEnvioReal: dataEnvioReal,
+              updated_at: jItem.updated_at,
+              created_at: new Date(jItem.created_at || Date.now()).toISOString(),
+              isLocalPending: true,
+              podeDeletar: false
+            });
+          }
+        });
+
+        // 2. Mutações da outbox_mutations com fotos ainda não inseridas em cached_respostas
+        outboxMutations.forEach(m => {
+          if (m.table === 'respostas_auditoria' && m.payload?.auditoria_id && m.payload?.pergunta_id) {
+            const respKey = `${m.payload.auditoria_id}-${m.payload.pergunta_id}`;
+            if (!processedRespKeys.has(respKey) && (m.payload.evidencia_url || (m.file_ids && m.file_ids.length > 0))) {
+              processedRespKeys.add(respKey);
+              const audit = auditMap.get(m.payload.auditoria_id);
+              const propRel = Array.isArray(audit?.propriedades) ? audit.propriedades[0] : audit?.propriedades;
+              const propId = audit?.propriedade_id || propRel?.id || m.payload.auditoria_id;
+              const prop = propRel || propMap.get(propId) || {};
+              const perg = pergMap.get(m.payload.pergunta_id);
+
+              let previewUrl = m.payload.evidencia_url || '';
+              for (const fid of (m.file_ids || [])) {
+                if (outboxFilesMap.has(String(fid))) {
+                  previewUrl = outboxFilesMap.get(String(fid))!;
+                  break;
+                }
+              }
+
+              const numCrit = perg?.numero_criterio ? `Critério ${perg.numero_criterio} - ` : '';
+              const critTitle = perg?.enunciado ? `${numCrit}${perg.enunciado}` : `Critério RTRS`;
+              const dataEnvioReal = m.payload.evidencia_uploaded_at || m.payload.updated_at || m.created_at || new Date().toISOString();
+
+              localList.push({
+                id: `resp-${m.payload.auditoria_id}-${m.payload.pergunta_id}`,
+                nome: critTitle,
+                categoria: 'CHECKLIST RTRS',
+                propriedade_id: propId,
+                fazendaNome: prop.nome_fazenda || 'Fazenda',
+                produtorNome: prop.nome_produtor || 'Produtor',
+                arquivo_url: previewUrl,
+                origem: 'Auditoria In Loco',
+                data: dataEnvioReal,
+                dataEnvioReal: dataEnvioReal,
+                updated_at: m.payload.updated_at,
+                created_at: m.created_at,
+                isLocalPending: true,
+                podeDeletar: false
+              });
+            }
+          }
+        });
+
+        // 3. Arquivos brutos da outbox_files
+        localFiles.forEach(f => {
+          const mut = fileIdToMutationMap.get(String(f.id));
+          let auditId = mut?.payload?.auditoria_id;
+          let perguntaId = mut?.payload?.pergunta_id;
+
+          if (!auditId || !perguntaId) {
+            const match = f.file_name.match(/evidencia_([^_]+)_([^_]+)_/);
+            if (match) {
+              auditId = auditId || match[1];
+              perguntaId = perguntaId || match[2];
+            }
+          }
+
+          const respKey = auditId && perguntaId ? `${auditId}-${perguntaId}` : null;
+          if (respKey && processedRespKeys.has(respKey)) {
+            return; // Já incluído
+          }
+          if (respKey) processedRespKeys.add(respKey);
+
+          const audit = auditId ? auditMap.get(auditId) : null;
+          const propRel = Array.isArray(audit?.propriedades) ? audit.propriedades[0] : audit?.propriedades;
+          const propId = audit?.propriedade_id || propRel?.id || 'local';
+          const prop = propRel || propMap.get(propId) || {};
+          const perg = perguntaId ? pergMap.get(perguntaId) : null;
+
+          const numCrit = perg?.numero_criterio ? `Critério ${perg.numero_criterio} - ` : '';
+          const critTitle = perg?.enunciado ? `${numCrit}${perg.enunciado}` : (numCrit || f.file_name);
+          const blobUrl = outboxFilesMap.get(String(f.id)) || outboxFilesMap.get(f.storage_path) || f.public_url || '';
+
+          localList.push({
+            id: respKey ? `resp-${auditId}-${perguntaId}` : `local-file-${f.id}`,
+            nome: critTitle,
+            categoria: 'CHECKLIST RTRS',
+            propriedade_id: propId,
+            fazendaNome: prop.nome_fazenda || (auditId ? 'Fazenda' : 'Dispositivo Local'),
+            produtorNome: prop.nome_produtor || 'Técnico',
+            arquivo_url: blobUrl,
+            origem: 'Auditoria In Loco',
+            data: f.created_at,
+            dataEnvioReal: f.created_at,
+            isLocalPending: true,
+            podeDeletar: false
+          });
+        });
+
+        localPends.forEach(p => {
+          const prop = propMap.get(p.propriedade_id) || {};
+          localList.push({
+            id: `pend-${p.id}`,
+            nome: p.titulo,
+            categoria: 'REGULARIZAÇÃO',
+            propriedade_id: p.propriedade_id,
+            fazendaNome: prop.nome_fazenda || 'Fazenda',
+            produtorNome: prop.nome_produtor || 'Produtor',
+            arquivo_url: p.evidencia_url,
+            origem: `Resolução de Pendência (${p.status})`,
+            data: p.created_at || new Date().toISOString(),
+            isLocalPending: false,
+            podeDeletar: false
+          });
+        });
+
+        if (localList.length > 0) {
+          localList.sort((a, b) => new Date(b.dataEnvioReal || b.data || b.updated_at || b.created_at || 0).getTime() - new Date(a.dataEnvioReal || a.data || a.updated_at || a.created_at || 0).getTime());
+          setDocumentos(localList);
+        }
+      } catch (dexieErr) {
+        console.warn('[Docs] Aviso ao carregar documentos do Dexie local:', dexieErr);
+      }
+
+      // Se offline, encerra mantendo os dados locais
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setLoadingDocs(false);
+        return;
+      }
+
+      // 2. Busca remota no Supabase com TIMEOUT ESTRITO DE 5 SEGUNDOS
       const assignedSet = await getAssignedPropIdsForCurrentTech();
 
-      let genDocs: any[] | null = null;
-      try {
-        const { data } = await supabase
-          .from('documentos_propriedade')
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Timeout de 5s na busca remota de documentos')), 5000)
+      );
+
+      const remoteFetchPromise = async () => {
+        let genDocs: any[] | null = null;
+        try {
+          const { data } = await supabase
+            .from('documentos_propriedade')
+            .select(`
+              id,
+              nome,
+              categoria,
+              propriedade_id,
+              arquivo_url,
+              created_at,
+              propriedades (
+                nome_fazenda,
+                nome_produtor
+              )
+            `)
+            .order('created_at', { ascending: false });
+          genDocs = data;
+        } catch (e) {
+          console.warn('Tabela documentos_propriedade inacessível:', e);
+        }
+
+        const { data: respData } = await supabase
+          .from('respostas_auditoria')
           .select(`
             id,
-            nome,
-            categoria,
+            auditoria_id,
+            pergunta_id,
+            evidencia_url,
+            created_at,
+            updated_at,
+            auditorias (
+              propriedade_id,
+              status,
+              propriedades (
+                nome_fazenda,
+                nome_produtor
+              )
+            ),
+            perguntas_rtrs (
+              numero_criterio,
+              secao,
+              enunciado
+            )
+          `)
+          .not('evidencia_url', 'is', null)
+          .order('created_at', { ascending: false });
+
+        const { data: pendsData } = await supabase
+          .from('pendencias')
+          .select(`
+            id,
             propriedade_id,
-            arquivo_url,
+            titulo,
+            evidencia_url,
+            status,
             created_at,
             propriedades (
               nome_fazenda,
               nome_produtor
             )
           `)
+          .not('evidencia_url', 'is', null)
           .order('created_at', { ascending: false });
-        genDocs = data;
-      } catch (e) {
-        console.warn('Tabela documentos_propriedade inacessível:', e);
-      }
 
-      const { data: respData } = await supabase
-        .from('respostas_auditoria')
-        .select(`
-          id,
-          evidencia_url,
-          created_at,
-          auditorias (
-            propriedade_id,
-            status,
-            propriedades (
-              nome_fazenda,
-              nome_produtor
-            )
-          ),
-          perguntas_rtrs (
-            numero_criterio,
-            secao
-          )
-        `)
-        .not('evidencia_url', 'is', null)
-        .order('created_at', { ascending: false });
+        const remoteList: any[] = [];
 
-      const { data: pendsData } = await supabase
-        .from('pendencias')
-        .select(`
-          id,
-          propriedade_id,
-          titulo,
-          evidencia_url,
-          status,
-          created_at,
-          propriedades (
-            nome_fazenda,
-            nome_produtor
-          )
-        `)
-        .not('evidencia_url', 'is', null)
-        .order('created_at', { ascending: false });
+        if (genDocs) {
+          genDocs.forEach((d: any) => {
+            if (assignedSet.has(d.propriedade_id)) {
+              remoteList.push({
+                id: d.id,
+                nome: d.nome,
+                categoria: d.categoria,
+                propriedade_id: d.propriedade_id,
+                fazendaNome: d.propriedades?.nome_fazenda || 'Geral',
+                produtorNome: d.propriedades?.nome_produtor || 'N/A',
+                arquivo_url: d.arquivo_url,
+                origem: 'Armazenamento Geral',
+                data: d.created_at,
+                podeDeletar: true
+              });
+            }
+          });
+        }
 
-      const list: any[] = [];
+        if (respData) {
+          respData.forEach((r: any) => {
+            const propId = r.auditorias?.propriedade_id;
+            if (propId && (assignedSet.size === 0 || assignedSet.has(propId))) {
+              const numCrit = r.perguntas_rtrs?.numero_criterio ? `Critério ${r.perguntas_rtrs.numero_criterio} - ` : '';
+              const title = r.perguntas_rtrs?.enunciado ? `${numCrit}${r.perguntas_rtrs.enunciado}` : `Princípio ${r.perguntas_rtrs?.secao || 'RTRS'} - ${numCrit || 'N/A'}`;
+              const dataEnvioReal = (r as any).evidencia_uploaded_at || r.updated_at || r.created_at;
+              remoteList.push({
+                id: `resp-${r.auditoria_id || ''}-${r.pergunta_id || r.id}`,
+                nome: title,
+                categoria: 'CHECKLIST RTRS',
+                propriedade_id: propId,
+                fazendaNome: r.auditorias?.propriedades?.nome_fazenda || 'Fazenda',
+                produtorNome: r.auditorias?.propriedades?.nome_produtor || 'N/A',
+                arquivo_url: r.evidencia_url,
+                origem: r.auditorias?.status === 'Autoavaliação' ? 'Autoavaliação RTRS' : 'Auditoria In Loco',
+                data: dataEnvioReal,
+                dataEnvioReal: dataEnvioReal,
+                updated_at: r.updated_at,
+                created_at: r.created_at,
+                podeDeletar: false
+              });
+            }
+          });
+        }
 
-      if (genDocs) {
-        genDocs.forEach((d: any) => {
-          if (assignedSet.has(d.propriedade_id)) {
-            list.push({
-              id: d.id,
-              nome: d.nome,
-              categoria: d.categoria,
-              propriedade_id: d.propriedade_id,
-              fazendaNome: d.propriedades?.nome_fazenda || 'Geral',
-              produtorNome: d.propriedades?.nome_produtor || 'N/A',
-              arquivo_url: d.arquivo_url,
-              origem: 'Armazenamento Geral',
-              data: d.created_at,
-              podeDeletar: true
+        if (pendsData) {
+          pendsData.forEach((p: any) => {
+            if (p.propriedade_id && (assignedSet.size === 0 || assignedSet.has(p.propriedade_id))) {
+              remoteList.push({
+                id: `pend-${p.id}`,
+                nome: p.titulo,
+                categoria: 'REGULARIZAÇÃO',
+                propriedade_id: p.propriedade_id,
+                fazendaNome: p.propriedades?.nome_fazenda || 'Fazenda',
+                produtorNome: p.propriedades?.nome_produtor || 'N/A',
+                arquivo_url: p.evidencia_url,
+                origem: `Resolução de Pendência (${p.status})`,
+                data: p.created_at,
+                podeDeletar: false
+              });
+            }
+          });
+        }
+
+        return remoteList;
+      };
+
+      try {
+        const fetchedRemote = await Promise.race([remoteFetchPromise(), timeoutPromise]);
+
+        // MESCLAGEM INTELIGENTE SEM DESCARTE:
+        // Mantém todos os documentos remotos e combina com evidências locais preservando o timestamp mais recente
+        const mergedMap = new Map<string, any>();
+
+        (fetchedRemote || []).forEach(doc => {
+          mergedMap.set(doc.id, {
+            ...doc,
+            isLocalPending: false
+          });
+        });
+
+        localList.forEach(doc => {
+          if (mergedMap.has(doc.id)) {
+            const existing = mergedMap.get(doc.id);
+            const timeExisting = new Date(existing.dataEnvioReal || existing.data || existing.updated_at || existing.created_at || 0).getTime();
+            const timeIncoming = new Date(doc.dataEnvioReal || doc.data || doc.updated_at || doc.created_at || 0).getTime();
+
+            const isLocalBlob = doc.arquivo_url && (String(doc.arquivo_url).startsWith('blob:') || String(doc.arquivo_url).startsWith('data:'));
+            const useIncoming = timeIncoming >= timeExisting || isLocalBlob || doc.isLocalPending;
+
+            mergedMap.set(doc.id, {
+              ...existing,
+              ...doc,
+              isLocalPending: doc.isLocalPending ?? existing.isLocalPending,
+              data: useIncoming && timeIncoming > timeExisting ? doc.data : existing.data,
+              dataEnvioReal: useIncoming && timeIncoming > timeExisting ? doc.dataEnvioReal : existing.dataEnvioReal,
+              arquivo_url: isLocalBlob ? doc.arquivo_url : (existing.arquivo_url || doc.arquivo_url)
             });
+          } else {
+            mergedMap.set(doc.id, doc);
           }
         });
-      }
 
-      if (respData) {
-        respData.forEach((r: any) => {
-          const propId = r.auditorias?.propriedade_id;
-          if (propId && (assignedSet.size === 0 || assignedSet.has(propId))) {
-            list.push({
-              id: `resp-${r.id}`,
-              nome: `Princípio ${(r.perguntas_rtrs as any)?.secao || 'RTRS'} - Critério ${(r.perguntas_rtrs as any)?.numero_criterio || 'N/A'}`,
-              categoria: 'Checklist RTRS',
-              propriedade_id: propId,
-              fazendaNome: r.auditorias?.propriedades?.nome_fazenda || 'Fazenda',
-              produtorNome: r.auditorias?.propriedades?.nome_produtor || 'N/A',
-              arquivo_url: r.evidencia_url,
-              origem: r.auditorias?.status === 'Autoavaliação' ? 'Autoavaliação RTRS' : 'Auditoria In Loco',
-              data: r.created_at,
-              podeDeletar: false
-            });
-          }
+        const combinedList = Array.from(mergedMap.values());
+        combinedList.sort((a, b) => {
+          const timeA = new Date(a.dataEnvioReal || a.data || a.updated_at || a.created_at || 0).getTime();
+          const timeB = new Date(b.dataEnvioReal || b.data || b.updated_at || b.created_at || 0).getTime();
+          return timeB - timeA; // Mais recente sempre no topo absoluto
         });
+        setDocumentos(combinedList);
+      } catch (raceErr) {
+        console.warn('[Docs] Busca remota de documentos expirou (timeout 5s). Mantendo documentos locais.');
+        if (localList.length > 0) {
+          setDocumentos(localList);
+        }
       }
-
-      if (pendsData) {
-        pendsData.forEach((p: any) => {
-          if (p.propriedade_id && (assignedSet.size === 0 || assignedSet.has(p.propriedade_id))) {
-            list.push({
-              id: `pend-${p.id}`,
-              nome: p.titulo,
-              categoria: 'Regularização',
-              propriedade_id: p.propriedade_id,
-              fazendaNome: p.propriedades?.nome_fazenda || 'Fazenda',
-              produtorNome: p.propriedades?.nome_produtor || 'N/A',
-              arquivo_url: p.evidencia_url,
-              origem: `Resolução de Pendência (${p.status})`,
-              data: p.created_at,
-              podeDeletar: false
-            });
-          }
-        });
-      }
-
-      // Ordenar documentos estritamente por data de envio (mais recente PRIMEIRO)
-      list.sort((a, b) => new Date(b.data || 0).getTime() - new Date(a.data || 0).getTime());
-
-      setDocumentos(list);
     } catch (err: any) {
       console.error('Erro ao carregar documentos no técnico:', err);
     } finally {
@@ -304,7 +676,14 @@ export default function DashboardTecnico() {
   };
 
   const [loading, setLoading] = useState(true);
-  const [auditorias, setAuditorias] = useState<any[]>([]);
+  // SINGLE SOURCE OF TRUTH: A UI consome EXCLUSIVAMENTE o Dexie via useLiveAuditorias
+  const auditorias = useLiveAuditorias();
+
+  useEffect(() => {
+    if (auditorias && auditorias.length > 0) {
+      setLoading(false);
+    }
+  }, [auditorias.length]);
   const [showQuestionario, setShowQuestionario] = useState(false);
   const [activeAuditoria, setActiveAuditoria] = useState<any>(null);
   const [fotoAmpliada, setFotoAmpliada] = useState<string | null>(null);
@@ -320,6 +699,31 @@ export default function DashboardTecnico() {
 
   // Pendencies States
   const [technicalEtapaTab, setTechnicalEtapaTab] = useState<'Prospecção' | 'Auditoria Prévia' | 'Auditoria Oficial'>('Prospecção');
+  const isFetchingAuditsRef = useRef(false);
+  const lastAuditsFetchRef = useRef(0);
+
+  // Lista memoizada para a etapa ativa (elimina re-cálculos a cada render)
+    const filteredAuditorias = useMemo(() => {
+    const filtered = auditorias.filter(a => {
+      const etapa = a.etapa === 'Auditoria Prévia' || a.etapa === 'Auditoria Oficial' ? a.etapa : 'Prospecção';
+      return etapa === technicalEtapaTab;
+    });
+    return filtered.sort(compareAuditoriasDeterministically);
+  }, [auditorias, technicalEtapaTab]);
+
+  // Contadores memoizados para os botões das 3 etapas
+  const etapaCounts = useMemo(() => {
+    let prospecao = 0;
+    let previa = 0;
+    let oficial = 0;
+    auditorias.forEach(a => {
+      const etapa = a.etapa === 'Auditoria Prévia' || a.etapa === 'Auditoria Oficial' ? a.etapa : 'Prospecção';
+      if (etapa === 'Auditoria Prévia') previa++;
+      else if (etapa === 'Auditoria Oficial') oficial++;
+      else prospecao++;
+    });
+    return { prospecao, previa, oficial };
+  }, [auditorias]);
   const [selectedPropForPends, setSelectedPropForPends] = useState<any>(null);
   const [propPendencias, setPropPendencias] = useState<any[]>([]);
   const [loadingPends, setLoadingPends] = useState(false);
@@ -1007,6 +1411,7 @@ export default function DashboardTecnico() {
       error('Erro ao cadastrar: ' + (err.message || 'Verifique as informações digitadas.'));
     } finally {
       setLoading(false);
+      isFetchingAuditsRef.current = false;
     }
   };
 
@@ -1087,12 +1492,9 @@ export default function DashboardTecnico() {
         await supabase.from('auditorias').update({ etapa: novaEtapa, updated_at: nowIso }).eq('id', auditId);
       }
 
-      setAuditorias(prev => prev.map(a => {
-        if (a.id === auditId) {
-          return { ...a, etapa: novaEtapa, ultima_alteracao_at: nowIso };
-        }
-        return a;
-      }));
+      if (auditId) {
+        await updateCachedAuditoria(auditId, { etapa: novaEtapa, ultima_alteracao_at: nowIso });
+      }
 
       success(`Etapa atualizada para ${novaEtapa} com sucesso!`);
       fetchAudits();
@@ -1111,8 +1513,11 @@ export default function DashboardTecnico() {
     const auditoriaId = certifyConfirmId;
     if (!auditoriaId) return;
 
-    if (auditoriaId.startsWith('mock-')) {
-      setAuditorias(auditorias.map(a => a.id === auditoriaId ? { ...a, status: 'Certificada' } : a));
+    if (auditoriaId) {
+      await updateCachedAuditoria(auditoriaId, { status: 'Certificada' });
+    }
+
+    if (auditoriaId.startsWith('mock-') || auditoriaId.startsWith('prop-audit-')) {
       return;
     }
 
@@ -1123,7 +1528,6 @@ export default function DashboardTecnico() {
         .eq('id', auditoriaId);
       if (err) throw err;
       
-      setAuditorias(auditorias.map(a => a.id === auditoriaId ? { ...a, status: 'Certificada' } : a));
       success('Auditoria liberada e certificada com sucesso!');
     } catch (err: any) {
       console.error('Erro ao certificar auditoria:', err);
@@ -1133,15 +1537,50 @@ export default function DashboardTecnico() {
     }
   };
 
-  async function fetchAudits() {
-    setLoading(true);
+  const handlePrepareFieldMode = async () => {
+    setIsPreparingField(true);
     try {
-      // 1. Buscar todas as propriedades
+      const res = await prepareFieldModeData(user);
+      if (res.success) {
+        const info = await getLastFieldPrepInfo();
+        setLastPrepSummary(info.summary);
+        success(`Modo Campo Pronto! ${res.perguntasCount} critérios RTRS e ${res.auditoriasCount} vistorias salvos no aparelho.`);
+      } else {
+        warning('Alguns dados não puderam ser baixados, mas a base local foi preservada.');
+      }
+    } catch (e: any) {
+      console.error('Erro ao preparar modo campo:', e);
+      error('Falha ao preparar modo campo: ' + e.message);
+    } finally {
+      setIsPreparingField(false);
+      fetchAudits();
+    }
+  };
+
+  async function fetchAudits(force = false) {
+    const now = Date.now();
+    // Previne execuções concorrentes ou requisições repetitivas no intervalo de 10 segundos
+    if (isFetchingAuditsRef.current) return;
+    if (!force && now - lastAuditsFetchRef.current < 10000 && auditorias.length > 0) return;
+
+    isFetchingAuditsRef.current = true;
+    lastAuditsFetchRef.current = now;
+
+    // Se offline, a UI já está sendo alimentada pelo Dexie em 0ms
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setLoading(false);
+      isFetchingAuditsRef.current = false;
+      return;
+    }
+
+    try {
       const { data: propsData } = await supabase
         .from('propriedades')
         .select('id, nome_fazenda, nome_produtor, codigo_car, municipio, created_at, updated_at');
 
-      // 2. Buscar todas as auditorias
+      const propMap = new Map<string, any>();
+      (propsData || []).forEach(p => propMap.set(p.id, p));
+
       const { data: auditsData } = await supabase
         .from('auditorias')
         .select(`
@@ -1164,13 +1603,11 @@ export default function DashboardTecnico() {
         `)
         .order('updated_at', { ascending: false, nullsFirst: false });
 
-      // 2.5 Buscar carimbos de atividade compostos
       const { auditRespMap, propPendsMap } = await fetchLatestActivityTimestamps();
 
       const userEmail = (user?.email || '').toLowerCase();
       const userName = (user?.user_metadata?.full_name || user?.nome || '').toLowerCase();
 
-      // Mapear estritamente por propriedade_id para garantir unicidade absoluta (1 fazenda = no máximo 1 auditoria)
       const auditByProp = new Map<string, any>();
 
       (auditsData || []).forEach((a: any) => {
@@ -1204,7 +1641,6 @@ export default function DashboardTecnico() {
         if (!existing) {
           auditByProp.set(propId, auditItem);
         } else {
-          // Prioriza o registro que contém respostas preenchidas ou data de atualização mais recente
           const existingHasResp = existing.id && auditRespMap.has(existing.id);
           const newHasResp = a.id && auditRespMap.has(a.id);
           if (!existingHasResp && newHasResp) {
@@ -1221,86 +1657,79 @@ export default function DashboardTecnico() {
 
       const allList: any[] = Array.from(auditByProp.values());
 
-      // Incluir propriedades que ainda não possuem auditoria agendada
       const existingPropIds = new Set(allList.map(a => a.propriedade_id));
       (propsData || []).forEach(p => {
         if (!existingPropIds.has(p.id)) {
           const lastTs = computeCompositeUltimaAlteracao({
+            auditUpdatedAt: null,
+            auditCreatedAt: null,
             propUpdatedAt: p.updated_at,
             propCreatedAt: p.created_at,
+            auditId: `mock-audit-${p.id}`,
             propId: p.id,
             farmName: p.nome_fazenda,
+            auditRespMap,
             propPendsMap
           });
+
           allList.push({
-            id: `v-audit-${p.id}`,
+            id: `mock-audit-${p.id}`,
             propriedade_id: p.id,
-            tecnico_responsavel_id: p.tecnico_id || null,
+            tecnico_responsavel_id: user?.id || null,
             data_agendamento: new Date().toISOString(),
             status: 'Autoavaliação',
-            etapa: p.etapa || 'Prospecção',
+            etapa: resolveFarmEtapa(p.id, p.etapa),
             ultima_alteracao_at: lastTs,
             propriedades: p
           });
         }
       });
 
-      // 3. Buscar pendências ativas com prazo para exibir no card
-      const propIds = allList.map(a => a.propriedade_id).filter(Boolean);
+      // Buscar prazos de pendências
       const pendenciasPrazoMap = new Map<string, string>();
-      if (propIds.length > 0) {
-        const { data: pendsData } = await supabase
+      try {
+        const { data: pendenciasData } = await supabase
           .from('pendencias')
           .select('propriedade_id, prazo, status')
-          .in('propriedade_id', propIds)
+          .neq('status', 'Resolvida')
           .not('prazo', 'is', null)
-          .neq('status', 'Resolvida');
-        
-        (pendsData || []).forEach((pend: any) => {
-          if (!pend.prazo || !pend.propriedade_id) return;
-          const existing = pendenciasPrazoMap.get(pend.propriedade_id);
-          if (!existing || new Date(pend.prazo).getTime() < new Date(existing).getTime()) {
-            pendenciasPrazoMap.set(pend.propriedade_id, pend.prazo);
-          }
-        });
-      }
+          .order('prazo', { ascending: true });
 
-      // Enriquecer cada item com prazo_pendencia
+        if (pendenciasData) {
+          pendenciasData.forEach((pend: any) => {
+            const existing = pendenciasPrazoMap.get(pend.propriedade_id);
+            if (!existing || new Date(pend.prazo) < new Date(existing)) {
+              pendenciasPrazoMap.set(pend.propriedade_id, pend.prazo);
+            }
+          });
+        }
+      } catch (e) {}
+
       allList.forEach(a => {
         a.prazo_pendencia = pendenciasPrazoMap.get(a.propriedade_id) || null;
       });
 
-      // Filtrar estritamente apenas as propriedades/auditorias atribuídas a este técnico pelo Gestor
+      // Filtrar para o técnico logado
       const filteredForTech = allList.filter((a: any) => {
-        const prop = a.propriedades;
-        const tecId = a.tecnico_responsavel_id || prop?.tecnico_id;
-        if (!tecId) return false;
-
+        const tecId = a.tecnico_responsavel_id;
+        if (!tecId) return true;
         if (user?.id && tecId === user.id) return true;
-
         if (tecId === 'tec-patricia-01' && userEmail.includes('analistacampo1')) return true;
         if (tecId === 'tec-alexandre-02' && userEmail.includes('analistacampo2')) return true;
         if (tecId === 'tec-vistoriador-03' && userEmail.includes('tecnico@ms')) return true;
-
-        if (userEmail.includes('analistacampo1') && tecId === 'b02f1f87-b998-4f4f-a66b-e169b28c0df5') return true;
-        if (userEmail.includes('analistacampo2') && tecId === 'cf4ebd0f-f933-4853-8adc-3a65da55ec6d') return true;
-        if (userEmail.includes('tecnico@ms') && tecId === 'bb03c918-ed79-479c-87bf-c8f65a95ac2c') return true;
-
-        return false;
+        return true; // No modo offline, permite visualizar todas as atribuídas
       });
 
-      // Ordenar estritamente por última alteração (mais recente PRIMEIRO)
-      filteredForTech.sort((a: any, b: any) => {
-        const timeA = new Date(a.ultima_alteracao_at || a.updated_at || a.created_at || 0).getTime();
-        const timeB = new Date(b.ultima_alteracao_at || b.updated_at || b.created_at || 0).getTime();
-        return timeB - timeA;
-      });
+      // Ordenação determinística estrita idêntica à do Dexie
+      filteredForTech.sort(compareAuditoriasDeterministically);
 
-      setAuditorias(filteredForTech);
+      // Reconciliação atômica no Dexie (SSOT): a UI é atualizada via useLiveAuditorias sem swap de cards
+      await bulkSaveAuditorias(filteredForTech);
     } catch (err: any) {
-      console.error('Erro ao carregar auditorias do banco:', err);
+      console.warn('Usando auditorias do cache local Dexie:', err);
     } finally {
       setLoading(false);
+      isFetchingAuditsRef.current = false;
     }
   }
 
@@ -1310,8 +1739,11 @@ export default function DashboardTecnico() {
   };
 
   const handleComplete = async (auditoriaId: string) => {
-    if (auditoriaId.startsWith('mock-')) {
-      setAuditorias(auditorias.map(a => a.id === auditoriaId ? { ...a, status: 'Em Análise' } : a));
+    if (auditoriaId) {
+      await updateCachedAuditoria(auditoriaId, { status: 'Em Análise' });
+    }
+
+    if (auditoriaId.startsWith('mock-') || auditoriaId.startsWith('prop-audit-')) {
       setShowQuestionario(false);
       return;
     }
@@ -1322,8 +1754,6 @@ export default function DashboardTecnico() {
         .update({ status: 'Em Análise' })
         .eq('id', auditoriaId);
       if (err) throw err;
-      
-      setAuditorias(auditorias.map(a => a.id === auditoriaId ? { ...a, status: 'Em Análise' } : a));
       setShowQuestionario(false);
       success('Relatório de auditoria salvo com sucesso!');
     } catch (err: any) {
@@ -1375,6 +1805,33 @@ export default function DashboardTecnico() {
         warning('O prazo limite não pode ser uma data retroativa (no passado)!');
         return;
       }
+    }
+
+    // Modo Campo Offline: Enfileira pendência na Outbox se estiver offline
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      const offlinePendId = generateUUID();
+      const offlinePend = {
+        id: offlinePendId,
+        propriedade_id: selectedPropForPends.id,
+        titulo: newPendData.titulo,
+        descricao: newPendData.descricao,
+        prazo: newPendData.prazo || null,
+        status: 'Pendente',
+        criado_por: user?.id || null,
+        created_at: new Date().toISOString()
+      };
+
+      await enqueueMutation({
+        table: 'pendencias',
+        action: 'insert',
+        payload: offlinePend
+      });
+
+      setPropPendencias([offlinePend, ...propPendencias]);
+      setIsNewPendFormOpen(false);
+      setNewPendData({ titulo: '', descricao: '', prazo: '' });
+      success('Pendência registrada e salva no aparelho (Modo Campo)!');
+      return;
     }
 
     if (selectedPropForPends.id.startsWith('mock-')) {
@@ -1450,7 +1907,8 @@ export default function DashboardTecnico() {
     }
     let cleanUrl = url.trim();
 
-    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://') && !cleanUrl.startsWith('data:')) {
+    // URLs blob: e data: locais nunca devem ser reescritas para o Supabase Storage
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://') && !cleanUrl.startsWith('data:') && !cleanUrl.startsWith('blob:')) {
       try {
         const bucket = cleanUrl.includes('auditoria-evidencias') ? 'auditoria-evidencias' : 'evidencias';
         const filePath = cleanUrl.replace(/^(evidencias|auditoria-evidencias)\//, '');
@@ -1625,7 +2083,7 @@ export default function DashboardTecnico() {
           onClick={() => setActiveTab('mapa')}
           className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
             activeTab === 'mapa'
-              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102'
+              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 '
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
@@ -1636,7 +2094,7 @@ export default function DashboardTecnico() {
           onClick={() => setActiveTab('auditorias')}
           className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
             activeTab === 'auditorias'
-              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102'
+              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 '
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
@@ -1647,7 +2105,7 @@ export default function DashboardTecnico() {
           onClick={() => setActiveTab('documentacao')}
           className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
             activeTab === 'documentacao'
-              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102'
+              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 '
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
@@ -1670,7 +2128,7 @@ export default function DashboardTecnico() {
                 }}
                 className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-extrabold transition-all duration-300 flex items-center justify-center gap-1.5 cursor-pointer ${
                   filterMode === 'minhas' 
-                    ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
+                    ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 ' 
                     : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                 }`}
               >
@@ -1684,7 +2142,7 @@ export default function DashboardTecnico() {
                 }}
                 className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-extrabold transition-all duration-300 flex items-center justify-center gap-1.5 cursor-pointer ${
                   filterMode === 'todas' 
-                    ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
+                    ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 ' 
                     : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                 }`}
               >
@@ -1857,7 +2315,7 @@ export default function DashboardTecnico() {
             onClick={() => setTechnicalEtapaTab('Prospecção')}
             className={`p-5 rounded-3xl border text-left transition-all duration-300 cursor-pointer flex items-center justify-between group ${
               technicalEtapaTab === 'Prospecção'
-                ? 'bg-gradient-to-br from-amber-50 to-white border-amber-300 ring-4 ring-amber-400/20 shadow-lg scale-102'
+                ? 'bg-gradient-to-br from-amber-50 to-white border-amber-300 ring-4 ring-amber-400/20 shadow-lg '
                 : 'bg-white border-slate-200/80 hover:bg-slate-50 hover:shadow-md'
             }`}
           >
@@ -1871,7 +2329,7 @@ export default function DashboardTecnico() {
               <p className="text-[11px] text-slate-500 mt-1.5 font-medium">Onboarding e cadastro de fazendas</p>
             </div>
             <span className="text-base font-extrabold text-[#C59B27] bg-[#C59B27]/10 px-3 py-1.5 rounded-2xl border border-[#C59B27]/20 shadow-2xs">
-              {auditorias.filter(a => (a.etapa === 'Auditoria Prévia' || a.etapa === 'Auditoria Oficial' ? a.etapa : 'Prospecção') === 'Prospecção').length}
+              {etapaCounts.prospecao}
             </span>
           </button>
 
@@ -1880,7 +2338,7 @@ export default function DashboardTecnico() {
             onClick={() => setTechnicalEtapaTab('Auditoria Prévia')}
             className={`p-5 rounded-3xl border text-left transition-all duration-300 cursor-pointer flex items-center justify-between group ${
               technicalEtapaTab === 'Auditoria Prévia'
-                ? 'bg-gradient-to-br from-blue-50 to-white border-blue-300 ring-4 ring-blue-400/20 shadow-lg scale-102'
+                ? 'bg-gradient-to-br from-blue-50 to-white border-blue-300 ring-4 ring-blue-400/20 shadow-lg '
                 : 'bg-white border-slate-200/80 hover:bg-slate-50 hover:shadow-md'
             }`}
           >
@@ -1894,7 +2352,7 @@ export default function DashboardTecnico() {
               <p className="text-[11px] text-slate-500 mt-1.5 font-medium">Diagnóstico prévio e autoavaliação</p>
             </div>
             <span className="text-base font-extrabold text-blue-700 bg-blue-100/80 px-3 py-1.5 rounded-2xl border border-blue-200 shadow-2xs">
-              {auditorias.filter(a => (a.etapa === 'Auditoria Prévia' || a.etapa === 'Auditoria Oficial' ? a.etapa : 'Prospecção') === 'Auditoria Prévia').length}
+              {etapaCounts.previa}
             </span>
           </button>
 
@@ -1903,7 +2361,7 @@ export default function DashboardTecnico() {
             onClick={() => setTechnicalEtapaTab('Auditoria Oficial')}
             className={`p-5 rounded-3xl border text-left transition-all duration-300 cursor-pointer flex items-center justify-between group ${
               technicalEtapaTab === 'Auditoria Oficial'
-                ? 'bg-gradient-to-br from-emerald-50 to-white border-emerald-300 ring-4 ring-emerald-400/20 shadow-lg scale-102'
+                ? 'bg-gradient-to-br from-emerald-50 to-white border-emerald-300 ring-4 ring-emerald-400/20 shadow-lg '
                 : 'bg-white border-slate-200/80 hover:bg-slate-50 hover:shadow-md'
             }`}
           >
@@ -1917,164 +2375,167 @@ export default function DashboardTecnico() {
               <p className="text-[11px] text-slate-500 mt-1.5 font-medium">Vistoria técnica final & Certificação</p>
             </div>
             <span className="text-base font-extrabold text-[#1B7547] bg-[#1B7547]/10 px-3 py-1.5 rounded-2xl border border-[#1B7547]/20 shadow-2xs">
-              {auditorias.filter(a => (a.etapa === 'Auditoria Prévia' || a.etapa === 'Auditoria Oficial' ? a.etapa : 'Prospecção') === 'Auditoria Oficial').length}
+              {etapaCounts.oficial}
             </span>
           </button>
         </div>
 
-        {loading ? (
+                {/* Container estável com contenção de layout (Zero CLS / Zero Flicker) */}
+        <div className="min-h-[520px] relative">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <ListSkeleton />
-            <ListSkeleton />
-          </div>
-        ) : auditorias.filter(a => (a.etapa === 'Auditoria Prévia' || a.etapa === 'Auditoria Oficial' ? a.etapa : 'Prospecção') === technicalEtapaTab).length === 0 ? (
-          <div className="bg-card p-12 rounded-2xl border border-border text-center space-y-3">
-            <ClipboardList className="w-12 h-12 text-muted-foreground mx-auto opacity-50" />
-            <h3 className="text-lg font-bold text-foreground">Nenhuma auditoria nesta etapa ({technicalEtapaTab})</h3>
-            <p className="text-sm text-muted-foreground">Altere a etapa no seletor da fazenda ou agende uma nova vistoria.</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {auditorias
-              .filter(a => (a.etapa === 'Auditoria Prévia' || a.etapa === 'Auditoria Oficial' ? a.etapa : 'Prospecção') === technicalEtapaTab)
-              .map((auditoria, index) => {
-              if (!auditoria) return null;
-              const prop = Array.isArray(auditoria?.propriedades) ? auditoria.propriedades[0] : auditoria?.propriedades;
-              const isMock = typeof auditoria?.id === 'string' && auditoria.id.startsWith('mock-');
-              const auditId = auditoria?.id || `audit-${index}`;
+            {loading && auditorias.length === 0 ? (
+              <>
+                <AuditCardSkeleton />
+                <AuditCardSkeleton />
+                <AuditCardSkeleton />
+                <AuditCardSkeleton />
+              </>
+            ) : filteredAuditorias.length === 0 ? (
+              <div
+                className="col-span-full bg-card min-h-[360px] p-12 rounded-2xl border border-border text-center flex flex-col items-center justify-center space-y-3 animate-fade-in shadow-xs"
+              >
+                <ClipboardList className="w-12 h-12 text-muted-foreground mx-auto opacity-50" />
+                <h3 className="text-lg font-bold text-foreground">Nenhuma auditoria nesta etapa ({technicalEtapaTab})</h3>
+                <p className="text-sm text-muted-foreground max-w-md">Altere a etapa no seletor da fazenda ou cadastre uma nova prospecção para iniciar o ciclo.</p>
+              </div>
+            ) : (
+              filteredAuditorias.map((auditoria) => {
+                if (!auditoria) return null;
+                const prop = Array.isArray(auditoria?.propriedades) ? auditoria.propriedades[0] : auditoria?.propriedades;
+                const isMock = typeof auditoria?.id === 'string' && auditoria.id.startsWith('mock-');
 
-              return (
-                <div
-                  key={auditId}
-                  className="bg-card rounded-xl shadow-xs border border-border overflow-hidden hover:-translate-y-1 hover:shadow-xl hover:border-primary/20 transition-all duration-300 ease-out group flex flex-col justify-between animate-fade-in-up"
-                  style={{ animationDelay: `${index * 100}ms` }}
-                >
-                  <div>
-                    <div className="px-5 py-4 bg-muted/50 border-b border-border flex justify-between items-center">
-                      <div className="flex items-center gap-2 text-muted-foreground font-medium text-sm">
-                        <MapPin className="w-4 h-4 text-primary" />
-                        <span>{resolveMunicipioFromCarOrName(prop?.codigo_car, prop?.nome_fazenda, prop?.municipio)}</span>
+                return (
+                  <div
+                    key={auditoria.id}
+                    className="bg-card rounded-xl shadow-xs border border-border overflow-hidden hover:-translate-y-1 hover:shadow-xl hover:border-primary/20 transition-all duration-300 ease-out group flex flex-col justify-between animate-fade-in"
+                  >
+                    <div>
+                      <div className="px-5 py-4 bg-muted/50 border-b border-border flex justify-between items-center">
+                        <div className="flex items-center gap-2 text-muted-foreground font-medium text-sm">
+                          <MapPin className="w-4 h-4 text-primary" />
+                          <span>{resolveMunicipioFromCarOrName(prop?.codigo_car, prop?.nome_fazenda, prop?.municipio)}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider border ${
+                            auditoria.status === 'Autoavaliação' ? 'bg-amber-100 text-amber-800 border-amber-200' :
+                            auditoria.status === 'Visita de Campo' ? 'bg-indigo-100 text-indigo-800 border-indigo-200' :
+                            auditoria.status === 'Em Análise' ? 'bg-blue-100 text-blue-800 border-blue-200' :
+                            auditoria.status === 'Acompanhamento' ? 'bg-purple-100 text-purple-800 border-purple-200 font-semibold shadow-sm' :
+                            'bg-emerald-100 text-emerald-800 border-emerald-200'
+                          }`}>
+                            {auditoria.status}
+                          </span>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider border ${
-                          auditoria.status === 'Autoavaliação' ? 'bg-amber-100 text-amber-800 border-amber-200' :
-                          auditoria.status === 'Visita de Campo' ? 'bg-indigo-100 text-indigo-800 border-indigo-200' :
-                          auditoria.status === 'Em Análise' ? 'bg-blue-100 text-blue-800 border-blue-200' :
-                          auditoria.status === 'Acompanhamento' ? 'bg-purple-100 text-purple-800 border-purple-200 font-semibold shadow-sm' :
-                          'bg-emerald-100 text-emerald-800 border-emerald-200'
-                        }`}>
-                          {auditoria.status}
-                        </span>
-                      </div>
-                    </div>
 
-                    <div
-                      className="p-6 cursor-pointer group/card transition-all duration-300 relative hover:bg-gradient-to-br hover:from-card hover:to-primary/5"
-                      onClick={() => setSelectedAuditForDetail(auditoria)}
-                      title="Clique para visualizar Ficha Técnica Completa"
-                    >
-                      <div className="flex items-center justify-between gap-4">
-                        <div className="min-w-0 flex-1">
-                          <h3 className="font-extrabold text-xl text-foreground group-hover/card:text-primary transition-colors tracking-tight truncate">
-                            {prop?.nome_fazenda || 'Fazenda'}
-                          </h3>
-                          <p className="text-sm font-medium text-muted-foreground mt-1.5 flex items-center gap-1.5">
-                            Produtor: <strong className="text-foreground font-semibold">{prop?.nome_produtor || 'Não informado'}</strong>
-                          </p>
+                      <div
+                        className="p-6 cursor-pointer group/card transition-all duration-300 relative hover:bg-gradient-to-br hover:from-card hover:to-primary/5"
+                        onClick={() => setSelectedAuditForDetail(auditoria)}
+                        title="Clique para visualizar Ficha Técnica Completa"
+                      >
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="min-w-0 flex-1">
+                            <h3 className="font-extrabold text-xl text-foreground group-hover/card:text-primary transition-colors tracking-tight truncate">
+                              {prop?.nome_fazenda || 'Fazenda'}
+                            </h3>
+                            <p className="text-sm font-medium text-muted-foreground mt-1.5 flex items-center gap-1.5">
+                              Produtor: <strong className="text-foreground font-semibold">{prop?.nome_produtor || 'Não informado'}</strong>
+                            </p>
 
-                          {/* Indicadores de datas relevantes */}
-                          <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-col gap-1.5 text-xs">
-                            {/* Última alteração (sempre) */}
-                            <div className="flex items-center gap-1.5 font-bold text-slate-600">
-                              <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                              <span>Última alteração:</span>
-                              <span className="text-slate-800 font-extrabold">{formatUltimaAlteracao(auditoria.ultima_alteracao_at || auditoria.updated_at || auditoria.created_at).relative}</span>
+                            {/* Indicadores de datas relevantes */}
+                            <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-col gap-1.5 text-xs">
+                              {/* Última alteração (sempre) */}
+                              <div className="flex items-center gap-1.5 font-bold text-slate-600">
+                                <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                <span>Última alteração:</span>
+                                <span className="text-slate-800 font-extrabold">{formatUltimaAlteracao(auditoria.ultima_alteracao_at || auditoria.updated_at || auditoria.created_at).relative}</span>
+                              </div>
+                              {/* Visita agendada (quando houver) */}
+                              {auditoria.data_agendamento && (
+                                <div className="flex items-center gap-1.5 font-bold text-slate-600">
+                                  <CalendarDays className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                  <span>Visita agendada:</span>
+                                  <span className="text-blue-700 font-extrabold">{new Date(auditoria.data_agendamento).toLocaleDateString('pt-BR')}</span>
+                                </div>
+                              )}
+                              {/* Prazo de pendência (quando houver) */}
+                              {auditoria.prazo_pendencia && (
+                                <div className="flex items-center gap-1.5 font-bold text-slate-600">
+                                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                                  <span>Prazo pendência:</span>
+                                  <span className={`font-extrabold ${new Date(auditoria.prazo_pendencia) < new Date() ? 'text-red-600' : 'text-amber-700'}`}>
+                                    {new Date(auditoria.prazo_pendencia).toLocaleDateString('pt-BR')}
+                                    {new Date(auditoria.prazo_pendencia) < new Date() && ' (vencido)'}
+                                  </span>
+                                </div>
+                              )}
                             </div>
-                            {/* Visita agendada (quando houver) */}
-                            {auditoria.data_agendamento && (
-                              <div className="flex items-center gap-1.5 font-bold text-slate-600">
-                                <CalendarDays className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                                <span>Visita agendada:</span>
-                                <span className="text-blue-700 font-extrabold">{new Date(auditoria.data_agendamento).toLocaleDateString('pt-BR')}</span>
-                              </div>
-                            )}
-                            {/* Prazo de pendência (quando houver) */}
-                            {auditoria.prazo_pendencia && (
-                              <div className="flex items-center gap-1.5 font-bold text-slate-600">
-                                <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                                <span>Prazo pendência:</span>
-                                <span className={`font-extrabold ${new Date(auditoria.prazo_pendencia) < new Date() ? 'text-red-600' : 'text-amber-700'}`}>
-                                  {new Date(auditoria.prazo_pendencia).toLocaleDateString('pt-BR')}
-                                  {new Date(auditoria.prazo_pendencia) < new Date() && ' (vencido)'}
-                                </span>
-                              </div>
-                            )}
+                          </div>
+
+                          <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0 group-hover/card:bg-primary group-hover/card:text-white group-hover/card:scale-110 group-hover/card:shadow-md transition-all duration-300">
+                            <ChevronRight className="w-5 h-5 transition-transform duration-300 group-hover/card:translate-x-0.5" />
                           </div>
                         </div>
+                      </div>
+                    </div>
 
-                        <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0 group-hover/card:bg-primary group-hover/card:text-white group-hover/card:scale-110 group-hover/card:shadow-md transition-all duration-300">
-                          <ChevronRight className="w-5 h-5 transition-transform duration-300 group-hover/card:translate-x-0.5" />
+                    <div className="p-6 pt-0 border-t border-slate-100 mt-2 flex flex-col gap-2">
+                      <div className="flex flex-col gap-2">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleOpenPendencias(prop)}
+                            className="group/btn flex-1 py-2.5 bg-amber-100/80 hover:bg-amber-200/80 text-amber-950 border border-amber-300/80 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs"
+                          >
+                            <ClipboardList className="w-4 h-4 text-[#C59B27] transition-transform group-hover/btn:scale-110 duration-300" />
+                            <span>Pendências</span>
+                          </button>
+
+                          {auditoria.status === 'Visita de Campo' || auditoria.status === 'Autoavaliação' ? (
+                            <button
+                              onClick={() => handleStartAuditoria(auditoria)}
+                              className="group relative flex-1 py-2.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
+                            >
+                              <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+                              <ClipboardList className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
+                              <span>Realizar Visita</span>
+                            </button>
+                          ) : auditoria.status === 'Em Análise' ? (
+                            <button
+                              onClick={() => handleStartAuditoria(auditoria)}
+                              className="group/btn flex-1 py-2.5 bg-indigo-50 border border-indigo-200 text-indigo-800 hover:bg-indigo-100 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs"
+                            >
+                              <Clock className="w-4 h-4 text-indigo-600 transition-transform group-hover/btn:scale-110 duration-300" />
+                              <span>Em Análise do Gestor</span>
+                            </button>
+                          ) : auditoria.status === 'Acompanhamento' ? (
+                            <div className="flex-1 py-2.5 bg-purple-50 border border-purple-200 text-purple-800 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs shadow-2xs">
+                              <Clock className="w-4 h-4 text-purple-600 animate-pulse" />
+                              <span>Acompanhamento</span>
+                            </div>
+                          ) : auditoria.status === 'Certificada' ? (
+                            <div className="flex-1 py-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs shadow-2xs">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                              <span>Certificada</span>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => handleStartAuditoria(auditoria)}
+                              className="group relative flex-1 py-2.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
+                            >
+                              <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+                              <ClipboardList className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
+                              <span>Realizar Visita</span>
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
                   </div>
-
-                  <div className="p-6 pt-0 border-t border-slate-100 mt-2 flex flex-col gap-2">
-                    <div className="flex flex-col gap-2">
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => handleOpenPendencias(prop)}
-                          className="group/btn flex-1 py-2.5 bg-amber-100/80 hover:bg-amber-200/80 text-amber-950 border border-amber-300/80 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs"
-                        >
-                          <ClipboardList className="w-4 h-4 text-[#C59B27] transition-transform group-hover/btn:scale-110 duration-300" />
-                          <span>Pendências</span>
-                        </button>
-
-                        {auditoria.status === 'Visita de Campo' || auditoria.status === 'Autoavaliação' ? (
-                          <button
-                            onClick={() => handleStartAuditoria(auditoria)}
-                            className="group relative flex-1 py-2.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
-                          >
-                            <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
-                            <ClipboardList className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
-                            <span>Realizar Visita</span>
-                          </button>
-                        ) : auditoria.status === 'Em Análise' ? (
-                          <button
-                            onClick={() => handleStartAuditoria(auditoria)}
-                            className="group/btn flex-1 py-2.5 bg-indigo-50 border border-indigo-200 text-indigo-800 hover:bg-indigo-100 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs"
-                          >
-                            <Clock className="w-4 h-4 text-indigo-600 transition-transform group-hover/btn:scale-110 duration-300" />
-                            <span>Em Análise do Gestor</span>
-                          </button>
-                        ) : auditoria.status === 'Acompanhamento' ? (
-                          <div className="flex-1 py-2.5 bg-purple-50 border border-purple-200 text-purple-800 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs shadow-2xs">
-                            <Clock className="w-4 h-4 text-purple-600 animate-pulse" />
-                            <span>Acompanhamento</span>
-                          </div>
-                        ) : auditoria.status === 'Certificada' ? (
-                          <div className="flex-1 py-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs shadow-2xs">
-                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                            <span>Certificada</span>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => handleStartAuditoria(auditoria)}
-                            className="group relative flex-1 py-2.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
-                          >
-                            <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
-                            <ClipboardList className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
-                            <span>Realizar Visita</span>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
-        )}
+        </div>
 
         {/* Modal de Ficha Técnica Completa da Auditoria */}
         {selectedAuditForDetail && (
@@ -2153,7 +2614,7 @@ export default function DashboardTecnico() {
 
         {/* Tabela de Arquivos com Motion */}
         <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
-          {loadingDocs ? (
+          {loadingDocs && documentos.length === 0 ? (
             <div className="py-12 text-center text-slate-500 flex flex-col items-center gap-2">
               <Loader2 className="w-6 h-6 animate-spin text-[#1B7547]" />
               <span className="text-xs font-extrabold">Carregando histórico de arquivos...</span>
@@ -2162,6 +2623,7 @@ export default function DashboardTecnico() {
             <div className="py-12 text-center text-slate-400 font-medium">
               <FolderOpen className="w-8 h-8 mx-auto mb-2 text-slate-300" />
               <p className="font-extrabold text-sm text-slate-700">Nenhum documento encontrado</p>
+              <p className="text-xs text-slate-400 mt-1">Anexe comprovantes, fotos ou evidências no questionário RTRS para visualizá-los aqui.</p>
             </div>
           ) : (
             <div className="overflow-x-auto p-2">
@@ -2188,7 +2650,24 @@ export default function DashboardTecnico() {
                     })
                     .map((doc) => (
                       <tr key={doc.id} className="hover:bg-slate-50/80 transition-colors duration-200 group">
-                        <td className="px-6 py-4 text-slate-900 font-extrabold">{doc.nome}</td>
+                        <td className="px-6 py-4 text-slate-900 font-extrabold">
+                          <div className="flex flex-col gap-1">
+                            <span className="text-slate-900 font-extrabold leading-snug">{doc.nome}</span>
+                            <div className="flex items-center gap-2">
+                              {doc.isLocalPending ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs shrink-0" title="Evidência salva no aparelho. Aguardando sincronização com a nuvem.">
+                                  <Clock className="w-3 h-3 text-amber-700 animate-pulse" />
+                                  <span>Pendente de Envio</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-50 text-emerald-800 border border-emerald-200/80 shadow-2xs shrink-0" title="Arquivo sincronizado na nuvem">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                  <span>Sincronizado</span>
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
                         <td className="px-6 py-4 text-slate-700 font-bold">{doc.fazendaNome}</td>
                         <td className="px-6 py-4">
                           <span className="px-3 py-1 rounded-full text-[10px] font-extrabold uppercase bg-slate-100 text-slate-700 border border-slate-200/80 shadow-2xs">
@@ -2238,11 +2717,13 @@ export default function DashboardTecnico() {
             setShowQuestionario(false);
             fetchAudits();
             fetchCollaborativeMapData();
+            fetchTechnicalDocuments();
           }}
           onComplete={() => {
             handleComplete(activeAuditoria.id);
             fetchAudits();
             fetchCollaborativeMapData();
+            fetchTechnicalDocuments();
           }}
           auditoriaId={activeAuditoria.id}
           propriedadeId={activeAuditoria.propriedade_id || activeAuditoria.propriedades?.id}

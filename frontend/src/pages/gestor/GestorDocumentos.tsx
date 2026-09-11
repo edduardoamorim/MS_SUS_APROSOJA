@@ -77,6 +77,7 @@ export default function GestorDocumentos() {
           id,
           evidencia_url,
           created_at,
+          updated_at,
           auditorias (
             propriedade_id,
             status,
@@ -143,7 +144,7 @@ export default function GestorDocumentos() {
             produtorNome: r.auditorias?.propriedades?.nome_produtor || 'N/A',
             arquivo_url: r.evidencia_url,
             origem: r.auditorias?.status === 'Autoavaliação' ? 'Autoavaliação RTRS' : 'Auditoria In Loco',
-            data: r.created_at,
+            data: (r as any).updated_at || r.created_at,
             podeDeletar: false,
             tabelaOrigem: 'respostas_auditoria'
           });
@@ -168,6 +169,7 @@ export default function GestorDocumentos() {
         });
       }
 
+      list.sort((a, b) => new Date(b.data || 0).getTime() - new Date(a.data || 0).getTime());
       setDocumentos(list);
     } catch (err: any) {
       console.error('Erro ao carregar documentos do gestor:', err);

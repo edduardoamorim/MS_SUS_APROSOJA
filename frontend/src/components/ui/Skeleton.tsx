@@ -58,3 +58,53 @@ export function TableRowSkeleton() {
     </tr>
   );
 }
+
+
+export function AuditCardSkeleton() {
+  return (
+    <div className="bg-card rounded-xl shadow-xs border border-border overflow-hidden flex flex-col justify-between animate-fade-in-up min-h-[310px]">
+      <div>
+        {/* Top bar: Município + Status */}
+        <div className="px-5 py-4 bg-muted/50 border-b border-border flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <Skeleton className="w-4 h-4 rounded-full" />
+            <Skeleton className="h-4 w-28 rounded-md" />
+          </div>
+          <Skeleton className="h-5 w-24 rounded-md" />
+        </div>
+
+        {/* Informações da Fazenda e Produtor */}
+        <div className="p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <Skeleton className="h-6 w-3/4 rounded-md" />
+              <Skeleton className="h-4 w-1/2 rounded-md mt-2" />
+
+              {/* Indicadores de datas relevantes */}
+              <div className="mt-4 pt-2.5 border-t border-slate-100 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Skeleton className="w-3.5 h-3.5 rounded-full shrink-0" />
+                  <Skeleton className="h-3.5 w-44 rounded" />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Skeleton className="w-3.5 h-3.5 rounded-full shrink-0" />
+                  <Skeleton className="h-3.5 w-36 rounded" />
+                </div>
+              </div>
+            </div>
+
+            <Skeleton className="w-10 h-10 rounded-full shrink-0 mt-1" />
+          </div>
+        </div>
+      </div>
+
+      {/* Botões de Ação Inferiores */}
+      <div className="p-6 pt-0 border-t border-slate-100 mt-2 flex flex-col gap-2">
+        <div className="flex gap-2 pt-2">
+          <Skeleton className="h-10 flex-1 rounded-2xl" />
+          <Skeleton className="h-10 flex-1 rounded-2xl" />
+        </div>
+      </div>
+    </div>
+  );
+}

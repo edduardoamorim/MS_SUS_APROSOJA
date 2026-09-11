@@ -1,8 +1,20 @@
+import { registerSW } from 'virtual:pwa-register';
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { isSupabaseConfigured } from './lib/supabase'
+
+// Registro transparente do Service Worker Workbox
+registerSW({
+  immediate: true,
+  onNeedRefresh() {
+    console.log('[PWA] Nova versão disponível. Service Worker atualizado.');
+  },
+  onOfflineReady() {
+    console.log('[PWA] MS Sustentável pronto para operar 100% offline.');
+  },
+});
 
 function DevDiagnosticScreen() {
   return (

@@ -4,6 +4,11 @@ import { CheckCircle2, Camera, AlertCircle, X, Loader2, Image as ImageIcon, File
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
+import { useSync } from '../../context/SyncContext';
+import { syncEngine } from '../../services/syncEngine';
+import { recordAuditChange, enqueueMutation, enqueueFile, removeEvidenceLocally, db, updateCachedAuditoria, getCachedReadData, cacheReadData, getAllCachedPerguntas, bulkSavePerguntas, getCachedRespostasByAuditoria, bulkSaveRespostas, type CachedPergunta } from '../../lib/offlineDb';
+import { seedDefaultRTRSQuestions } from '../../services/precacheService';
+import { WifiOff, UploadCloud } from 'lucide-react';
 
 interface QuestionarioRTRSProps {
   modo: 'autoavaliacao' | 'auditoria';
@@ -29,6 +34,7 @@ interface Pergunta {
 export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onComplete, auditoriaId, propriedadeId }: QuestionarioRTRSProps) {
   const { user } = useAuth();
   const { success, error, warning, info } = useToast();
+  const { isOnline, isSyncing, pendingCounts } = useSync();
   const [perguntas, setPerguntas] = useState<Pergunta[]>([]);
   const [loadingPerguntas, setLoadingPerguntas] = useState(true);
   const [respostas, setRespostas] = useState<Record<string, { conforme: boolean | null; observacao: string; evidenciaUrl: string | null }>>({});
@@ -56,58 +62,93 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     }
   }, [syncingDb]);
 
+  // Sincroniza auditoriaId prop com currentAuditoriaId
+  useEffect(() => {
+    if (auditoriaId && auditoriaId !== currentAuditoriaId) {
+      setCurrentAuditoriaId(auditoriaId);
+    }
+  }, [auditoriaId]);
+
+  // Disparo automático e unificado de drenagem quando a conexão estiver ativa ("Nuvem Conectada")
+  useEffect(() => {
+    if (isOnline && pendingCounts.total > 0 && !isSyncing) {
+      console.log('[QuestionarioRTRS] Nuvem Conectada com pendências na fila. Disparando dreno automático...', pendingCounts);
+      syncEngine.syncNow(true);
+    }
+  }, [isOnline, pendingCounts.total, isSyncing]);
+
   // Efeito para buscar perguntas
   useEffect(() => {
     async function fetchPerguntas() {
-      const { data, error } = await supabase
-        .from('perguntas_rtrs')
-        .select('*')
-        .eq('ativo', true);
-        
-      if (error) {
-        console.error('Erro ao buscar perguntas', error);
-      } else if (data) {
-        const parseNum = (str: string) => {
-          return str.split('.').map(x => {
-            const match = x.match(/^(\d*)([a-zA-Z]*)$/);
-            if (match) {
-              const num = match[1] ? parseInt(match[1], 10) : 0;
-              const char = match[2] || '';
-              return [num, char];
-            }
-            return [0, x];
-          });
-        };
-
-        const sorted = [...data].sort((a, b) => {
-          const partsA = parseNum(a.numero_criterio || '');
-          const partsB = parseNum(b.numero_criterio || '');
-          for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
-            if (partsA[i] === undefined) return -1;
-            if (partsB[i] === undefined) return 1;
-            const itemA = partsA[i];
-            const itemB = partsB[i];
-            
-            const numA = typeof itemA[0] === 'number' ? itemA[0] : 0;
-            const numB = typeof itemB[0] === 'number' ? itemB[0] : 0;
-            const charA = typeof itemA[1] === 'string' ? itemA[1] : '';
-            const charB = typeof itemB[1] === 'string' ? itemB[1] : '';
-            
-            if (numA !== numB) return numA - numB;
-            if (charA !== charB) return charA.localeCompare(charB);
-          }
-          return 0;
-        });
-
-        setPerguntas(sorted);
-        if (sorted.length > 0) {
-          const secoes = Array.from(new Set(sorted.map(p => p.secao)));
-          setSecaoAtiva(secoes[0]);
-        }
+      // 1. Busca imediata no IndexedDB (Read-Through Cache)
+      let local = await getAllCachedPerguntas();
+      
+      // Se estiver vazio no IndexedDB, semeia imediatamente os 115 critérios RTRS locais!
+      if (!local || local.length === 0) {
+        local = await seedDefaultRTRSQuestions();
       }
-      setLoadingPerguntas(false);
+
+      if (local && local.length > 0) {
+        setPerguntas(local as any);
+        const secoes = Array.from(new Set(local.map(p => p.secao)));
+        if (secoes.length > 0) setSecaoAtiva(secoes[0]);
+        setLoadingPerguntas(false);
+      }
+
+      // 2. Revalidação em background com o Supabase se online
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        try {
+          const { data, error } = await supabase
+            .from('perguntas_rtrs')
+            .select('*')
+            .eq('ativo', true);
+
+          if (!error && data && data.length > 0) {
+            const parseNum = (str: string) => {
+              return str.split('.').map(x => {
+                const match = x.match(/^(\d*)([a-zA-Z]*)$/);
+                if (match) {
+                  const num = match[1] ? parseInt(match[1], 10) : 0;
+                  const char = match[2] || '';
+                  return [num, char];
+                }
+                return [0, x];
+              });
+            };
+
+            const sorted = [...data].sort((a, b) => {
+              const partsA = parseNum(a.numero_criterio || '');
+              const partsB = parseNum(b.numero_criterio || '');
+              for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+                if (partsA[i] === undefined) return -1;
+                if (partsB[i] === undefined) return 1;
+                const itemA = partsA[i];
+                const itemB = partsB[i];
+
+                const numA = typeof itemA[0] === 'number' ? itemA[0] : 0;
+                const numB = typeof itemB[0] === 'number' ? itemB[0] : 0;
+                const charA = typeof itemA[1] === 'string' ? itemA[1] : '';
+                const charB = typeof itemB[1] === 'string' ? itemB[1] : '';
+
+                if (numA !== numB) return numA - numB;
+                if (charA !== charB) return charA.localeCompare(charB);
+              }
+              return 0;
+            });
+
+            setPerguntas(sorted as any);
+            await bulkSavePerguntas(sorted as any);
+          }
+        } catch (err) {
+          console.warn('[Offline] Usando catálogo RTRS local:', err);
+        } finally {
+          setLoadingPerguntas(false);
+        }
+      } else {
+        setLoadingPerguntas(false);
+      }
     }
-    
+
     fetchPerguntas();
   }, []);
 
@@ -180,75 +221,235 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         let targetAuditId = currentAuditoriaId;
         const cleanName = (propriedadeNome || '').split('-')[0].trim();
 
-        if (!targetAuditId || targetAuditId.startsWith('mock-') || targetAuditId.startsWith('assigned-pend-')) {
-          let targetPropId = propriedadeId;
-          if (!targetPropId || targetPropId.startsWith('mock-')) {
-            const { data: foundProp } = await supabase
-              .from('propriedades')
-              .select('id')
-              .ilike('nome_fazenda', `%${cleanName}%`)
-              .limit(1)
-              .maybeSingle();
-            if (foundProp?.id) targetPropId = foundProp.id;
+        // 1. Tentar ler do IndexedDB (cached_respostas) imediatamente
+        if (targetAuditId && !targetAuditId.startsWith('mock-')) {
+          const cachedResps = await getCachedRespostasByAuditoria(targetAuditId);
+          if (cachedResps && cachedResps.length > 0) {
+            const loadedFromCache: Record<string, any> = {};
+            cachedResps.forEach(r => {
+              loadedFromCache[r.pergunta_id] = {
+                conforme: r.conforme,
+                observacao: r.observacoes || '',
+                evidenciaUrl: r.evidencia_url || null,
+                numero_criterio: r.numero_criterio
+              };
+            });
+            setRespostas(prev => {
+              const merged = { ...loadedFromCache };
+              Object.keys(prev).forEach(pid => {
+                if (prev[pid]?.evidenciaUrl === null) {
+                  merged[pid] = { ...merged[pid], ...prev[pid], evidenciaUrl: null };
+                } else if (prev[pid]) {
+                  merged[pid] = { ...merged[pid], ...prev[pid] };
+                }
+              });
+              return merged;
+            });
+            setSyncingDb(false);
+          }
+        }
+
+        // 2. Se online, consultar Supabase e atualizar cache
+        if (typeof navigator !== 'undefined' && navigator.onLine) {
+          if (!targetAuditId || targetAuditId.startsWith('mock-') || targetAuditId.startsWith('assigned-pend-')) {
+            let targetPropId = propriedadeId;
+            if (!targetPropId || targetPropId.startsWith('mock-')) {
+              const { data: foundProp } = await supabase
+                .from('propriedades')
+                .select('id')
+                .ilike('nome_fazenda', `%${cleanName}%`)
+                .limit(1)
+                .maybeSingle();
+              if (foundProp?.id) targetPropId = foundProp.id;
+            }
+
+            if (targetPropId && !targetPropId.startsWith('mock-')) {
+              const { data: existingAudit } = await supabase
+                .from('auditorias')
+                .select('id')
+                .eq('propriedade_id', targetPropId)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+              if (existingAudit?.id) {
+                const previousId = currentAuditoriaId;
+                targetAuditId = existingAudit.id;
+                setCurrentAuditoriaId(existingAudit.id);
+
+                // Se tínhamos um ID sintético antes, atualiza mutações locais pendentes para o ID real
+                if (previousId && previousId !== existingAudit.id && (previousId.startsWith('mock-') || previousId.startsWith('assigned-pend-'))) {
+                  try {
+                    await db.outbox_mutations
+                      .where('table')
+                      .equals('respostas_auditoria')
+                      .and(m => m.payload?.auditoria_id === previousId)
+                      .modify(m => {
+                        m.payload.auditoria_id = existingAudit.id;
+                      });
+                  } catch (e) {
+                    console.warn('[QuestionarioRTRS] Aviso ao reconciliar mutações com novo ID:', e);
+                  }
+                }
+              }
+            }
           }
 
-          if (targetPropId && !targetPropId.startsWith('mock-')) {
-            const { data: existingAudit } = await supabase
-              .from('auditorias')
-              .select('id')
-              .eq('propriedade_id', targetPropId)
-              .order('created_at', { ascending: false })
-              .limit(1)
-              .maybeSingle();
+          if (targetAuditId && !targetAuditId.startsWith('mock-') && !targetAuditId.startsWith('assigned-pend-')) {
+            // ETAPA 3: BLINDAGEM CONTRA CACHE CLOBBERING (FETCH LOCK)
+            // Se houver qualquer alteração local pendente no sync_journal, ABORTA a busca remota
+            // para nunca sobrescrever com valores nulos ou defasados vindos da nuvem.
+            const pendingJournalCount = await db.sync_journal
+              .where('auditoria_id')
+              .equals(targetAuditId)
+              .count();
 
-            if (existingAudit?.id) {
-              targetAuditId = existingAudit.id;
-              setCurrentAuditoriaId(existingAudit.id);
+            const pendingMutationsCount = await db.outbox_mutations
+              .where('table')
+              .equals('respostas_auditoria')
+              .and(m => m.payload?.auditoria_id === targetAuditId)
+              .count();
+
+            if (pendingJournalCount > 0 || pendingMutationsCount > 0) {
+              console.log(`[QuestionarioRTRS] FETCH LOCK ATIVO: ${pendingJournalCount + pendingMutationsCount} itens pendentes locais. Abortando sobrescrita remota.`);
+              setSyncingDb(false);
+              return;
+            }
+
+            const { data, error } = await supabase
+              .from('respostas_auditoria')
+              .select(`
+                pergunta_id,
+                conforme,
+                observacoes,
+                evidencia_url,
+                perguntas_rtrs (
+                  id,
+                  numero_criterio
+                )
+              `)
+              .eq('auditoria_id', targetAuditId);
+
+            if (!error && data && data.length > 0) {
+              // 1. Mapeia exclusões locais pendentes e evidências na outbox para blindar contra ressurreição e clobbering
+              const pendingMutations = await db.outbox_mutations
+                .where('table')
+                .equals('respostas_auditoria')
+                .and(m => m.payload?.auditoria_id === targetAuditId)
+                .toArray();
+
+              const locallyDeletedEvidencias = new Set<string>();
+              const localPendingWithEvidence = new Map<string, any>();
+              pendingMutations.forEach(m => {
+                if (m.payload?.pergunta_id && m.payload?.evidencia_url === null) {
+                  locallyDeletedEvidencias.add(m.payload.pergunta_id);
+                } else if (m.payload?.pergunta_id && m.payload?.evidencia_url) {
+                  localPendingWithEvidence.set(m.payload.pergunta_id, m.payload);
+                }
+              });
+
+              // 2. Buscar dados atuais do Dexie (cached_respostas) para esta auditoria
+              const currentLocalResps = await getCachedRespostasByAuditoria(targetAuditId);
+              const localCachedMap = new Map<string, any>();
+              currentLocalResps.forEach(r => localCachedMap.set(r.pergunta_id, r));
+
+              const loadedRespostas: Record<string, any> = {};
+              const cacheBatch: any[] = [];
+
+              data.forEach(r => {
+                const rawObs = (r as any).observacoes || '';
+                const numCrit = (r as any).perguntas_rtrs?.numero_criterio || '';
+                let evUrl = r.evidencia_url;
+                if (evUrl && (evUrl.includes('supabase.local') || evUrl.includes('1787833477963'))) {
+                  evUrl = null;
+                }
+
+                // Se foi excluído localmente e ainda não sincronizou com o Supabase, preserva null!
+                if (locallyDeletedEvidencias.has(r.pergunta_id)) {
+                  evUrl = null;
+                } else {
+                  // CORREÇÃO 3: BLINDAGEM CONTRA CACHE CLOBBERING
+                  // Se o Supabase ainda não tem a evidência (evUrl é null), mas localmente o técnico
+                  // possui evidência anexada (no Dexie ou na outbox pendente), PRESERVA A EVIDÊNCIA LOCAL!
+                  const localExisting = localCachedMap.get(r.pergunta_id);
+                  const localPending = localPendingWithEvidence.get(r.pergunta_id);
+
+                  if (!evUrl) {
+                    if (localPending?.evidencia_url) {
+                      evUrl = localPending.evidencia_url;
+                    } else if (localExisting?.evidencia_url) {
+                      evUrl = localExisting.evidencia_url;
+                    }
+                  }
+                }
+
+                const localExisting = localCachedMap.get(r.pergunta_id);
+                const localEvUploadedAt = (r as any).evidencia_uploaded_at || localExisting?.evidencia_uploaded_at || null;
+                const localDataEnvio = (r as any).data_envio || localExisting?.data_envio || localEvUploadedAt || null;
+
+                loadedRespostas[r.pergunta_id] = {
+                  conforme: r.conforme,
+                  observacao: rawObs,
+                  evidenciaUrl: evUrl,
+                  numero_criterio: numCrit,
+                  evidencia_uploaded_at: localEvUploadedAt,
+                  data_envio: localDataEnvio
+                };
+
+                cacheBatch.push({
+                  auditoria_id: targetAuditId,
+                  pergunta_id: r.pergunta_id,
+                  conforme: r.conforme,
+                  observacoes: rawObs,
+                  evidencia_url: evUrl,
+                  numero_criterio: numCrit,
+                  updated_at: new Date().toISOString(),
+                  evidencia_uploaded_at: localEvUploadedAt,
+                  data_envio: localDataEnvio
+                });
+              });
+
+              // Preserva também respostas locais que ainda não foram inseridas no Supabase
+              currentLocalResps.forEach(lr => {
+                if (!loadedRespostas[lr.pergunta_id] && !locallyDeletedEvidencias.has(lr.pergunta_id)) {
+                  loadedRespostas[lr.pergunta_id] = {
+                    conforme: lr.conforme,
+                    observacao: lr.observacoes || '',
+                    evidenciaUrl: lr.evidencia_url,
+                    numero_criterio: lr.numero_criterio,
+                    evidencia_uploaded_at: lr.evidencia_uploaded_at,
+                    data_envio: lr.data_envio
+                  };
+                  cacheBatch.push(lr);
+                }
+              });
+
+              setRespostas(prev => {
+                const merged = { ...loadedRespostas };
+                Object.keys(prev).forEach(pid => {
+                  if (prev[pid]?.evidenciaUrl === null || locallyDeletedEvidencias.has(pid)) {
+                    merged[pid] = { ...merged[pid], ...prev[pid], evidenciaUrl: null };
+                  } else if (prev[pid]) {
+                    const incomingUrl = merged[pid]?.evidenciaUrl;
+                    const prevUrl = prev[pid]?.evidenciaUrl;
+                    merged[pid] = {
+                      ...merged[pid],
+                      ...prev[pid],
+                      evidenciaUrl: incomingUrl || prevUrl || null
+                    };
+                  }
+                });
+                return merged;
+              });
+
+              await bulkSaveRespostas(cacheBatch);
             }
           }
         }
-
-        if (targetAuditId && !targetAuditId.startsWith('mock-') && !targetAuditId.startsWith('assigned-pend-')) {
-          const { data, error } = await supabase
-            .from('respostas_auditoria')
-            .select(`
-              pergunta_id,
-              conforme,
-              observacoes,
-              evidencia_url,
-              perguntas_rtrs (
-                id,
-                numero_criterio
-              )
-            `)
-            .eq('auditoria_id', targetAuditId);
-
-          if (!error && data && data.length > 0) {
-            const loadedRespostas: Record<string, { conforme: boolean | null; observacao: string; evidenciaUrl: string | null; numero_criterio?: string }> = {};
-            data.forEach(r => {
-              const rawObs = (r as any).observacoes || '';
-              const numCrit = (r as any).perguntas_rtrs?.numero_criterio || '';
-              let evUrl = r.evidencia_url;
-              if (evUrl && (evUrl.includes('supabase.local') || evUrl.includes('1787833477963'))) {
-                evUrl = null;
-              }
-              loadedRespostas[r.pergunta_id] = {
-                conforme: r.conforme,
-                observacao: rawObs,
-                evidenciaUrl: evUrl,
-                numero_criterio: numCrit
-              };
-            });
-            setRespostas(prev => ({ ...prev, ...loadedRespostas }));
-            try {
-              localStorage.setItem(getCacheKey(), JSON.stringify(loadedRespostas));
-            } catch (e) {}
-          }
-        }
       } catch (err) {
-        console.error('Erro ao carregar respostas anteriores:', err);
+        console.warn('[Offline] Respostas lidas do rascunho local:', err);
       } finally {
-        setTimeout(() => setSyncingDb(false), 400);
+        setSyncingDb(false);
       }
     }
     fetchExistingRespostas();
@@ -302,11 +503,11 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     }
   }, [respostas, propriedadeNome]);
 
-  const touchAuditoriaTimestamp = async (activeAuditId?: string | null) => {
+  const touchAuditoriaTimestamp = async (activeAuditId?: string | null, customTime?: string) => {
     const aid = activeAuditId || currentAuditoriaId;
-    const nowIso = new Date().toISOString();
+    const nowIso = customTime || new Date().toISOString();
 
-    // 1. Armazenamento instantâneo em LocalStorage com chave por nome da fazenda e por ID
+        // 1. Armazenamento instantâneo em LocalStorage e no Dexie local (0ms)
     try {
       const cleanName = (propriedadeNome || '').split('-')[0].trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
       if (cleanName) {
@@ -314,6 +515,12 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       }
       if (aid && !aid.startsWith('mock-') && !aid.startsWith('assigned-pend-')) {
         localStorage.setItem(`rtrs_last_modified_id_${aid}`, nowIso);
+      }
+      if (aid) {
+        updateCachedAuditoria(aid, {
+          updated_at: nowIso,
+          ultima_alteracao_at: nowIso
+        }).catch(() => {});
       }
     } catch (e) {}
 
@@ -354,70 +561,115 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     }
   };
 
-  const handleResposta = (id: string, conforme: boolean) => {
-    const pergunta = perguntas.find(p => p.id === id);
+    /**
+   * Pipeline Transacional Local-First Unificado (Critérios RTRS):
+   * 1. Grava no React state e LocalStorage imediatamente (UI instantânea)
+   * 2. Grava no Dexie (cached_respostas) imediatamente (0ms)
+   * 3. Se remoção de evidência: purga outbox_files e limpa cached_respostas
+   * 4. Enfileira na outbox_mutations (com coalescência)
+   * 5. Se online e remoção: executa update direto no Supabase
+   * 6. Se online: drena a fila via syncEngine.syncNow(true)
+   */
+  const persistRespostaTransactional = async (
+    perguntaId: string,
+    updates: {
+      conforme?: boolean | null;
+      observacao?: string;
+      evidenciaUrl?: string | null;
+      fileId?: string;
+      evidenciaUploadedAt?: string;
+    }
+  ) => {
+    const nowIso = updates.evidenciaUploadedAt || new Date().toISOString();
+    const pergunta = perguntas.find(p => p.id === perguntaId);
+    const numCrit = pergunta?.numero_criterio || '';
+
+    let nextStateForId = {
+      conforme: updates.conforme !== undefined ? updates.conforme : (respostas[perguntaId]?.conforme ?? null),
+      observacao: updates.observacao !== undefined ? updates.observacao : (respostas[perguntaId]?.observacao || ''),
+      evidenciaUrl: updates.evidenciaUrl !== undefined ? updates.evidenciaUrl : (respostas[perguntaId]?.evidenciaUrl || null),
+      numero_criterio: numCrit,
+      evidencia_uploaded_at: updates.evidenciaUrl !== undefined
+        ? (updates.evidenciaUrl ? nowIso : null)
+        : (respostas[perguntaId]?.evidencia_uploaded_at || null),
+      updated_at: nowIso
+    };
+
+    // 1. Atualização instantânea da UI e LocalStorage
     setRespostas(prev => {
-      const next = {
-        ...prev,
-        [id]: { 
-          ...prev[id], 
-          conforme, 
-          observacao: prev[id]?.observacao || '', 
-          evidenciaUrl: prev[id]?.evidenciaUrl || null,
-          numero_criterio: pergunta?.numero_criterio || ''
-        }
+      const current = prev[perguntaId] || {};
+      const nextForId = {
+        ...current,
+        conforme: updates.conforme !== undefined ? updates.conforme : (current.conforme ?? null),
+        observacao: updates.observacao !== undefined ? updates.observacao : (current.observacao || ''),
+        evidenciaUrl: updates.evidenciaUrl !== undefined ? updates.evidenciaUrl : (current.evidenciaUrl || null),
+        numero_criterio: numCrit,
+        evidencia_uploaded_at: updates.evidenciaUploadedAt || current.evidencia_uploaded_at || (updates.evidenciaUrl ? nowIso : null)
       };
+      nextStateForId = nextForId;
+      const next = { ...prev, [perguntaId]: nextForId };
       try { localStorage.setItem(getCacheKey(), JSON.stringify(next)); } catch (e) {}
       return next;
     });
 
-    getOrCreateRealAuditoriaId().then(activeId => {
-      if (activeId && !activeId.startsWith('mock-') && !activeId.startsWith('assigned-pend-')) {
-        supabase.from('respostas_auditoria').upsert([{
-          auditoria_id: activeId,
-          pergunta_id: id,
-          conforme,
-          observacoes: respostas[id]?.observacao || '',
-          evidencia_url: respostas[id]?.evidenciaUrl || null
-        }], { onConflict: 'auditoria_id,pergunta_id' }).then(({ error: err }) => {
-          if (err) console.warn('Aviso no salvamento automático da resposta:', err);
-        });
-        touchAuditoriaTimestamp(activeId);
+    // 2. Resolução do ID de auditoria
+    const activeId = await getOrCreateRealAuditoriaId();
+    const auditIdToUse = activeId || currentAuditoriaId || auditoriaId;
+
+    if (auditIdToUse) {
+      // 3. Gravação Atômica Unificada via recordAuditChange (Unified WAL)
+      // Grava simultaneamente em db.cached_respostas e db.sync_journal
+      const safeConformeForDb = nextStateForId.conforme !== null && nextStateForId.conforme !== undefined
+        ? nextStateForId.conforme
+        : false;
+
+      await recordAuditChange({
+        auditoria_id: auditIdToUse,
+        pergunta_id: perguntaId,
+        conforme: safeConformeForDb,
+        observacoes: nextStateForId.observacao,
+        evidencia_url: nextStateForId.evidenciaUrl,
+        numero_criterio: numCrit,
+        status: 'pending',
+        created_at: Date.now(),
+        updated_at: nowIso,
+        attempts: 0
+      });
+
+      // 4. Se for remoção de evidência, limpa vestígios locais
+      if (updates.evidenciaUrl === null) {
+        await removeEvidenceLocally(auditIdToUse, perguntaId);
       }
-    });
+
+      touchAuditoriaTimestamp(auditIdToUse, nowIso);
+
+        const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+        // 6. Se online e for remoção de evidência: atualiza diretamente no Supabase
+        if (isDeviceOnline && updates.evidenciaUrl === null) {
+          try {
+            await supabase
+              .from('respostas_auditoria')
+              .update({ evidencia_url: null })
+              .match({ auditoria_id: auditIdToUse, pergunta_id: perguntaId });
+          } catch (supaErr) {
+            console.warn('[QuestionarioRTRS] Falha no update direto de remoção remota:', supaErr);
+          }
+        }
+
+        // 7. Se online: dispara dreno com forceAll = true
+        if (isDeviceOnline) {
+          syncEngine.syncNow(true);
+        }
+    }
+  };
+
+  const handleResposta = (id: string, conforme: boolean) => {
+    persistRespostaTransactional(id, { conforme });
   };
 
   const handleObservacao = (id: string, observacao: string) => {
-    const pergunta = perguntas.find(p => p.id === id);
-    setRespostas(prev => {
-      const next = {
-        ...prev,
-        [id]: { 
-          ...prev[id], 
-          conforme: prev[id]?.conforme ?? null, 
-          observacao, 
-          evidenciaUrl: prev[id]?.evidenciaUrl || null,
-          numero_criterio: pergunta?.numero_criterio || ''
-        }
-      };
-      try { localStorage.setItem(getCacheKey(), JSON.stringify(next)); } catch (e) {}
-      return next;
-    });
-
-    getOrCreateRealAuditoriaId().then(activeId => {
-      if (activeId && !activeId.startsWith('mock-') && !activeId.startsWith('assigned-pend-')) {
-        supabase.from('respostas_auditoria').upsert([{
-          auditoria_id: activeId,
-          pergunta_id: id,
-          conforme: respostas[id]?.conforme ?? null,
-          observacoes: observacao,
-          evidencia_url: respostas[id]?.evidenciaUrl || null
-        }], { onConflict: 'auditoria_id,pergunta_id' }).then(({ error: err }) => {
-          if (err) console.warn('Aviso no salvamento automático da observação:', err);
-        });
-        touchAuditoriaTimestamp(activeId);
-      }
-    });
+    persistRespostaTransactional(id, { observacao });
   };
 
   const handleOpenEvidencia = (url: string) => {
@@ -499,95 +751,78 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const handleUploadEvidencia = async (id: string, file: File) => {
     setCameraLoadingId(id);
     try {
+      const nowIso = new Date().toISOString();
       const rawExt = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
       const fileExt = rawExt === 'jpeg' ? 'jpg' : (rawExt || 'jpg');
-      const fileName = `evidencia_${currentAuditoriaId || 'temp'}_${id}_${Date.now()}.${fileExt}`;
+      const activeId = await getOrCreateRealAuditoriaId();
+      const fileName = `evidencia_${activeId || 'temp'}_${id}_${Date.now()}.${fileExt}`;
       const filePath = `${fileName}`;
 
       const mimeType = file.type && file.type !== 'text/plain'
         ? file.type
         : (fileExt === 'png' ? 'image/png' : fileExt === 'pdf' ? 'application/pdf' : fileExt === 'webp' ? 'image/webp' : 'image/jpeg');
 
-      let urlToUse = '';
-
-      // Tenta upload para o Supabase Storage principal ('evidencias')
-      try {
-        const { error: uploadError } = await supabase.storage
-          .from('evidencias')
-          .upload(filePath, file, { 
-            cacheControl: '3600', 
-            upsert: true,
-            contentType: mimeType 
-          });
-
-        if (!uploadError) {
-          const { data: { publicUrl } } = supabase.storage
-            .from('evidencias')
-            .getPublicUrl(filePath);
-          urlToUse = publicUrl;
-        } else {
-          console.warn('Upload falhou no bucket evidencias, tentando bucket secundario:', uploadError);
-          const { error: secError } = await supabase.storage
-            .from('documentos-e-midias')
-            .upload(filePath, file, { 
-              cacheControl: '3600', 
-              upsert: true,
-              contentType: mimeType 
-            });
-
-          if (!secError) {
-            const { data: { publicUrl } } = supabase.storage
-              .from('documentos-e-midias')
-              .getPublicUrl(filePath);
-            urlToUse = publicUrl;
-          } else {
-            console.warn('Upload falhou no bucket secundario:', secError);
-          }
-        }
-      } catch (stgErr) {
-        console.warn('Storage indisponível, utilizando fallback em base64 otimizado:', stgErr);
+      // 1. Gera preview instantâneo (comprimido se for foto para manter agilidade na UI)
+      let previewUrl = '';
+      if (file.type.startsWith('image/')) {
+        previewUrl = await compressImageForFallback(file);
+      } else {
+        previewUrl = URL.createObjectURL(file);
       }
 
-      // Se ambos os storages falharem ou estiverem inacessíveis, fallback para base64 otimizado
-      if (!urlToUse || urlToUse.includes('supabase.local')) {
-        urlToUse = await compressImageForFallback(file);
-      }
+      const currentAns = respostas[id] || {};
+      const numCrit = perguntas.find(p => p.id === id)?.numero_criterio || '';
+      const auditIdToUse = activeId || currentAuditoriaId || auditoriaId;
 
-      if (urlToUse) {
-        const updatedRespostas = {
-          ...respostas,
-          [id]: { 
-            ...respostas[id], 
-            conforme: respostas[id]?.conforme ?? null, 
-            observacao: respostas[id]?.observacao || '', 
-            evidenciaUrl: urlToUse 
+      // 1. Atualização instantânea da UI e LocalStorage
+      setRespostas(prev => {
+        const next = {
+          ...prev,
+          [id]: {
+            ...currentAns,
+            evidenciaUrl: previewUrl,
+            numero_criterio: numCrit,
+            evidencia_uploaded_at: nowIso
           }
         };
+        try { localStorage.setItem(getCacheKey(), JSON.stringify(next)); } catch (e) {}
+        return next;
+      });
 
-        setRespostas(updatedRespostas);
-        try {
-          localStorage.setItem(getCacheKey(), JSON.stringify(updatedRespostas));
-        } catch (e) {}
-
-        // Persistir imediatamente a evidência anexada no banco de dados
-        getOrCreateRealAuditoriaId().then(activeId => {
-          if (activeId && !activeId.startsWith('mock-') && !activeId.startsWith('assigned-pend-')) {
-            supabase.from('respostas_auditoria').upsert([{
-              auditoria_id: activeId,
-              pergunta_id: id,
-              conforme: updatedRespostas[id].conforme,
-              observacoes: updatedRespostas[id].observacao || '',
-              evidencia_url: urlToUse
-            }], { onConflict: 'auditoria_id,pergunta_id' }).then(({ error: err }) => {
-              if (err) console.warn('Aviso no salvamento automático de evidência:', err);
-            });
-            touchAuditoriaTimestamp(activeId);
-          }
+      // 2. Gravação Atômica no Unified WAL (recordAuditChange)
+      // O Blob físico NUNCA é removido antes da confirmação total do banco remoto
+      if (auditIdToUse) {
+        await recordAuditChange({
+          auditoria_id: auditIdToUse,
+          pergunta_id: id,
+          conforme: currentAns.conforme ?? false, // NUNCA null!
+          observacoes: currentAns.observacao || '',
+          file_blob: file,
+          file_name: fileName,
+          mime_type: mimeType,
+          storage_path: filePath,
+          evidencia_url: previewUrl,
+          numero_criterio: numCrit,
+          status: 'pending',
+          created_at: Date.now(),
+          updated_at: nowIso,
+          attempts: 0
         });
+        touchAuditoriaTimestamp(auditIdToUse, nowIso);
+      }
 
-        success('Evidência enviada e salva com sucesso!');
+      // 4. Dispara evento de evidência anexada para atualização instantânea da UI
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('ms:evidence-uploaded', {
+          detail: { perguntaId: id, auditoriaId: activeId, timestamp: nowIso }
+        }));
+      }
+
+      const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
+      if (isDeviceOnline) {
+        success('Evidência anexada e enviando para o servidor...');
       } else {
-        error('Falha ao processar o arquivo selecionado.');
+        success('Evidência salva no aparelho. O envio ocorrerá automaticamente assim que a conexão for restabelecida.');
       }
     } catch (err: any) {
       console.error('Erro ao processar evidência:', err);
@@ -597,40 +832,19 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     }
   };
 
-  const handleRemoveEvidencia = (id: string) => {
-    setRespostas(prev => {
-      const next = {
-        ...prev,
-        [id]: {
-          ...prev[id],
-          evidenciaUrl: null
-        }
-      };
-      try {
-        localStorage.setItem(getCacheKey(), JSON.stringify(next));
-      } catch (e) {}
-      return next;
-    });
-
-    getOrCreateRealAuditoriaId().then(activeId => {
-      if (activeId && !activeId.startsWith('mock-') && !activeId.startsWith('assigned-pend-')) {
-        supabase.from('respostas_auditoria')
-          .update({ evidencia_url: null })
-          .eq('auditoria_id', activeId)
-          .eq('pergunta_id', id)
-          .then(({ error: err }) => {
-            if (err) {
-              console.warn('Aviso ao remover evidência do banco:', err);
-            }
-          });
-        touchAuditoriaTimestamp(activeId);
-      }
-    });
-
+  const handleRemoveEvidencia = async (id: string) => {
     const inputEl = document.getElementById(`file-input-${id}`) as HTMLInputElement | null;
     if (inputEl) inputEl.value = '';
 
-    info('Evidência removida com sucesso.');
+    // Exclusão Local-First Atômica (Dexie + Outbox + Supabase)
+    await persistRespostaTransactional(id, { evidenciaUrl: null });
+
+    const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
+    if (isDeviceOnline) {
+      info('Evidência removida com sucesso.');
+    } else {
+      info('Evidência removida do aparelho.');
+    }
   };
 
   const getOrCreateRealAuditoriaId = async (): Promise<string | null> => {
@@ -707,7 +921,6 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       return;
     }
 
-    // Salva imediatamente no LocalStorage para garantir persistência instantânea
     try {
       localStorage.setItem(getCacheKey(), JSON.stringify(respostas));
     } catch (e) {}
@@ -717,44 +930,54 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       const activeId = await getOrCreateRealAuditoriaId();
 
       if (!activeId || activeId.startsWith('mock-') || activeId.startsWith('assigned-pend-')) {
-        throw new Error('Não foi possível registrar ou vincular um ID de auditoria válido no banco de dados.');
+        throw new Error('Não foi possível registrar ou vincular um ID de auditoria válido.');
       }
 
-      const insertPayload = answeredIds.map(id => ({
-        auditoria_id: activeId,
-        pergunta_id: id,
-        conforme: respostas[id].conforme,
-        observacoes: respostas[id].observacao || '',
-        evidencia_url: respostas[id].evidenciaUrl || null
-      }));
-
-      const { error: upsertError } = await supabase
-        .from('respostas_auditoria')
-        .upsert(insertPayload, { onConflict: 'auditoria_id,pergunta_id' });
-
-      if (upsertError) {
-        console.error('Erro de upsert em respostas_auditoria:', upsertError);
-        throw upsertError;
+      for (const id of answeredIds) {
+        await enqueueMutation({
+          table: 'respostas_auditoria',
+          action: 'upsert',
+          on_conflict: 'auditoria_id,pergunta_id',
+          payload: {
+            auditoria_id: activeId,
+            pergunta_id: id,
+            conforme: respostas[id].conforme,
+            observacoes: respostas[id].observacao || '',
+            evidencia_url: respostas[id].evidenciaUrl || null
+          }
+        });
       }
 
       if (modo === 'auditoria') {
-        await supabase
-          .from('auditorias')
-          .update({ 
+        await enqueueMutation({
+          table: 'auditorias',
+          action: 'update',
+          match_key: { id: activeId },
+          payload: {
+            id: activeId,
             status: 'Em Andamento',
             updated_at: new Date().toISOString(),
             ...(user?.id ? { tecnico_responsavel_id: user.id } : {})
-          })
-          .eq('id', activeId);
+          }
+        });
       }
+
       touchAuditoriaTimestamp(activeId);
 
       const timeStr = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
       setLastSavedTime(timeStr);
-      success(`Rascunho salvo com sucesso no banco às ${timeStr}! Você pode continuar depois.`);
+
+      const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+      if (isDeviceOnline) {
+        syncEngine.syncNow(true);
+        success(`Rascunho salvo e sincronizado às ${timeStr}!`);
+      } else {
+        success(`Rascunho salvo no aparelho às ${timeStr}. O envio ocorrerá automaticamente assim que a conexão for restabelecida.`);
+      }
     } catch (err: any) {
       console.error('Erro ao salvar rascunho:', err);
-      error('Falha ao salvar rascunho no banco de dados: ' + (err.message || 'Erro de conexão'));
+      error('Falha ao salvar rascunho: ' + (err.message || 'Erro local'));
     } finally {
       setSavingPartial(false);
     }
@@ -772,23 +995,26 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     try {
       const activeId = await getOrCreateRealAuditoriaId();
       if (!activeId || activeId.startsWith('mock-') || activeId.startsWith('assigned-pend-')) {
-        throw new Error('Não foi possível registrar um ID de auditoria válido no banco de dados.');
+        throw new Error('Não foi possível registrar um ID de auditoria válido.');
       }
 
-      const insertPayload = perguntas.map(p => ({
-        auditoria_id: activeId,
-        pergunta_id: p.id,
-        conforme: respostas[p.id]?.conforme || false,
-        observacoes: respostas[p.id]?.observacao || '',
-        evidencia_url: respostas[p.id]?.evidenciaUrl || null
-      }));
+      // Enfileirar todas as respostas na Outbox Queue
+      for (const p of perguntas) {
+        await enqueueMutation({
+          table: 'respostas_auditoria',
+          action: 'upsert',
+          on_conflict: 'auditoria_id,pergunta_id',
+          payload: {
+            auditoria_id: activeId,
+            pergunta_id: p.id,
+            conforme: respostas[p.id]?.conforme || false,
+            observacoes: respostas[p.id]?.observacao || '',
+            evidencia_url: respostas[p.id]?.evidenciaUrl || null
+          }
+        });
+      }
 
-      const { error: upsertError } = await supabase
-        .from('respostas_auditoria')
-        .upsert(insertPayload, { onConflict: 'auditoria_id,pergunta_id' });
-
-      if (upsertError) throw upsertError;
-
+      // Enfileirar pendências automáticas para não-conformidades
       const naoConformes = perguntas.filter(p => respostas[p.id]?.conforme === false);
       if (naoConformes.length > 0) {
         let finalPropId = propriedadeId;
@@ -802,39 +1028,55 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         }
 
         if (finalPropId) {
-          const pendsPayload = naoConformes.map(p => ({
-            propriedade_id: finalPropId,
-            auditoria_id: activeId,
-            titulo: `Não conformidade - Critério ${p.numero_criterio}`,
-            descricao: `Ação necessária para atender ao critério ${p.numero_criterio}: "${p.enunciado}". Observação registrada: ${respostas[p.id]?.observacao || 'Nenhuma'}`,
-            gravidade: p.ponderacao === 'Imediata' ? 'Alta' : p.ponderacao === 'Curto Prazo' ? 'Média' : 'Baixa',
-            status: 'Pendente',
-            prazo: p.ponderacao === 'Imediata' ? new Date(Date.now() + 15 * 86400000).toISOString().split('T')[0] : new Date(Date.now() + 60 * 86400000).toISOString().split('T')[0]
-          }));
-
-          await supabase
-            .from('pendencias')
-            .upsert(pendsPayload, { onConflict: 'auditoria_id,titulo' });
+          for (const p of naoConformes) {
+            await enqueueMutation({
+              table: 'pendencias',
+              action: 'upsert',
+              on_conflict: 'auditoria_id,titulo',
+              payload: {
+                propriedade_id: finalPropId,
+                auditoria_id: activeId,
+                titulo: `Não conformidade - Critério ${p.numero_criterio}`,
+                descricao: `Ação necessária para atender ao critério ${p.numero_criterio}: "${p.enunciado}". Observação registrada: ${respostas[p.id]?.observacao || 'Nenhuma'}`,
+                status: 'Pendente',
+                prazo: p.ponderacao === 'Imediata' ? new Date(Date.now() + 15 * 86400000).toISOString().split('T')[0] : new Date(Date.now() + 60 * 86400000).toISOString().split('T')[0]
+              }
+            });
+          }
         }
       }
 
       const nextStatus = modo === 'autoavaliacao' ? 'Concluída' : 'Aguardando Aprovação';
-      await supabase
-        .from('auditorias')
-        .update({ 
+      await enqueueMutation({
+        table: 'auditorias',
+        action: 'update',
+        match_key: { id: activeId },
+        payload: {
+          id: activeId,
           status: nextStatus,
-          data_realizacao: new Date().toISOString(),
           updated_at: new Date().toISOString()
-        })
-        .eq('id', activeId);
+        }
+      });
 
       touchAuditoriaTimestamp(activeId);
 
-      success(modo === 'autoavaliacao' ? 'Autoavaliação concluída com sucesso!' : 'Relatório de Auditoria submetido com sucesso!');
+      const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+      if (isDeviceOnline) {
+        syncEngine.syncNow(true);
+        success(modo === 'autoavaliacao' ? 'Autoavaliação concluída e sincronizada com sucesso!' : 'Relatório de Auditoria submetido com sucesso!');
+      } else {
+        success(
+          modo === 'autoavaliacao'
+            ? 'Autoavaliação salva no aparelho. O envio ocorrerá automaticamente assim que a conexão for restabelecida.'
+            : 'Relatório de Auditoria gravado no aparelho. O envio ocorrerá automaticamente assim que a conexão for restabelecida.'
+        );
+      }
+
       onComplete();
     } catch (err: any) {
       console.error('Erro ao salvar auditoria:', err);
-      error('Erro ao salvar auditoria no banco: ' + (err.message || 'Erro de conexão'));
+      error('Erro ao salvar auditoria: ' + (err.message || 'Erro local'));
     } finally {
       setLoading(false);
     }
@@ -967,39 +1209,90 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           })}
         </div>
 
-        {/* Barra de Progresso e Status de Sincronização */}
-        <div className="bg-emerald-50/80 px-3 py-1.5 sm:px-6 sm:py-2.5 border-b border-emerald-100 flex items-center justify-between gap-2 text-[11px] sm:text-xs shrink-0">
+        {/* Barra de Progresso e Status de Sincronização — Travamento Rígido Anti-CLS (h-9 flex items-center) */}
+        <div className="h-9 px-3 sm:px-6 bg-emerald-50/80 border-b border-emerald-100 flex items-center justify-between gap-2.5 text-[11px] sm:text-xs shrink-0 select-none overflow-hidden">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="font-bold text-emerald-900 flex items-center gap-1 shrink-0">
-              <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-emerald-600 animate-pulse" />
+            <span className="font-bold text-emerald-900 flex items-center gap-1 shrink-0 text-[11px] sm:text-xs leading-none">
+              <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-emerald-600 animate-pulse shrink-0" />
               Progresso
             </span>
 
-            {showSyncBadge && (
-              syncingDb ? (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] sm:text-[11px] font-extrabold border border-emerald-300 animate-pulse shrink-0">
-                  <Loader2 className="w-3 h-3 animate-spin text-emerald-700" />
-                  <span className="hidden sm:inline">Carregando...</span>
+            {/* Status Pill com Dimensão Rígida e Cross-Fade Suave (min-w-[145px] justify-center) */}
+            <div className="relative inline-flex items-center shrink-0">
+              {isOnline ? (
+                <span
+                  className={`inline-flex items-center justify-center gap-1.5 h-6 min-w-[145px] px-2.5 rounded-full text-[10px] sm:text-[11px] font-extrabold leading-none border shrink-0 transition-opacity duration-200 ease-in-out select-none ${
+                    isSyncing
+                      ? 'bg-blue-100 text-blue-900 border-blue-300 shadow-xs'
+                      : 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                  }`}
+                >
+                  {isSyncing ? (
+                    <Loader2 className="w-3.5 h-3.5 flex-shrink-0 animate-spin text-blue-700" />
+                  ) : (
+                    <CloudCheck className="w-3.5 h-3.5 flex-shrink-0 text-emerald-600" />
+                  )}
+                  <span className="truncate leading-none">
+                    {isSyncing ? 'Sincronizando...' : 'Nuvem Conectada'}
+                  </span>
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white text-emerald-800 text-[10px] sm:text-[11px] font-bold border border-emerald-200 shrink-0">
-                  <CloudCheck className="w-3 h-3 text-emerald-600" />
-                  <span className="hidden sm:inline">Dados carregados</span>
+                <span className="inline-flex items-center justify-center gap-1.5 h-6 min-w-[145px] px-2.5 rounded-full bg-amber-100 text-amber-900 text-[10px] sm:text-[11px] font-extrabold leading-none border border-amber-300 shrink-0 select-none animate-pulse transition-opacity duration-200">
+                  <WifiOff className="w-3.5 h-3.5 flex-shrink-0 text-amber-700" />
+                  <span className="truncate leading-none">Modo Campo (Offline)</span>
                 </span>
-              )
+              )}
+            </div>
+
+            {/* Contador Reativo da Fila Local com Dimensão Estabilizada */}
+            {pendingCounts.total > 0 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  (e.currentTarget as HTMLElement).blur();
+                  if (isOnline && !isSyncing) {
+                    syncEngine.syncNow(true);
+                  }
+                }}
+                onMouseLeave={(e) => (e.currentTarget as HTMLElement).blur()}
+                disabled={isSyncing}
+                className={`inline-flex items-center justify-center gap-1.5 h-6 min-w-[125px] px-2.5 rounded-full text-[10px] sm:text-[11px] font-extrabold leading-none border shrink-0 transition-opacity duration-200 select-none ${
+                  isOnline
+                    ? 'bg-blue-50 text-blue-900 border-blue-300 hover:bg-blue-100 cursor-pointer shadow-xs active:scale-95'
+                    : 'bg-amber-100 text-amber-900 border-amber-300 cursor-default'
+                }`}
+                title={
+                  isOnline
+                    ? `${pendingCounts.total} pendência(s) na fila local. Clique para forçar o envio imediato.`
+                    : `${pendingCounts.total} pendência(s) salva(s) no aparelho. O envio ocorrerá automaticamente ao restabelecer a conexão.`
+                }
+              >
+                {isSyncing ? (
+                  <Loader2 className="w-3.5 h-3.5 flex-shrink-0 text-blue-700 animate-spin" />
+                ) : (
+                  <UploadCloud className="w-3.5 h-3.5 flex-shrink-0 text-blue-700" />
+                )}
+                <span className="truncate leading-none">{pendingCounts.total} na fila local</span>
+              </button>
             )}
           </div>
 
+          {/* Barra de Progresso Percentual e Contador Tabular Estabilizado */}
           <div className="flex items-center gap-2 w-28 sm:w-1/3 sm:max-w-xs shrink-0">
             <div className="w-full bg-emerald-200/60 h-2 sm:h-2.5 rounded-full overflow-hidden p-0.5 border border-emerald-200">
-              <div className="bg-gradient-to-r from-emerald-600 to-teal-500 h-full transition-all duration-500 rounded-full" style={{ width: `${percentualConcluido}%` }} />
+              <div
+                className="bg-gradient-to-r from-emerald-600 to-teal-500 h-full transition-all duration-300 rounded-full"
+                style={{ width: `${percentualConcluido}%` }}
+              />
             </div>
-            <span className="font-black text-emerald-800 min-w-[30px] text-right text-[11px] sm:text-xs">{percentualConcluido}%</span>
+            <span className="font-black text-emerald-800 min-w-[34px] text-right text-[11px] sm:text-xs tabular-nums leading-none shrink-0">
+              {percentualConcluido}%
+            </span>
           </div>
         </div>
 
         {/* Lista de Perguntas do Princípio (Área Principal com Espaço Maximizado) */}
-        <div className="flex-1 overflow-y-auto p-2.5 sm:p-6 space-y-3 sm:space-y-6">
+        <div className="flex-1 overflow-y-auto p-2.5 sm:p-6 space-y-3 sm:space-y-6" style={{ contain: 'layout' }}>
           {loadingPerguntas || (syncingDb && Object.keys(respostas).length === 0) ? (
             <div className="py-6 space-y-4">
               <div className="flex items-center justify-center gap-3 text-emerald-800 bg-emerald-50/90 p-4 rounded-xl border border-emerald-200/80 animate-pulse shadow-xs">

@@ -27,11 +27,13 @@ import GestorMapa from './pages/gestor/GestorMapa';
 import GestorDocumentos from './pages/gestor/GestorDocumentos';
 import ProfileSettings from './pages/profile/ProfileSettings';
 import { ToastProvider } from './context/ToastContext';
+import { SyncProvider } from './context/SyncContext';
 
 function App() {
   return (
     <ToastProvider>
       <AuthProvider>
+        <SyncProvider>
         <BrowserRouter>
           <Routes>
             {/* Rotas Abertas / Públicas */}
@@ -89,6 +91,7 @@ function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
+        </SyncProvider>
       </AuthProvider>
     </ToastProvider>
   );

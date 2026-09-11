@@ -3,6 +3,8 @@ import { Menu, LogOut, User as UserIcon, Settings, ArrowLeft } from 'lucide-reac
 import { useAuth } from '../../context/AuthContext';
 import { supabase } from '../../lib/supabase';
 import siteContent from '../../config/site_content.json';
+import NetworkStatusIndicator from '../ui/NetworkStatusIndicator';
+import OfflineBanner from '../ui/OfflineBanner';
 
 export default function BaseLayout() {
   const content = siteContent.geral;
@@ -108,6 +110,7 @@ export default function BaseLayout() {
           </div>
         </div>
       </header>
+      <OfflineBanner />
 
       {/* Conteúdo Principal com Animação Fluida */}
       <main key={location.pathname} className="flex-1 w-full max-w-[1920px] mx-auto p-4 sm:p-6 lg:p-8 animate-fade-in-up duration-300">
