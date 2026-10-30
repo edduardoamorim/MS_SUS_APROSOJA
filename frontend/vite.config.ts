@@ -1,11 +1,22 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
+import path from 'path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
-export default defineConfig({
-  base: process.env.VITE_BASE_URL || '/',
+export default defineConfig(({ mode }) => {
+  const rootEnv = loadEnv(mode, path.resolve(__dirname, '..'), ['VITE_', 'CARTO_']);
+  const localEnv = loadEnv(mode, __dirname, ['VITE_', 'CARTO_']);
+  const cartoKey = rootEnv.CARTO_BASEMAPS_KEY || localEnv.CARTO_BASEMAPS_KEY || rootEnv.VITE_CARTO_BASEMAPS_KEY || localEnv.VITE_CARTO_BASEMAPS_KEY || process.env.CARTO_BASEMAPS_KEY || process.env.VITE_CARTO_BASEMAPS_KEY || '';
+
+  return {
+    base: process.env.VITE_BASE_URL || '/',
+    envPrefix: ['VITE_', 'CARTO_'],
+    define: {
+      'import.meta.env.CARTO_BASEMAPS_KEY': JSON.stringify(cartoKey),
+      'import.meta.env.VITE_CARTO_BASEMAPS_KEY': JSON.stringify(cartoKey),
+    },
   plugins: [
     tailwindcss(),
     react(),
@@ -175,4 +186,5 @@ export default defineConfig({
       }
     }
   }
+  };
 })

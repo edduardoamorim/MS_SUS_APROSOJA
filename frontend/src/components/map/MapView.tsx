@@ -18,6 +18,15 @@ interface MapViewProps {
   isVisible?: boolean;
 }
 
+// Obtém chave de API do Carto Basemaps das variáveis de ambiente (suporta VITE_CARTO_BASEMAPS_KEY e CARTO_BASEMAPS_KEY)
+const cartoKey = (
+  (import.meta.env.VITE_CARTO_BASEMAPS_KEY as string) ||
+  (import.meta.env.CARTO_BASEMAPS_KEY as string) ||
+  ''
+).trim();
+
+const keyParam = cartoKey ? `?key=${cartoKey}` : '';
+
 // Estilo de mapa Carto Voyager de alta resolução e performance garantida
 const cartoVoyagerStyle: any = {
   version: 8,
@@ -25,10 +34,10 @@ const cartoVoyagerStyle: any = {
     'carto-voyager': {
       type: 'raster',
       tiles: [
-        'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
-        'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
-        'https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
-        'https://d.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png'
+        `https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png${keyParam}`,
+        `https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png${keyParam}`,
+        `https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png${keyParam}`,
+        `https://d.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png${keyParam}`
       ],
       tileSize: 256,
       attribution: '&copy; CARTO &copy; OpenStreetMap contributors'
