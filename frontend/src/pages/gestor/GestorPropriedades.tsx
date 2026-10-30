@@ -12,6 +12,7 @@ import type { PropertyOrigin } from '../../components/form/PropertyCodeInput';
 import { TableRowSkeleton } from '../../components/ui/Skeleton';
 
 import { resolveFarmEtapa, persistFarmEtapa } from '../../lib/etapaUtils';
+import { cleanEvidenceUrl, isPdfEvidence } from '../../lib/evidenceService';
 
 export default function GestorPropriedades() {
   const { success, error, warning } = useToast();
@@ -24,27 +25,13 @@ export default function GestorPropriedades() {
   const sampleEvidenceSVG = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><rect width="800" height="600" fill="%230f172a"/><rect x="40" y="40" width="720" height="520" rx="16" fill="%231e293b" stroke="%23334155" stroke-width="2"/><circle cx="400" cy="240" r="80" fill="%2310b981" opacity="0.2"/><path d="M400 180 L440 220 L420 220 L420 280 L380 280 L380 220 L360 220 Z" fill="%2310b981"/><text x="400" y="360" font-family="sans-serif" font-size="24" font-weight="bold" fill="%23f8fafc" text-anchor="middle">Evidência de Campo RTRS</text><text x="400" y="400" font-family="sans-serif" font-size="16" fill="%2394a3b8" text-anchor="middle">Comprovante de Conformidade Ambiental e Social</text><rect x="250" y="450" width="300" height="44" rx="22" fill="%2310b981"/><text x="400" y="478" font-family="sans-serif" font-size="14" font-weight="bold" fill="%23ffffff" text-anchor="middle">Documento Verificado ✓</text></svg>`;
 
   const handleOpenEvidencia = (url?: string | null) => {
-    if (!url || !url.trim() || url.trim() === 'resolvido' || url.trim() === 'comprovante' || url.trim().length < 5) {
+    const cleanUrl = cleanEvidenceUrl(url);
+    if (!cleanUrl) {
       setFotoAmpliada(sampleEvidenceSVG);
       return;
     }
-    let cleanUrl = url.trim();
 
-    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://') && !cleanUrl.startsWith('data:')) {
-      try {
-        const bucket = cleanUrl.includes('auditoria-evidencias') ? 'auditoria-evidencias' : 'evidencias';
-        const filePath = cleanUrl.replace(/^(evidencias|auditoria-evidencias)\//, '');
-        const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
-        if (data?.publicUrl) cleanUrl = data.publicUrl;
-      } catch (e) {
-        console.warn('Erro ao obter URL pública do storage:', e);
-      }
-    }
-
-    const lower = cleanUrl.toLowerCase();
-    const isPdf = lower.includes('.pdf') || lower.startsWith('data:application/pdf');
-
-    if (isPdf) {
+    if (isPdfEvidence(cleanUrl)) {
       setPdfAmpliado(cleanUrl);
     } else {
       setFotoAmpliada(cleanUrl);

@@ -73,6 +73,7 @@ export default function BaseLayout() {
           
           {/* Direita: Perfil do Usuário */}
           <div className="flex items-center gap-4">
+            <NetworkStatusIndicator />
             {user && (
               <div className="flex items-center gap-3 ml-2">
                 {/* Badges de Identificação */}

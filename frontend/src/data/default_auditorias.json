@@ -1,0 +1,142 @@
+[
+  {
+    "id": "06c98be1-b889-424c-bb45-fcff2ad806d7",
+    "propriedade_id": "648f8d90-23bd-4f8b-afb5-48da05e62d51",
+    "tecnico_responsavel_id": "b02f1f87-b998-4f4f-a66b-e169b28c0df5",
+    "data_agendamento": "2026-07-28T00:00:00.000Z",
+    "status": "EM ANDAMENTO",
+    "etapa": "Prospecção",
+    "created_at": "2026-07-28T19:31:24.416Z",
+    "updated_at": "2026-09-14T12:40:43.721Z",
+    "ultima_alteracao_at": "2026-09-14T12:40:43.721Z",
+    "propriedades": {
+      "id": "648f8d90-23bd-4f8b-afb5-48da05e62d51",
+      "nome_fazenda": "FAZENDA CAMPANÁRIO - Área 06",
+      "nome_produtor": "Edward",
+      "codigo_car": null,
+      "codigo_sigef": "d1048ff6-c569-4a85-8d0f-6d034a7ae682",
+      "municipio": "Maracaju, MS",
+      "etapa": "Prospecção"
+    }
+  },
+  {
+    "id": "520d16c1-8d78-4dd4-91ff-ce1793ac66af",
+    "propriedade_id": "fdcb7391-0acf-4a49-a4fb-f207c374891e",
+    "tecnico_responsavel_id": "b02f1f87-b998-4f4f-a66b-e169b28c0df5",
+    "data_agendamento": "2026-08-07T00:00:00.000Z",
+    "status": "EM ANDAMENTO",
+    "etapa": "Prospecção",
+    "created_at": "2026-08-07T16:00:09.810Z",
+    "updated_at": "2026-08-07T16:00:09.810Z",
+    "ultima_alteracao_at": "2026-08-07T16:00:09.810Z",
+    "propriedades": {
+      "id": "fdcb7391-0acf-4a49-a4fb-f207c374891e",
+      "nome_fazenda": "FAZENDA CÁCERES",
+      "nome_produtor": "Eddu",
+      "codigo_car": "MS-5003207-2D62.5420.4E2A.46C4.B08B.210E.8468.DB33",
+      "codigo_sigef": null,
+      "municipio": "Corumbá, MS",
+      "etapa": "Prospecção"
+    }
+  },
+  {
+    "id": "8054a017-a090-41d9-9e63-18448ad3a5e3",
+    "propriedade_id": "bae1505c-2874-44b9-ad76-09d8a8a79ab0",
+    "tecnico_responsavel_id": "b02f1f87-b998-4f4f-a66b-e169b28c0df5",
+    "data_agendamento": "2026-07-29T00:00:00.000Z",
+    "status": "EM ANDAMENTO",
+    "etapa": "Prospecção",
+    "created_at": "2026-07-29T12:21:16.614Z",
+    "updated_at": "2026-09-10T20:43:31.628Z",
+    "ultima_alteracao_at": "2026-09-10T20:43:31.628Z",
+    "propriedades": {
+      "id": "bae1505c-2874-44b9-ad76-09d8a8a79ab0",
+      "nome_fazenda": "FAZENDA RIO VERDE",
+      "nome_produtor": "Edward",
+      "codigo_car": "MS-5000203-ACBE.E9F2.7128.4DA4.B974.E0BD.56B9.CF61",
+      "codigo_sigef": null,
+      "municipio": "Água Clara, MS",
+      "etapa": "Prospecção"
+    }
+  },
+  {
+    "id": "c595fdb2-fa7b-4388-a6e3-67e2e6f621d1",
+    "propriedade_id": "317c4b00-418e-40b6-a368-a74d6e7805d0",
+    "tecnico_responsavel_id": "b02f1f87-b998-4f4f-a66b-e169b28c0df5",
+    "data_agendamento": "2026-08-14T00:00:00.000Z",
+    "status": "EM ANDAMENTO",
+    "etapa": "Prospecção",
+    "created_at": "2026-08-14T13:51:12.372Z",
+    "updated_at": "2026-08-14T13:51:12.372Z",
+    "ultima_alteracao_at": "2026-08-14T13:51:12.372Z",
+    "propriedades": {
+      "id": "317c4b00-418e-40b6-a368-a74d6e7805d0",
+      "nome_fazenda": "Fazenda Santa Virgínia",
+      "nome_produtor": "Eddu",
+      "codigo_car": "MS-5006606-D581.3C88.A7F6.4AFB.907C.AC89.6323.D6E4",
+      "codigo_sigef": null,
+      "municipio": "Ponta Porã, MS",
+      "etapa": "Prospecção"
+    }
+  },
+  {
+    "id": "57585144-e786-4721-8ebf-9b5d2dcbdbaa",
+    "propriedade_id": "eee29883-8055-4a64-b768-0a1b7f646211",
+    "tecnico_responsavel_id": "b02f1f87-b998-4f4f-a66b-e169b28c0df5",
+    "data_agendamento": "2026-09-09T00:00:00.000Z",
+    "status": "EM ANDAMENTO",
+    "etapa": "Prospecção",
+    "created_at": "2026-09-09T16:51:26.452Z",
+    "updated_at": "2026-09-11T13:44:23.307Z",
+    "ultima_alteracao_at": "2026-09-11T13:44:23.307Z",
+    "propriedades": {
+      "id": "eee29883-8055-4a64-b768-0a1b7f646211",
+      "nome_fazenda": "Fazenda Volta Grande",
+      "nome_produtor": "Paulo Stefanello",
+      "codigo_car": "MS-5007901-A038.C9BC.1734.285B.6306.AEB1.04F5",
+      "codigo_sigef": null,
+      "municipio": "Sidrolândia, MS",
+      "etapa": "Prospecção"
+    }
+  },
+  {
+    "id": "68717e1e-f3b2-4a37-a60c-d4fac77588b1",
+    "propriedade_id": "9880e361-4f2c-4a47-b200-f72b1b5a19a8",
+    "tecnico_responsavel_id": "b02f1f87-b998-4f4f-a66b-e169b28c0df5",
+    "data_agendamento": "2026-08-20T00:00:00.000Z",
+    "status": "EM ANDAMENTO",
+    "etapa": "Prospecção",
+    "created_at": "2026-08-20T13:00:54.373Z",
+    "updated_at": "2026-09-11T14:03:47.385Z",
+    "ultima_alteracao_at": "2026-09-11T14:03:47.385Z",
+    "propriedades": {
+      "id": "9880e361-4f2c-4a47-b200-f72b1b5a19a8",
+      "nome_fazenda": "Fazenda teste chapadao",
+      "nome_produtor": "Edward",
+      "codigo_car": null,
+      "codigo_sigef": null,
+      "municipio": "Chapadão do Sul, MS",
+      "etapa": "Prospecção"
+    }
+  },
+  {
+    "id": "e7c6c295-9f71-4b0f-8f9b-775e3d7f2e51",
+    "propriedade_id": "d92dd9f1-354e-40c9-902a-09e064551f3c",
+    "tecnico_responsavel_id": "b02f1f87-b998-4f4f-a66b-e169b28c0df5",
+    "data_agendamento": "2026-07-30T00:00:00.000Z",
+    "status": "EM ANDAMENTO",
+    "etapa": "Prospecção",
+    "created_at": "2026-07-30T15:25:48.021Z",
+    "updated_at": "2026-07-30T15:25:48.021Z",
+    "ultima_alteracao_at": "2026-07-30T15:25:48.021Z",
+    "propriedades": {
+      "id": "d92dd9f1-354e-40c9-902a-09e064551f3c",
+      "nome_fazenda": "FAZENDA TRÊS IRMÃOS",
+      "nome_produtor": "Eddu",
+      "codigo_car": "MS-5005707-D451.68DF.C3DA.4E43.A30D.A73A.0486.054F",
+      "codigo_sigef": null,
+      "municipio": "Naviraí, MS",
+      "etapa": "Prospecção"
+    }
+  }
+]

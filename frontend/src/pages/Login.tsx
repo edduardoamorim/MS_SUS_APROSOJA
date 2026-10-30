@@ -4,6 +4,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { ShieldCheck, Loader2, Eye, EyeOff } from 'lucide-react';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
+import { hydrateAuditoriasCache, seedDefaultRTRSQuestions } from '../services/precacheService';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -17,6 +18,10 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
 
   const redirectByRole = (role: string) => {
+    // Hidratação proativa não-bloqueante no login para garantir modo offline infalível
+    seedDefaultRTRSQuestions().catch(() => {});
+    hydrateAuditoriasCache().catch(() => {});
+
     if (role === 'produtor') navigate('/app/produtor');
     else if (role === 'tecnico') navigate('/app/tecnico');
     else if (role === 'gestor') navigate('/app/gestor');
@@ -52,6 +57,7 @@ export default function Login() {
           const { data: prof } = await supabase.from('perfis').select('role').eq('id', data.user.id).maybeSingle();
           role = prof?.role || inferRole(cleanEmail);
         }
+        setFallbackSession(data.user, role);
         redirectByRole(role);
         return true;
       }

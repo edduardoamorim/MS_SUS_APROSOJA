@@ -10,6 +10,11 @@ export default defineConfig({
     tailwindcss(),
     react(),
     VitePWA({
+      devOptions: {
+        enabled: true,
+        type: 'module',
+        navigateFallback: '/index.html',
+      },
       registerType: 'autoUpdate',
       injectRegister: 'auto',
       includeAssets: ['favicon.svg', 'icons.svg', 'logo_ms_sus.png', 'logo_ms_sus.jpeg', 'logo_emblem.png'],

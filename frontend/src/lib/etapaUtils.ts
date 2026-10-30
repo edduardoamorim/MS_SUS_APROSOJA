@@ -19,11 +19,19 @@ export const setStoredEtapa = (propId: string, etapa: string) => {
   }
 };
 
-export const resolveFarmEtapa = (propId: string, propEtapa?: string | null, auditEtapa?: string | null): string => {
+export function normalizeEtapa(etapaStr?: string | null): 'Prospecção' | 'Auditoria Prévia' | 'Auditoria Oficial' {
+  if (!etapaStr) return 'Prospecção';
+  const clean = etapaStr.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  if (clean.includes('oficial') || clean.includes('3')) return 'Auditoria Oficial';
+  if (clean.includes('previa') || clean.includes('2')) return 'Auditoria Prévia';
+  return 'Prospecção';
+}
+
+export const resolveFarmEtapa = (propId: string, propEtapa?: string | null, auditEtapa?: string | null): 'Prospecção' | 'Auditoria Prévia' | 'Auditoria Oficial' => {
   const storedMap = getStoredEtapas();
-  if (storedMap[propId]) return storedMap[propId];
-  if (propEtapa === 'Auditoria Prévia' || propEtapa === 'Auditoria Oficial' || propEtapa === 'Prospecção') return propEtapa;
-  if (auditEtapa === 'Auditoria Prévia' || auditEtapa === 'Auditoria Oficial' || auditEtapa === 'Prospecção') return auditEtapa;
+  if (storedMap[propId]) return normalizeEtapa(storedMap[propId]);
+  if (propEtapa) return normalizeEtapa(propEtapa);
+  if (auditEtapa) return normalizeEtapa(auditEtapa);
   return 'Prospecção';
 };
 

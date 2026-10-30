@@ -1,6 +1,7 @@
+import { normalizePerguntaId } from '../../constants/rtrsMapping';
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { CheckCircle2, Camera, AlertCircle, X, Loader2, Image as ImageIcon, FileText, Save, ChevronLeft, ChevronRight, CloudCheck, Download, ExternalLink } from 'lucide-react';
+import { CheckCircle2, Camera, AlertCircle, MinusCircle, X, Loader2, Image as ImageIcon, FileText, Save, ChevronLeft, ChevronRight, CloudCheck, Download, ExternalLink, WifiOff, UploadCloud } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
@@ -8,7 +9,7 @@ import { useSync } from '../../context/SyncContext';
 import { syncEngine } from '../../services/syncEngine';
 import { recordAuditChange, enqueueMutation, enqueueFile, removeEvidenceLocally, db, updateCachedAuditoria, getCachedReadData, cacheReadData, getAllCachedPerguntas, bulkSavePerguntas, getCachedRespostasByAuditoria, bulkSaveRespostas, type CachedPergunta } from '../../lib/offlineDb';
 import { seedDefaultRTRSQuestions } from '../../services/precacheService';
-import { WifiOff, UploadCloud } from 'lucide-react';
+import { cleanEvidenceUrl, resolveEvidenceUrlAsync, isPdfEvidence } from '../../lib/evidenceService';
 
 interface QuestionarioRTRSProps {
   modo: 'autoavaliacao' | 'auditoria';
@@ -31,13 +32,25 @@ interface Pergunta {
   ativo?: boolean;
 }
 
+interface RespostaItem {
+  conforme: boolean | null;
+  nao_se_aplica?: boolean;
+  observacao: string;
+  evidenciaUrl: string | null;
+  evidencia_uploaded_at?: string | null;
+  numero_criterio?: string;
+  data_envio?: string | null;
+  updated_at?: string;
+}
+
 export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onComplete, auditoriaId, propriedadeId }: QuestionarioRTRSProps) {
   const { user } = useAuth();
   const { success, error, warning, info } = useToast();
   const { isOnline, isSyncing, pendingCounts } = useSync();
+  const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [perguntas, setPerguntas] = useState<Pergunta[]>([]);
   const [loadingPerguntas, setLoadingPerguntas] = useState(true);
-  const [respostas, setRespostas] = useState<Record<string, { conforme: boolean | null; observacao: string; evidenciaUrl: string | null }>>({});
+  const [respostas, setRespostas] = useState<Record<string, RespostaItem>>({});
   const [syncingDb, setSyncingDb] = useState(true);
   const [showSyncBadge, setShowSyncBadge] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -49,6 +62,9 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const [expandedOrientacoes, setExpandedOrientacoes] = useState<Record<string, boolean>>({});
   const [fotoAmpliada, setFotoAmpliada] = useState<string | null>(null);
   const [pdfAmpliado, setPdfAmpliado] = useState<string | null>(null);
+  const [activeModalPerguntaId, setActiveModalPerguntaId] = useState<string | null>(null);
+  const [imageLoadError, setImageLoadError] = useState<boolean>(false);
+  const [isRecoveringEvidence, setIsRecoveringEvidence] = useState<boolean>(false);
 
   // Auto-hide do badge "Dados carregados" após 2.5s
   useEffect(() => {
@@ -202,10 +218,15 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       if (localDraft) {
         const parsed = JSON.parse(localDraft);
         if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
-          // Sanitiza qualquer URL fantasma ou quebrada do cache local
+          // Sanitiza qualquer URL fantasma, quebrada ou blob expirado de sessões anteriores
           Object.keys(parsed).forEach(k => {
-            if (parsed[k]?.evidenciaUrl && (parsed[k].evidenciaUrl.includes('supabase.local') || parsed[k].evidenciaUrl.includes('1787833477963'))) {
-              parsed[k].evidenciaUrl = null;
+            if (parsed[k]?.evidenciaUrl) {
+              const urlStr = String(parsed[k].evidenciaUrl);
+              if (urlStr.includes('supabase.local') || urlStr.includes('1787833477963') || urlStr.startsWith('blob:')) {
+                // URLs blob: de sessões anteriores são revogadas ao dar reload (F5);
+                // limpamos para que a nova URL criada a partir do IndexedDB (sync_journal) prevaleça
+                parsed[k].evidenciaUrl = null;
+              }
             }
           });
           setRespostas(parsed);
@@ -219,28 +240,100 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       setSyncingDb(true);
       try {
         let targetAuditId = currentAuditoriaId;
+        if (!targetAuditId || targetAuditId.startsWith('mock-') || targetAuditId.startsWith('assigned-pend-')) {
+          targetAuditId = await getOrCreateRealAuditoriaId();
+        }
         const cleanName = (propriedadeNome || '').split('-')[0].trim();
 
-        // 1. Tentar ler do IndexedDB (cached_respostas) imediatamente
+        // 1. Tentar ler do IndexedDB (cached_respostas + sync_journal) imediatamente (Local-First)
         if (targetAuditId && !targetAuditId.startsWith('mock-')) {
-          const cachedResps = await getCachedRespostasByAuditoria(targetAuditId);
+          const [cachedResps, journalItems, localFiles] = await Promise.all([
+            getCachedRespostasByAuditoria(targetAuditId).catch(() => []),
+            db.sync_journal.where('auditoria_id').equals(targetAuditId).toArray().catch(() => []),
+            db.outbox_files.toArray().catch(() => [])
+          ]);
+
+          const loadedFromCache: Record<string, any> = {};
+
           if (cachedResps && cachedResps.length > 0) {
-            const loadedFromCache: Record<string, any> = {};
             cachedResps.forEach(r => {
               loadedFromCache[r.pergunta_id] = {
                 conforme: r.conforme,
+                nao_se_aplica: !!r.nao_se_aplica,
                 observacao: r.observacoes || '',
                 evidenciaUrl: r.evidencia_url || null,
                 numero_criterio: r.numero_criterio
               };
             });
+          }
+
+          // Mescla com pendências do sync_journal (recria URL a partir do file_blob se necessário)
+          if (journalItems && journalItems.length > 0) {
+            journalItems.forEach(j => {
+              let evUrl = cleanEvidenceUrl(j.evidencia_url);
+              if (j.file_blob && (!evUrl || evUrl.startsWith('blob:'))) {
+                try {
+                  evUrl = URL.createObjectURL(j.file_blob);
+                } catch {}
+              }
+              const canonId = normalizePerguntaId(j.pergunta_id);
+              const entry = {
+                conforme: j.conforme,
+                nao_se_aplica: !!j.nao_se_aplica,
+                observacao: j.observacoes || '',
+                evidenciaUrl: evUrl || null,
+                numero_criterio: j.numero_criterio
+              };
+              loadedFromCache[canonId] = entry;
+              if (j.pergunta_id !== canonId) {
+                loadedFromCache[j.pergunta_id] = entry;
+              }
+            });
+          }
+
+          // Mescla com arquivos em trânsito de outbox_files
+          if (localFiles && localFiles.length > 0) {
+            localFiles.forEach(f => {
+              const pathOrName = f.storage_path || f.file_name || '';
+              const match = pathOrName.match(/evidencia_([0-9a-fA-F-]+)_([0-9a-fA-F-]+)/);
+              if (match) {
+                const audId = match[1];
+                const rawPergId = match[2];
+                const canonPergId = normalizePerguntaId(rawPergId);
+                if (audId === targetAuditId) {
+                  let evUrl = f.public_url;
+                  if (!evUrl && f.file_blob) {
+                    try {
+                      evUrl = URL.createObjectURL(f.file_blob);
+                    } catch {}
+                  }
+                  if (evUrl) {
+                    loadedFromCache[canonPergId] = {
+                      ...(loadedFromCache[canonPergId] || {}),
+                      evidenciaUrl: evUrl
+                    };
+                    if (rawPergId !== canonPergId) {
+                      loadedFromCache[rawPergId] = loadedFromCache[canonPergId];
+                    }
+                  }
+                }
+              }
+            });
+          }
+
+          if (Object.keys(loadedFromCache).length > 0) {
             setRespostas(prev => {
               const merged = { ...loadedFromCache };
               Object.keys(prev).forEach(pid => {
-                if (prev[pid]?.evidenciaUrl === null) {
-                  merged[pid] = { ...merged[pid], ...prev[pid], evidenciaUrl: null };
-                } else if (prev[pid]) {
-                  merged[pid] = { ...merged[pid], ...prev[pid] };
+                if (prev[pid]) {
+                  const incomingUrl = merged[pid]?.evidenciaUrl;
+                  const prevUrl = prev[pid]?.evidenciaUrl;
+                  const safePrevUrl = prevUrl && !String(prevUrl).startsWith('blob:') ? prevUrl : null;
+                  merged[pid] = {
+                    ...merged[pid],
+                    ...prev[pid],
+                    evidenciaUrl: incomingUrl || safePrevUrl || null
+                  };
                 }
               });
               return merged;
@@ -321,6 +414,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               .select(`
                 pergunta_id,
                 conforme,
+                nao_se_aplica,
                 observacoes,
                 evidencia_url,
                 perguntas_rtrs (
@@ -359,7 +453,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               data.forEach(r => {
                 const rawObs = (r as any).observacoes || '';
                 const numCrit = (r as any).perguntas_rtrs?.numero_criterio || '';
-                let evUrl = r.evidencia_url;
+                let evUrl = cleanEvidenceUrl(r.evidencia_url);
                 if (evUrl && (evUrl.includes('supabase.local') || evUrl.includes('1787833477963'))) {
                   evUrl = null;
                 }
@@ -369,12 +463,12 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                   evUrl = null;
                 } else {
                   // CORREÇÃO 3: BLINDAGEM CONTRA CACHE CLOBBERING
-                  // Se o Supabase ainda não tem a evidência (evUrl é null), mas localmente o técnico
-                  // possui evidência anexada (no Dexie ou na outbox pendente), PRESERVA A EVIDÊNCIA LOCAL!
+                  // Se o Supabase não tem a evidência válida ou possui blob: efêmero,
+                  // preserva a evidência local confirmada ou pendente!
                   const localExisting = localCachedMap.get(r.pergunta_id);
                   const localPending = localPendingWithEvidence.get(r.pergunta_id);
 
-                  if (!evUrl) {
+                  if (!evUrl || evUrl.startsWith('blob:')) {
                     if (localPending?.evidencia_url) {
                       evUrl = localPending.evidencia_url;
                     } else if (localExisting?.evidencia_url) {
@@ -389,6 +483,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
 
                 loadedRespostas[r.pergunta_id] = {
                   conforme: r.conforme,
+                  nao_se_aplica: !!(r as any).nao_se_aplica,
                   observacao: rawObs,
                   evidenciaUrl: evUrl,
                   numero_criterio: numCrit,
@@ -400,6 +495,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                   auditoria_id: targetAuditId,
                   pergunta_id: r.pergunta_id,
                   conforme: r.conforme,
+                  nao_se_aplica: !!(r as any).nao_se_aplica,
                   observacoes: rawObs,
                   evidencia_url: evUrl,
                   numero_criterio: numCrit,
@@ -414,6 +510,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                 if (!loadedRespostas[lr.pergunta_id] && !locallyDeletedEvidencias.has(lr.pergunta_id)) {
                   loadedRespostas[lr.pergunta_id] = {
                     conforme: lr.conforme,
+                    nao_se_aplica: !!lr.nao_se_aplica,
                     observacao: lr.observacoes || '',
                     evidenciaUrl: lr.evidencia_url,
                     numero_criterio: lr.numero_criterio,
@@ -427,8 +524,8 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               setRespostas(prev => {
                 const merged = { ...loadedRespostas };
                 Object.keys(prev).forEach(pid => {
-                  if (prev[pid]?.evidenciaUrl === null || locallyDeletedEvidencias.has(pid)) {
-                    merged[pid] = { ...merged[pid], ...prev[pid], evidenciaUrl: null };
+                  if (locallyDeletedEvidencias.has(pid)) {
+                    merged[pid] = { ...merged[pid], ...(prev[pid] || {}), evidenciaUrl: null };
                   } else if (prev[pid]) {
                     const incomingUrl = merged[pid]?.evidenciaUrl;
                     const prevUrl = prev[pid]?.evidenciaUrl;
@@ -462,7 +559,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       const numMap = new Map(perguntas.map(p => [p.numero_criterio, p.id]));
       
       let needsCleanup = false;
-      const sanitized: Record<string, { conforme: boolean | null; observacao: string; evidenciaUrl: string | null; numero_criterio?: string }> = {};
+      const sanitized: Record<string, { conforme: boolean | null; nao_se_aplica?: boolean; observacao: string; evidenciaUrl: string | null; numero_criterio?: string }> = {};
 
       Object.entries(respostas).forEach(([key, val]) => {
         if (validMap.has(key)) {
@@ -574,40 +671,57 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     perguntaId: string,
     updates: {
       conforme?: boolean | null;
+      nao_se_aplica?: boolean;
       observacao?: string;
       evidenciaUrl?: string | null;
       fileId?: string;
       evidenciaUploadedAt?: string;
     }
   ) => {
+    const canonicalId = normalizePerguntaId(perguntaId);
     const nowIso = updates.evidenciaUploadedAt || new Date().toISOString();
-    const pergunta = perguntas.find(p => p.id === perguntaId);
+    const pergunta = perguntas.find(p => p.id === canonicalId || p.id === perguntaId);
     const numCrit = pergunta?.numero_criterio || '';
 
-    let nextStateForId = {
-      conforme: updates.conforme !== undefined ? updates.conforme : (respostas[perguntaId]?.conforme ?? null),
-      observacao: updates.observacao !== undefined ? updates.observacao : (respostas[perguntaId]?.observacao || ''),
-      evidenciaUrl: updates.evidenciaUrl !== undefined ? updates.evidenciaUrl : (respostas[perguntaId]?.evidenciaUrl || null),
+    const currentAns = respostas[canonicalId] || respostas[perguntaId] || {};
+    const isRemovingEvidence = updates.evidenciaUrl === null;
+    let nextEvidenciaUrl = currentAns.evidenciaUrl || null;
+    if (updates.evidenciaUrl !== undefined) {
+      nextEvidenciaUrl = updates.evidenciaUrl;
+    }
+
+    let nextStateForId: RespostaItem = {
+      conforme: updates.conforme !== undefined ? updates.conforme : (currentAns.conforme ?? null),
+      nao_se_aplica: updates.nao_se_aplica !== undefined ? updates.nao_se_aplica : (currentAns.nao_se_aplica ?? false),
+      observacao: updates.observacao !== undefined ? updates.observacao : (currentAns.observacao || ''),
+      evidenciaUrl: nextEvidenciaUrl,
       numero_criterio: numCrit,
-      evidencia_uploaded_at: updates.evidenciaUrl !== undefined
-        ? (updates.evidenciaUrl ? nowIso : null)
-        : (respostas[perguntaId]?.evidencia_uploaded_at || null),
+      evidencia_uploaded_at: isRemovingEvidence
+        ? null
+        : (updates.evidenciaUploadedAt || currentAns.evidencia_uploaded_at || (nextEvidenciaUrl ? nowIso : null)),
       updated_at: nowIso
     };
 
     // 1. Atualização instantânea da UI e LocalStorage
     setRespostas(prev => {
-      const current = prev[perguntaId] || {};
-      const nextForId = {
+      const current = prev[canonicalId] || prev[perguntaId] || {};
+      const nextForId: RespostaItem = {
         ...current,
         conforme: updates.conforme !== undefined ? updates.conforme : (current.conforme ?? null),
+        nao_se_aplica: updates.nao_se_aplica !== undefined ? updates.nao_se_aplica : (current.nao_se_aplica ?? false),
         observacao: updates.observacao !== undefined ? updates.observacao : (current.observacao || ''),
-        evidenciaUrl: updates.evidenciaUrl !== undefined ? updates.evidenciaUrl : (current.evidenciaUrl || null),
+        evidenciaUrl: nextEvidenciaUrl,
         numero_criterio: numCrit,
-        evidencia_uploaded_at: updates.evidenciaUploadedAt || current.evidencia_uploaded_at || (updates.evidenciaUrl ? nowIso : null)
+        evidencia_uploaded_at: isRemovingEvidence
+          ? null
+          : (updates.evidenciaUploadedAt || current.evidencia_uploaded_at || (nextEvidenciaUrl ? nowIso : null)),
+        updated_at: nowIso
       };
       nextStateForId = nextForId;
-      const next = { ...prev, [perguntaId]: nextForId };
+      const next = { ...prev, [canonicalId]: nextForId };
+      if (canonicalId !== perguntaId) {
+        next[perguntaId] = nextForId;
+      }
       try { localStorage.setItem(getCacheKey(), JSON.stringify(next)); } catch (e) {}
       return next;
     });
@@ -625,10 +739,12 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
 
       await recordAuditChange({
         auditoria_id: auditIdToUse,
-        pergunta_id: perguntaId,
+        pergunta_id: canonicalId,
         conforme: safeConformeForDb,
+        nao_se_aplica: nextStateForId.nao_se_aplica ?? false,
         observacoes: nextStateForId.observacao,
         evidencia_url: nextStateForId.evidenciaUrl,
+        is_explicit_delete: isRemovingEvidence,
         numero_criterio: numCrit,
         status: 'pending',
         created_at: Date.now(),
@@ -638,20 +754,42 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
 
       // 4. Se for remoção de evidência, limpa vestígios locais
       if (updates.evidenciaUrl === null) {
-        await removeEvidenceLocally(auditIdToUse, perguntaId);
+        await removeEvidenceLocally(auditIdToUse, canonicalId);
+        if (canonicalId !== perguntaId) {
+          await removeEvidenceLocally(auditIdToUse, perguntaId);
+        }
       }
 
       touchAuditoriaTimestamp(auditIdToUse, nowIso);
 
-        const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
-
-        // 6. Se online e for remoção de evidência: atualiza diretamente no Supabase
+        // 6. Se online e for remoção de evidência: atualiza diretamente no Supabase e remove arquivos do Storage
         if (isDeviceOnline && updates.evidenciaUrl === null) {
           try {
             await supabase
               .from('respostas_auditoria')
-              .update({ evidencia_url: null })
-              .match({ auditoria_id: auditIdToUse, pergunta_id: perguntaId });
+              .update({ evidencia_url: null, updated_at: nowIso })
+              .eq('auditoria_id', auditIdToUse)
+              .in('pergunta_id', [canonicalId, perguntaId]);
+
+            // Expurgar arquivos correspondentes do Storage no bucket evidencias
+            const prefix1 = `evidencia_${auditIdToUse}_${canonicalId}`;
+            const prefix2 = `${auditIdToUse}_${canonicalId}`;
+            const [res1, res2, res3] = await Promise.all([
+              supabase.storage.from('evidencias').list('', { search: prefix1 }),
+              supabase.storage.from('evidencias').list('', { search: prefix2 }),
+              supabase.storage.from('evidencias').list('evidencias', { search: prefix2 })
+            ]);
+            const filesToDelete: string[] = [];
+            if (res1.data) res1.data.forEach(f => filesToDelete.push(f.name));
+            if (res2.data) res2.data.forEach(f => filesToDelete.push(f.name));
+            if (res3.data) res3.data.forEach(f => filesToDelete.push(`evidencias/${f.name}`));
+            if (currentAns.evidenciaUrl && typeof currentAns.evidenciaUrl === 'string' && currentAns.evidenciaUrl.includes('/evidencias/')) {
+              const splitted = currentAns.evidenciaUrl.split('/evidencias/');
+              if (splitted[1]) filesToDelete.push(decodeURIComponent(splitted[1].split('?')[0]));
+            }
+            if (filesToDelete.length > 0) {
+              await supabase.storage.from('evidencias').remove([...new Set(filesToDelete)]);
+            }
           } catch (supaErr) {
             console.warn('[QuestionarioRTRS] Falha no update direto de remoção remota:', supaErr);
           }
@@ -664,36 +802,48 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     }
   };
 
-  const handleResposta = (id: string, conforme: boolean) => {
-    persistRespostaTransactional(id, { conforme });
+  const handleResposta = (id: string, valor: boolean | 'nao_se_aplica') => {
+    if (valor === 'nao_se_aplica') {
+      persistRespostaTransactional(id, { conforme: false, nao_se_aplica: true });
+    } else {
+      persistRespostaTransactional(id, { conforme: valor, nao_se_aplica: false });
+    }
   };
 
   const handleObservacao = (id: string, observacao: string) => {
     persistRespostaTransactional(id, { observacao });
   };
 
-  const handleOpenEvidencia = (url: string) => {
+  const handleOpenEvidencia = (url?: string | null, perguntaId?: string) => {
     if (!url || !url.trim()) return;
-    let cleanUrl = url.trim();
+    setImageLoadError(false);
+    setActiveModalPerguntaId(perguntaId || null);
 
-    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://') && !cleanUrl.startsWith('data:')) {
-      try {
-        const bucket = cleanUrl.includes('auditoria-evidencias') ? 'auditoria-evidencias' : 'evidencias';
-        const filePath = cleanUrl.replace(/^(evidencias|auditoria-evidencias)\//, '');
-        const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
-        if (data?.publicUrl) cleanUrl = data.publicUrl;
-      } catch (e) {
-        console.warn('Erro ao obter URL pública do storage:', e);
-      }
+    const clean = cleanEvidenceUrl(url);
+    if (!clean) return;
+
+    if (isPdfEvidence(clean)) {
+      setPdfAmpliado(clean);
+      return;
     }
 
-    const lower = cleanUrl.toLowerCase();
-    const isPdf = lower.includes('.pdf') || lower.startsWith('data:application/pdf');
+    // Abre imediatamente para feedback instantâneo da UI
+    setFotoAmpliada(clean);
 
-    if (isPdf) {
-      setPdfAmpliado(cleanUrl);
-    } else {
-      setFotoAmpliada(cleanUrl);
+    // Dispara resolução inteligente assíncrona em background para garantir integridade
+    const targetAuditId = currentAuditoriaId || auditoriaId;
+    if (targetAuditId && perguntaId) {
+      resolveEvidenceUrlAsync({
+        url: clean,
+        auditoriaId: targetAuditId,
+        perguntaId
+      }).then(resolved => {
+        if (resolved && resolved !== clean) {
+          setFotoAmpliada(resolved);
+        }
+      }).catch(err => {
+        console.warn('[QuestionarioRTRS] Aviso na auto-resolução de evidência:', err);
+      });
     }
   };
 
@@ -751,11 +901,20 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const handleUploadEvidencia = async (id: string, file: File) => {
     setCameraLoadingId(id);
     try {
+      // Blindagem estrita contra Blobs vazios (0 bytes)
+      if (!file || file.size === 0) {
+        console.warn('[QuestionarioRTRS] Tentativa de anexo com arquivo vazio (0 bytes). Abortando.');
+        error('A foto capturada está vazia ou corrompida (0 bytes). Por favor, capture a foto novamente.');
+        setCameraLoadingId(null);
+        return;
+      }
+
+      const canonicalId = normalizePerguntaId(id);
       const nowIso = new Date().toISOString();
       const rawExt = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
       const fileExt = rawExt === 'jpeg' ? 'jpg' : (rawExt || 'jpg');
       const activeId = await getOrCreateRealAuditoriaId();
-      const fileName = `evidencia_${activeId || 'temp'}_${id}_${Date.now()}.${fileExt}`;
+      const fileName = `evidencia_${activeId || 'temp'}_${canonicalId}_${Date.now()}.${fileExt}`;
       const filePath = `${fileName}`;
 
       const mimeType = file.type && file.type !== 'text/plain'
@@ -770,31 +929,33 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         previewUrl = URL.createObjectURL(file);
       }
 
-      const currentAns = respostas[id] || {};
-      const numCrit = perguntas.find(p => p.id === id)?.numero_criterio || '';
+      const currentAns = respostas[canonicalId] || respostas[id] || {};
+      const numCrit = perguntas.find(p => p.id === canonicalId || p.id === id)?.numero_criterio || '';
       const auditIdToUse = activeId || currentAuditoriaId || auditoriaId;
 
       // 1. Atualização instantânea da UI e LocalStorage
       setRespostas(prev => {
         const next = {
           ...prev,
-          [id]: {
+          [canonicalId]: {
             ...currentAns,
             evidenciaUrl: previewUrl,
             numero_criterio: numCrit,
             evidencia_uploaded_at: nowIso
           }
         };
+        if (canonicalId !== id) {
+          next[id] = next[canonicalId];
+        }
         try { localStorage.setItem(getCacheKey(), JSON.stringify(next)); } catch (e) {}
         return next;
       });
 
-      // 2. Gravação Atômica no Unified WAL (recordAuditChange)
-      // O Blob físico NUNCA é removido antes da confirmação total do banco remoto
+      // 2. Gravação Atômica no Unified WAL (recordAuditChange) com UUID canônico
       if (auditIdToUse) {
         await recordAuditChange({
           auditoria_id: auditIdToUse,
-          pergunta_id: id,
+          pergunta_id: canonicalId,
           conforme: currentAns.conforme ?? false, // NUNCA null!
           observacoes: currentAns.observacao || '',
           file_blob: file,
@@ -814,12 +975,14 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       // 4. Dispara evento de evidência anexada para atualização instantânea da UI
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('ms:evidence-uploaded', {
-          detail: { perguntaId: id, auditoriaId: activeId, timestamp: nowIso }
+          detail: { perguntaId: canonicalId, auditoriaId: activeId, timestamp: nowIso }
         }));
+        window.dispatchEvent(new CustomEvent('ms:outbox-changed'));
       }
 
       const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
       if (isDeviceOnline) {
+        syncEngine.syncNow(true);
         success('Evidência anexada e enviando para o servidor...');
       } else {
         success('Evidência salva no aparelho. O envio ocorrerá automaticamente assim que a conexão for restabelecida.');
@@ -838,6 +1001,10 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
 
     // Exclusão Local-First Atômica (Dexie + Outbox + Supabase)
     await persistRespostaTransactional(id, { evidenciaUrl: null });
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ms:evidence-uploaded', { detail: { perguntaId: id } }));
+      window.dispatchEvent(new CustomEvent('ms:outbox-changed'));
+    }
 
     const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
     if (isDeviceOnline) {
@@ -851,28 +1018,56 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     let activeId = currentAuditoriaId;
     const isSynthetic = !activeId || activeId.startsWith('mock-') || activeId.startsWith('assigned-pend-');
 
-    if (isSynthetic) {
+    if (!isSynthetic && activeId) {
+      return activeId;
+    }
+
+    const cleanName = (propriedadeNome || '').split('-')[0].trim();
+    const cleanNameLower = cleanName.toLowerCase();
+
+    // 1. Tentar resolver LOCALMENTE em db.cached_auditorias (0ms, 100% offline-first)
+    try {
+      const cachedAudits = await db.cached_auditorias.toArray();
+      const match = cachedAudits.find(a => {
+        const farmName = (a.propriedades?.nome_fazenda || '').toLowerCase();
+        const matchesName = cleanNameLower && (farmName.includes(cleanNameLower) || cleanNameLower.includes(farmName));
+        const matchesProp = propriedadeId && !propriedadeId.startsWith('mock-') && a.propriedade_id === propriedadeId;
+        return matchesName || matchesProp;
+      });
+
+      if (match?.id && !match.id.startsWith('mock-') && !match.id.startsWith('assigned-pend-')) {
+        console.log(`[QuestionarioRTRS] Auditoria resolvida localmente via Dexie: ${match.id} (${match.propriedades?.nome_fazenda})`);
+        setCurrentAuditoriaId(match.id);
+        return match.id;
+      }
+    } catch (localErr) {
+      console.warn('[QuestionarioRTRS] Falha ao consultar cached_auditorias localmente:', localErr);
+    }
+
+    // 2. Se online, consultar Supabase
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
       let targetPropId = propriedadeId;
-      const cleanName = (propriedadeNome || '').split('-')[0].trim();
 
       if (!targetPropId || targetPropId.startsWith('mock-')) {
-        const { data: foundProp } = await supabase
-          .from('propriedades')
-          .select('id')
-          .ilike('nome_fazenda', `%${cleanName}%`)
-          .limit(1)
-          .maybeSingle();
-
-        if (foundProp?.id) {
-          targetPropId = foundProp.id;
-        } else {
-          const { data: firstProp } = await supabase
+        try {
+          const { data: foundProp } = await supabase
             .from('propriedades')
             .select('id')
+            .ilike('nome_fazenda', `%${cleanName}%`)
             .limit(1)
             .maybeSingle();
-          if (firstProp?.id) targetPropId = firstProp.id;
-        }
+
+          if (foundProp?.id) {
+            targetPropId = foundProp.id;
+          } else {
+            const { data: firstProp } = await supabase
+              .from('propriedades')
+              .select('id')
+              .limit(1)
+              .maybeSingle();
+            if (firstProp?.id) targetPropId = firstProp.id;
+          }
+        } catch (e) {}
       }
 
       if (targetPropId && !targetPropId.startsWith('mock-')) {
@@ -906,16 +1101,48 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
             }
           }
         } catch (err) {
-          console.error('Erro ao resolver/criar auditoria real:', err);
+          console.warn('Erro ao resolver/criar auditoria remota:', err);
         }
+      }
+    }
+
+    // 3. Contingência Offline Estrita: se ainda sintético ou sem ID, cria entrada em cached_auditorias
+    if (isSynthetic || !activeId) {
+      const stableOfflineId = generateUUID();
+      try {
+        await db.cached_auditorias.put({
+          id: stableOfflineId,
+          propriedade_id: propriedadeId || generateUUID(),
+          status: modo === 'autoavaliacao' ? 'Autoavaliação' : 'Em Andamento',
+          propriedades: {
+            id: propriedadeId || generateUUID(),
+            nome_fazenda: cleanName || 'Fazenda',
+            nome_produtor: 'Produtor'
+          },
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+        setCurrentAuditoriaId(stableOfflineId);
+        return stableOfflineId;
+      } catch (saveErr) {
+        console.warn('[QuestionarioRTRS] Erro ao salvar auditoria offline de contingência:', saveErr);
+        return stableOfflineId;
       }
     }
 
     return activeId;
   };
 
+  const isPerguntaRespondida = (p: { id: string }) => {
+    const r = respostas[p.id] || respostas[normalizePerguntaId(p.id)];
+    return r && (r.nao_se_aplica === true || (r.conforme !== null && r.conforme !== undefined));
+  };
+
   const handleSavePartial = async () => {
-    const answeredIds = Object.keys(respostas).filter(id => respostas[id]?.conforme !== null && respostas[id]?.conforme !== undefined);
+    const answeredIds = Object.keys(respostas).filter(id => {
+      const r = respostas[id];
+      return r && (r.nao_se_aplica === true || (r.conforme !== null && r.conforme !== undefined));
+    });
     if (answeredIds.length === 0) {
       warning('Responda ao menos um indicador para salvar o rascunho.');
       return;
@@ -934,17 +1161,20 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       }
 
       for (const id of answeredIds) {
-        await enqueueMutation({
-          table: 'respostas_auditoria',
-          action: 'upsert',
-          on_conflict: 'auditoria_id,pergunta_id',
-          payload: {
-            auditoria_id: activeId,
-            pergunta_id: id,
-            conforme: respostas[id].conforme,
-            observacoes: respostas[id].observacao || '',
-            evidencia_url: respostas[id].evidenciaUrl || null
-          }
+        const ans = respostas[id];
+        const numCrit = perguntas.find(p => p.id === id)?.numero_criterio || '';
+        await recordAuditChange({
+          auditoria_id: activeId,
+          pergunta_id: id,
+          conforme: ans.conforme ?? false,
+          nao_se_aplica: ans.nao_se_aplica ?? false,
+          observacoes: ans.observacao || '',
+          evidencia_url: ans.evidenciaUrl || null,
+          numero_criterio: numCrit,
+          status: 'pending',
+          created_at: Date.now(),
+          updated_at: new Date().toISOString(),
+          attempts: 0
         });
       }
 
@@ -984,7 +1214,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   };
 
   const handleSubmit = async () => {
-    const todasRespondidas = perguntas.every(p => respostas[p.id]?.conforme !== undefined && respostas[p.id]?.conforme !== null);
+    const todasRespondidas = perguntas.every(isPerguntaRespondida);
     if (!todasRespondidas) {
       warning("Responda todas as perguntas antes de finalizar a auditoria.");
       return;
@@ -998,24 +1228,29 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         throw new Error('Não foi possível registrar um ID de auditoria válido.');
       }
 
-      // Enfileirar todas as respostas na Outbox Queue
+      // Gravar todas as respostas no Unified WAL via recordAuditChange (Idempotente)
       for (const p of perguntas) {
-        await enqueueMutation({
-          table: 'respostas_auditoria',
-          action: 'upsert',
-          on_conflict: 'auditoria_id,pergunta_id',
-          payload: {
-            auditoria_id: activeId,
-            pergunta_id: p.id,
-            conforme: respostas[p.id]?.conforme || false,
-            observacoes: respostas[p.id]?.observacao || '',
-            evidencia_url: respostas[p.id]?.evidenciaUrl || null
-          }
+        const ans = respostas[p.id];
+        await recordAuditChange({
+          auditoria_id: activeId,
+          pergunta_id: p.id,
+          conforme: ans?.conforme ?? false,
+          nao_se_aplica: ans?.nao_se_aplica ?? false,
+          observacoes: ans?.observacao || '',
+          evidencia_url: ans?.evidenciaUrl || null,
+          numero_criterio: p.numero_criterio,
+          status: 'pending',
+          created_at: Date.now(),
+          updated_at: new Date().toISOString(),
+          attempts: 0
         });
       }
 
-      // Enfileirar pendências automáticas para não-conformidades
-      const naoConformes = perguntas.filter(p => respostas[p.id]?.conforme === false);
+      // Enfileirar pendências automáticas APENAS para não-conformidades reais (exclui Não se Aplica)
+      const naoConformes = perguntas.filter(p => {
+        const ans = respostas[p.id];
+        return ans && ans.conforme === false && !ans.nao_se_aplica;
+      });
       if (naoConformes.length > 0) {
         let finalPropId = propriedadeId;
         if (!finalPropId || finalPropId.startsWith('mock-')) {
@@ -1032,10 +1267,9 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
             await enqueueMutation({
               table: 'pendencias',
               action: 'upsert',
-              on_conflict: 'auditoria_id,titulo',
+              on_conflict: 'propriedade_id,titulo',
               payload: {
                 propriedade_id: finalPropId,
-                auditoria_id: activeId,
                 titulo: `Não conformidade - Critério ${p.numero_criterio}`,
                 descricao: `Ação necessária para atender ao critério ${p.numero_criterio}: "${p.enunciado}". Observação registrada: ${respostas[p.id]?.observacao || 'Nenhuma'}`,
                 status: 'Pendente',
@@ -1086,10 +1320,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const perguntasFiltradas = perguntas.filter(p => p.secao === secaoAtiva);
 
   const totalPerguntas = perguntas.length;
-  const totalRespondidas = perguntas.filter(p => {
-    const r = respostas[p.id];
-    return r && r.conforme !== null && r.conforme !== undefined;
-  }).length;
+  const totalRespondidas = perguntas.filter(isPerguntaRespondida).length;
   const percentualConcluido = totalPerguntas > 0 ? Math.round((totalRespondidas / totalPerguntas) * 100) : 0;
 
   return createPortal(
@@ -1104,7 +1335,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
             </span>
             <h2 className="text-sm sm:text-xl font-black text-white mt-0.5 leading-tight truncate">{propriedadeNome}</h2>
           </div>
-          <button onClick={onClose} className="p-1.5 sm:p-2 hover:bg-emerald-700/60 rounded-xl transition-colors text-emerald-100 hover:text-white cursor-pointer shrink-0">
+          <button id="btn-fechar-x" onClick={onClose} aria-label="Fechar Questionario" title="Fechar Questionario" className="p-1.5 sm:p-2 hover:bg-emerald-700/60 rounded-xl transition-colors text-emerald-100 hover:text-white cursor-pointer shrink-0">
             <X className="w-5 h-5 sm:w-6 sm:h-6" />
           </button>
         </div>
@@ -1119,7 +1350,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                     P{secoesUnicas.indexOf(secaoAtiva) + 1} de {secoesUnicas.length}
                   </span>
                   <span className="text-[9px] sm:text-[11px] font-extrabold text-emerald-200 bg-black/20 px-2 py-0.5 rounded border border-white/10">
-                    {perguntas.filter(p => p.secao === secaoAtiva && respostas[p.id]?.conforme !== null && respostas[p.id]?.conforme !== undefined).length}/{perguntas.filter(p => p.secao === secaoAtiva).length} respondidos
+                    {perguntas.filter(p => p.secao === secaoAtiva && isPerguntaRespondida(p)).length}/{perguntas.filter(p => p.secao === secaoAtiva).length} respondidos
                   </span>
                 </div>
                 <h3 className="text-xs sm:text-xl font-black text-white leading-snug tracking-tight truncate mt-0.5 sm:mt-1">
@@ -1164,7 +1395,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           {secoesUnicas.map((secao, idx) => {
             const isSelected = secaoAtiva === secao;
             const countSec = perguntas.filter(p => p.secao === secao).length;
-            const countResp = perguntas.filter(p => p.secao === secao && respostas[p.id]?.conforme !== null && respostas[p.id]?.conforme !== undefined).length;
+            const countResp = perguntas.filter(p => p.secao === secao && isPerguntaRespondida(p)).length;
             const isDone = countSec > 0 && countResp === countSec;
 
             const shortTitles: Record<number, string> = {
@@ -1319,11 +1550,20 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           ) : (
             perguntasFiltradas.map((pergunta) => {
               const resposta = respostas[pergunta.id];
-              const isConforme = resposta?.conforme === true;
-              const isNaoConforme = resposta?.conforme === false;
+              const isConforme = resposta?.conforme === true && !resposta?.nao_se_aplica;
+              const isNaoConforme = resposta?.conforme === false && !resposta?.nao_se_aplica;
+              const isNaoSeAplica = !!resposta?.nao_se_aplica;
 
               return (
-                <div key={pergunta.id} className={`bg-white rounded-xl sm:rounded-2xl border p-3.5 sm:p-5 transition-all shadow-sm ${isConforme ? 'border-emerald-300 ring-1 ring-emerald-100 bg-emerald-50/10' : isNaoConforme ? 'border-red-300 ring-1 ring-red-100 bg-red-50/10' : 'border-gray-200 hover:border-emerald-200'}`}>
+                <div key={pergunta.id} className={`bg-white rounded-xl sm:rounded-2xl border p-3.5 sm:p-5 transition-all shadow-sm ${
+                  isConforme 
+                    ? 'border-emerald-300 ring-1 ring-emerald-100 bg-emerald-50/10' 
+                    : isNaoConforme 
+                    ? 'border-red-300 ring-1 ring-red-100 bg-red-50/10' 
+                    : isNaoSeAplica
+                    ? 'border-slate-300 ring-1 ring-slate-100 bg-slate-50/25'
+                    : 'border-gray-200 hover:border-emerald-200'
+                }`}>
                   <div className="flex flex-col gap-3">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5 flex-wrap">
@@ -1331,6 +1571,24 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                         <span className={`text-[9px] sm:text-[10px] font-extrabold px-1.5 py-0.5 rounded ${pergunta.ponderacao === 'Imediata' ? 'bg-red-100 text-red-700 border border-red-200' : pergunta.ponderacao === 'Curto Prazo' ? 'bg-amber-100 text-amber-800 border border-amber-200' : 'bg-blue-100 text-blue-800 border border-blue-200'}`}>
                           {pergunta.ponderacao}
                         </span>
+                        {isNaoSeAplica && (
+                          <span className="text-[9px] sm:text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-300 flex items-center gap-1 shadow-2xs">
+                            <MinusCircle className="w-3 h-3 text-slate-500" />
+                            <span>Não se Aplica</span>
+                          </span>
+                        )}
+                        {isConforme && (
+                          <span className="text-[9px] sm:text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1 shadow-2xs">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            <span>Conforme</span>
+                          </span>
+                        )}
+                        {isNaoConforme && (
+                          <span className="text-[9px] sm:text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-red-50 text-red-700 border border-red-200 flex items-center gap-1 shadow-2xs">
+                            <AlertCircle className="w-3 h-3 text-red-600" />
+                            <span>Não Conforme</span>
+                          </span>
+                        )}
                       </div>
                     </div>
                     
@@ -1400,22 +1658,65 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                       );
                     })()}
                     
-                    <div className="grid grid-cols-2 gap-2 sm:gap-3 pt-1">
-                      <button type="button" onClick={() => handleResposta(pergunta.id, true)} className={`py-2.5 px-2 sm:py-3 sm:px-4 rounded-xl font-extrabold text-[11px] sm:text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer ${isConforme ? 'bg-emerald-600 text-white shadow-md ring-2 ring-emerald-600 ring-offset-1' : 'bg-white border-2 border-emerald-200 text-emerald-800 hover:bg-emerald-50'}`}>
+                    <div className="grid grid-cols-3 gap-1.5 sm:gap-3 pt-1">
+                      <button 
+                        type="button" 
+                        onClick={() => handleResposta(pergunta.id, true)} 
+                        className={`py-2 px-1.5 sm:py-3 sm:px-4 rounded-xl font-extrabold text-[10px] sm:text-xs transition-all flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 cursor-pointer text-center ${
+                          isConforme 
+                            ? 'bg-emerald-600 text-white shadow-md ring-2 ring-emerald-600 ring-offset-1 scale-[1.01]' 
+                            : 'bg-white border-2 border-emerald-200 text-emerald-800 hover:bg-emerald-50'
+                        }`}
+                      >
                         <CheckCircle2 className="w-4 h-4 shrink-0" />
-                        <span>Sim, Conforme</span>
+                        <span className="leading-tight">Sim, Conforme</span>
                       </button>
-                      <button type="button" onClick={() => handleResposta(pergunta.id, false)} className={`py-2.5 px-2 sm:py-3 sm:px-4 rounded-xl font-extrabold text-[11px] sm:text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer ${isNaoConforme ? 'bg-red-600 text-white shadow-md ring-2 ring-red-600 ring-offset-1' : 'bg-white border-2 border-red-200 text-red-800 hover:bg-red-50'}`}>
+
+                      <button 
+                        type="button" 
+                        onClick={() => handleResposta(pergunta.id, false)} 
+                        className={`py-2 px-1.5 sm:py-3 sm:px-4 rounded-xl font-extrabold text-[10px] sm:text-xs transition-all flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 cursor-pointer text-center ${
+                          isNaoConforme 
+                            ? 'bg-red-600 text-white shadow-md ring-2 ring-red-600 ring-offset-1 scale-[1.01]' 
+                            : 'bg-white border-2 border-red-200 text-red-800 hover:bg-red-50'
+                        }`}
+                      >
                         <AlertCircle className="w-4 h-4 shrink-0" />
-                        <span>Não Conforme</span>
+                        <span className="leading-tight">Não Conforme</span>
+                      </button>
+
+                      <button 
+                        type="button" 
+                        onClick={() => handleResposta(pergunta.id, 'nao_se_aplica')} 
+                        className={`py-2 px-1.5 sm:py-3 sm:px-4 rounded-xl font-extrabold text-[10px] sm:text-xs transition-all flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 cursor-pointer text-center ${
+                          isNaoSeAplica 
+                            ? 'bg-slate-700 text-white shadow-md ring-2 ring-slate-700 ring-offset-1 scale-[1.01]' 
+                            : 'bg-white border-2 border-slate-300 text-slate-700 hover:bg-slate-100 hover:border-slate-400'
+                        }`}
+                      >
+                        <MinusCircle className="w-4 h-4 shrink-0" />
+                        <span className="leading-tight">Não se Aplica</span>
                       </button>
                     </div>
 
-                    {resposta?.conforme !== null && resposta?.conforme !== undefined && (
+                    {(isConforme || isNaoConforme || isNaoSeAplica) && (
                       <div className="mt-1 pt-3 border-t border-gray-100 space-y-2.5 animate-fadeIn">
                         <div>
-                          <label className="block text-xs font-bold text-gray-700 mb-1">Observações do Inspetor</label>
-                          <textarea rows={2} value={resposta?.observacao || ''} onChange={(e) => handleObservacao(pergunta.id, e.target.value)} placeholder="Detalhe as condições observadas..." className="w-full p-2.5 bg-white border border-gray-200 rounded-xl text-xs focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all" />
+                          <label className="block text-xs font-bold text-gray-700 mb-1">
+                            Observações do Inspetor
+                            {isNaoSeAplica && (
+                              <span className="ml-1.5 text-[11px] font-medium text-slate-500">
+                                (Justificativa da inaplicabilidade)
+                              </span>
+                            )}
+                          </label>
+                          <textarea 
+                            rows={2} 
+                            value={resposta?.observacao || ''} 
+                            onChange={(e) => handleObservacao(pergunta.id, e.target.value)}
+                            placeholder={isNaoSeAplica ? "Descreva resumidamente por que este indicador não se aplica a esta propriedade..." : "Detalhe as condições observadas..."}
+                            className="w-full p-2.5 bg-white border border-gray-200 rounded-xl text-xs focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all" 
+                          />
                         </div>
                         
                         <div>
@@ -1447,17 +1748,27 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                             </div>
                           ) : (
                             <div className="flex items-center gap-2.5 bg-white p-2.5 rounded-xl border border-emerald-200 shadow-sm">
-                              <div className="bg-emerald-100 rounded-lg overflow-hidden w-9 h-9 flex items-center justify-center shrink-0 cursor-pointer hover:opacity-85 transition-opacity border border-emerald-200" onClick={() => handleOpenEvidencia(resposta.evidenciaUrl!)}>
-                                {resposta.evidenciaUrl.toLowerCase().includes('.pdf') ? (
+                              <div className="bg-emerald-100 rounded-lg overflow-hidden w-9 h-9 flex items-center justify-center shrink-0 cursor-pointer hover:opacity-85 transition-opacity border border-emerald-200" onClick={() => handleOpenEvidencia(resposta.evidenciaUrl!, pergunta.id)}>
+                                {isPdfEvidence(resposta.evidenciaUrl) ? (
                                   <FileText className="w-4 h-4 text-emerald-700" />
                                 ) : (
                                   <img 
-                                    src={resposta.evidenciaUrl} 
+                                    src={cleanEvidenceUrl(resposta.evidenciaUrl) || resposta.evidenciaUrl} 
                                     alt="Evidência" 
                                     className="w-full h-full object-cover" 
-                                    onError={(e) => {
-                                      e.currentTarget.style.display = 'none';
-                                      const parent = e.currentTarget.parentElement;
+                                    onError={async (e) => {
+                                      const target = e.currentTarget;
+                                      const recovered = await resolveEvidenceUrlAsync({
+                                        url: resposta.evidenciaUrl,
+                                        auditoriaId: currentAuditoriaId || auditoriaId,
+                                        perguntaId: pergunta.id
+                                      });
+                                      if (recovered && recovered !== target.src) {
+                                        target.src = recovered;
+                                        return;
+                                      }
+                                      target.style.display = 'none';
+                                      const parent = target.parentElement;
                                       if (parent && !parent.querySelector('.broken-indicator')) {
                                         parent.classList.add('bg-amber-50');
                                         const indicator = document.createElement('span');
@@ -1471,7 +1782,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                               </div>
                               <div className="flex-1 min-w-0">
                                 <p className="text-xs font-bold text-gray-900 truncate">Evidência Anexada</p>
-                                <button type="button" onClick={() => handleOpenEvidencia(resposta.evidenciaUrl!)} className="text-[10px] text-emerald-700 underline font-bold hover:text-emerald-900 cursor-pointer block mt-0.5 text-left">Ver Arquivo Enviado</button>
+                                <button type="button" onClick={() => handleOpenEvidencia(resposta.evidenciaUrl!, pergunta.id)} className="text-[10px] text-emerald-700 underline font-bold hover:text-emerald-900 cursor-pointer block mt-0.5 text-left">Ver Arquivo Enviado</button>
                               </div>
                               <div className="flex items-center gap-1 shrink-0">
                                 <CheckCircle2 className="w-5 h-5 text-emerald-500" />
@@ -1499,6 +1810,14 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           </div>
 
           <div className="flex items-center gap-3 w-full sm:w-auto">
+            <button
+              type="button"
+              id="btn-fechar-questionario"
+              onClick={onClose}
+              className="flex-1 sm:flex-none px-4 py-3 bg-white hover:bg-slate-100 text-slate-700 rounded-2xl font-extrabold text-xs sm:text-sm border border-slate-300 transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs flex items-center justify-center gap-1.5"
+            >
+              <span>Fechar</span>
+            </button>
             <button
               type="button"
               onClick={handleSavePartial}
@@ -1541,30 +1860,120 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         </div>
       </div>
 
-      {/* Modal Lightbox de Foto Ampliada */}
-      {fotoAmpliada && (
-        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn transition-all" onClick={() => setFotoAmpliada(null)}>
-          <div className="relative max-w-4xl max-h-[90vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
-            <button onClick={() => setFotoAmpliada(null)} className="absolute -top-10 right-0 text-white bg-black/50 hover:bg-black/70 p-2 rounded-full transition-all cursor-pointer shadow-md"><X className="w-6 h-6" /></button>
-            <img 
-              src={fotoAmpliada} 
-              alt="Evidência Ampliada" 
-              className="max-w-full max-h-[85vh] rounded-xl shadow-2xl object-contain border border-slate-700/60 bg-slate-900/40" 
-              onError={(e) => {
-                const target = e.currentTarget;
-                target.style.display = 'none';
-                const parent = target.parentElement;
-                if (parent && !parent.querySelector('.img-error-card')) {
-                  const card = document.createElement('div');
-                  card.className = 'img-error-card bg-slate-900/95 border border-red-500/50 p-6 rounded-2xl text-center max-w-sm text-white shadow-2xl';
-                  card.innerHTML = '<p class="font-bold text-red-400 text-sm mb-1">Evidência Indisponível</p><p class="text-xs text-slate-300">Não foi possível carregar a imagem selecionada. Remova e anexe novamente pelo questionário.</p>';
-                  parent.appendChild(card);
-                }
-              }}
-            />
-            {fotoAmpliada.startsWith('http') && <a href={fotoAmpliada} target="_blank" rel="noreferrer" className="mt-3 text-xs text-emerald-300 underline font-bold hover:text-white flex items-center gap-1 bg-black/40 px-3 py-1 rounded-full border border-white/10"><ExternalLink className="w-3.5 h-3.5" /><span>Abrir em nova guia</span></a>}
+      {/* Modal Lightbox de Foto Ampliada em Portal z-[9999] */}
+      {fotoAmpliada && createPortal(
+        <div 
+          className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn transition-all" 
+          onClick={() => {
+            setFotoAmpliada(null);
+            setImageLoadError(false);
+            setIsRecoveringEvidence(false);
+          }}
+        >
+          <div 
+            className="relative max-w-4xl max-h-[90vh] flex flex-col items-center bg-slate-900/90 p-4 rounded-3xl border border-slate-700 shadow-2xl" 
+            onClick={e => e.stopPropagation()}
+          >
+            <button 
+              type="button" 
+              onClick={() => {
+                setFotoAmpliada(null);
+                setImageLoadError(false);
+                setIsRecoveringEvidence(false);
+              }} 
+              className="absolute -top-3 -right-3 text-white bg-slate-800 hover:bg-slate-700 p-2 rounded-full transition-all cursor-pointer shadow-xl border border-slate-600 z-10"
+              title="Fechar"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="relative max-h-[75vh] overflow-hidden rounded-2xl flex items-center justify-center bg-slate-950 min-w-[320px] min-h-[240px]">
+              {isRecoveringEvidence ? (
+                <div className="p-8 text-center text-slate-400 flex flex-col items-center gap-2">
+                  <Loader2 className="w-8 h-8 text-emerald-400 animate-spin" />
+                  <span className="text-xs font-bold">Localizando arquivo de evidência...</span>
+                </div>
+              ) : imageLoadError ? (
+                <div className="p-8 text-center max-w-md bg-slate-900/95 rounded-2xl border border-red-500/40">
+                  <AlertCircle className="w-10 h-10 text-red-400 mx-auto mb-2" />
+                  <p className="font-extrabold text-sm text-red-300 mb-1">Prévia Indisponível no Momento</p>
+                  <p className="text-xs text-slate-400 mb-4">
+                    O arquivo de imagem local não pôde ser carregado diretamente nesta sessão.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setIsRecoveringEvidence(true);
+                      setImageLoadError(false);
+                      const recovered = await resolveEvidenceUrlAsync({
+                        url: fotoAmpliada,
+                        auditoriaId: currentAuditoriaId || auditoriaId,
+                        perguntaId: activeModalPerguntaId
+                      });
+                      setIsRecoveringEvidence(false);
+                      if (recovered && recovered !== fotoAmpliada) {
+                        setFotoAmpliada(recovered);
+                      } else {
+                        setImageLoadError(true);
+                      }
+                    }}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-sm transition-all cursor-pointer"
+                  >
+                    Tentar Recarregar Evidência
+                  </button>
+                </div>
+              ) : (
+                <img 
+                  src={fotoAmpliada} 
+                  alt="Evidência Ampliada" 
+                  onError={async () => {
+                    console.warn('[QuestionarioRTRS] Erro ao carregar fotoAmpliada:', fotoAmpliada);
+                    // Tenta auto-recuperação automática silenciosa
+                    if (activeModalPerguntaId && (currentAuditoriaId || auditoriaId)) {
+                      setIsRecoveringEvidence(true);
+                      try {
+                        const recovered = await resolveEvidenceUrlAsync({
+                          url: fotoAmpliada,
+                          auditoriaId: currentAuditoriaId || auditoriaId,
+                          perguntaId: activeModalPerguntaId
+                        });
+                        if (recovered && recovered !== fotoAmpliada) {
+                          setFotoAmpliada(recovered);
+                          setIsRecoveringEvidence(false);
+                          return;
+                        }
+                      } catch (recErr) {
+                        console.warn('[QuestionarioRTRS] Falha na auto-recuperação de foto:', recErr);
+                      }
+                      setIsRecoveringEvidence(false);
+                    }
+                    setImageLoadError(true);
+                  }}
+                  className="max-w-full max-h-[75vh] object-contain rounded-xl" 
+                />
+              )}
+            </div>
+
+            <div className="mt-3 flex items-center justify-between w-full px-2 gap-4">
+              <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                Evidência Comprovatória de Conformidade
+              </span>
+              {fotoAmpliada && fotoAmpliada.startsWith('http') && !fotoAmpliada.includes('data:image/svg') && (
+                <a 
+                  href={fotoAmpliada} 
+                  target="_blank" 
+                  rel="noreferrer" 
+                  className="text-xs text-emerald-400 hover:text-white underline font-bold flex items-center gap-1 bg-white/10 px-3 py-1.5 rounded-full border border-white/10 transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Abrir em nova guia</span>
+                </a>
+              )}
+            </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Modal Viewer de PDF */}

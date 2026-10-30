@@ -1,3 +1,4 @@
+import { normalizePerguntaId } from '../constants/rtrsMapping';
 import { supabase, supabaseUrl, supabaseAnonKey } from '../lib/supabase';
 import {
   db,
@@ -22,6 +23,7 @@ import {
   onOutboxChange,
   cacheReadData,
   purgeCorruptedQueue,
+  purgeOrphanAndSyncedItems,
   type OutboxMutation,
   type OutboxFile
 } from '../lib/offlineDb';
@@ -90,26 +92,33 @@ class SyncEngine {
         }
       });
 
-      // DEBOUNCE DE 3.0 SEGUNDOS PARA FILTRAR OSCILAÇÕES DE SINAL
+      // DETECÇÃO REATIVA IMEDIATA DE REDE (0ms)
       window.addEventListener('online', () => {
-        console.log('[SyncEngine] Evento online detectado. Verificando conectividade real (debounce 3s)...');
+        console.log('[SyncEngine] Evento online detectado. Atualizando status imediatamente...');
         if (this._offlineDebounceTimer) {
           clearTimeout(this._offlineDebounceTimer);
           this._offlineDebounceTimer = null;
         }
+        this._isOnline = true;
+        this._connectionState = 'ONLINE';
+        if (this._progress.phase === 'offline') {
+          this._progress.phase = 'idle';
+        }
+        this.notify();
 
         if (this._onlineDebounceTimer) clearTimeout(this._onlineDebounceTimer);
         this._onlineDebounceTimer = setTimeout(async () => {
           this._onlineDebounceTimer = null;
           if (typeof navigator !== 'undefined' && !navigator.onLine) {
-            console.log('[SyncEngine] Oscilação rápida descartada: navigator.onLine é false.');
+            this._connectionState = 'OFFLINE';
+            this._isOnline = false;
+            this._progress.phase = 'offline';
+            this.notify();
             return;
           }
 
-          // Ping leve de baixo nível com AbortController
           const isAlive = await this.pingSupabase();
           if (isAlive) {
-            console.log('[SyncEngine] Servidor acessível. Conexão ONLINE confirmada.');
             this._connectionState = 'ONLINE';
             this._isOnline = true;
             this._consecutiveNetworkErrors = 0;
@@ -121,29 +130,24 @@ class SyncEngine {
             this._isOnline = true;
             this.notify();
           }
-        }, 3000);
+        }, 1000);
       });
 
       window.addEventListener('offline', () => {
-        console.log('[SyncEngine] Evento offline detectado. Aguardando 3s...');
+        console.log('[SyncEngine] Evento offline detectado. Ativando Modo Campo imediatamente (0ms).');
         if (this._onlineDebounceTimer) {
           clearTimeout(this._onlineDebounceTimer);
           this._onlineDebounceTimer = null;
         }
-
-        if (this._offlineDebounceTimer) clearTimeout(this._offlineDebounceTimer);
-        this._offlineDebounceTimer = setTimeout(() => {
+        if (this._offlineDebounceTimer) {
+          clearTimeout(this._offlineDebounceTimer);
           this._offlineDebounceTimer = null;
-          if (typeof navigator !== 'undefined' && navigator.onLine) {
-            console.log('[SyncEngine] Oscilação descartada: sinal recuperado antes do timeout.');
-            return;
-          }
+        }
 
-          console.log('[SyncEngine] Desconexão física confirmada. Modo Campo ativo (OFFLINE).');
-          this._connectionState = 'OFFLINE';
-          this._isOnline = false;
-          this.notify();
-        }, 3000);
+        this._connectionState = 'OFFLINE';
+        this._isOnline = false;
+        this._progress.phase = 'offline';
+        this.notify();
       });
 
       // Checagem periódica a cada 45s
@@ -153,6 +157,22 @@ class SyncEngine {
         }
       }, 45000);
     }
+  }
+
+  public setOfflineImmediately(): void {
+    this._isOnline = false;
+    this._connectionState = 'OFFLINE';
+    this._progress.phase = 'offline';
+    this.notify();
+  }
+
+  public setOnlineImmediately(): void {
+    this._isOnline = true;
+    this._connectionState = 'ONLINE';
+    if (this._progress.phase === 'offline') {
+      this._progress.phase = 'idle';
+    }
+    this.notify();
   }
 
   public get connectionState(): ConnectionState {
@@ -220,6 +240,11 @@ class SyncEngine {
 
   public async notify() {
     const counts = await getPendingCounts();
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('ms:sync-status', {
+        detail: { counts }
+      }));
+    }
     if (this._progress.phase === 'auth_required' && this.isUserAuthenticated()) {
       this._progress.phase = this._connectionState === 'OFFLINE' ? 'offline' : 'idle';
       this._progress.errorMessage = null;
@@ -268,14 +293,16 @@ class SyncEngine {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
 
       const targetUrl = supabaseUrl || (supabase as any)?.supabaseUrl || 'http://127.0.0.1:54321';
       const targetKey = supabaseAnonKey || (supabase as any)?.supabaseKey || '';
       const pingUrl = targetUrl.replace(/\/$/, '') + '/rest/v1/';
 
+      // HEAD request ultraleve (0 bytes body) com cache: 'no-store' para evitar falso positivo via Service Worker/Cache
       const res = await fetch(pingUrl, {
-        method: 'GET',
+        method: 'HEAD',
+        cache: 'no-store',
         signal: controller.signal,
         headers: {
           apikey: targetKey
@@ -283,10 +310,23 @@ class SyncEngine {
       }).catch(() => null);
 
       clearTimeout(timeoutId);
-      // Qualquer resposta HTTP recebida (200, 401, 403, 404, 500) confirma conectividade física
-      return !!(res && (res.status > 0 || res.ok));
+      if (res && (res.status > 0 || res.ok)) return true;
+
+      // Fallback via cliente Supabase
+      if (supabase) {
+        try {
+          const { status } = await supabase
+            .from('perguntas_rtrs')
+            .select('id', { count: 'exact', head: true })
+            .limit(1);
+          if (status && status > 0) return true;
+        } catch {
+          return false;
+        }
+      }
+      return false;
     } catch {
-      return typeof navigator !== 'undefined' ? navigator.onLine : false;
+      return false;
     }
   }
 
@@ -383,14 +423,70 @@ class SyncEngine {
         // CORREÇÃO 2: Resgatar mutações da DLQ com erro de constraint NOT NULL (23502)
     try {
       await rescueNotnullFailedMutations();
+      // purgeOrphanAndSyncedItems removed to prevent queue deletion
     } catch (rErr) {
       console.warn('[SyncEngine] Aviso ao resgatar mutações NOT NULL da DLQ:', rErr);
     }
 
     // Obter itens elegíveis (Unified Journal + legado de outbox)
-    const eligibleJournal = await getPendingJournalItems(forceAll);
+    const rawJournal = await getPendingJournalItems(forceAll);
+
+    // ETAPA 3: Deduplicação em memória por auditoria_id + pergunta_id
+    // Agrupa os itens em memória por auditoria_id + pergunta_id.
+    // Se houver itens residuais com a mesma chave, processa apenas o que tiver o maior updated_at e descarta os demais.
+    const journalMap = new Map<string, SyncJournalItem>();
+    for (const item of rawJournal) {
+      if (!item.auditoria_id || !item.pergunta_id) continue;
+      const key = `${item.auditoria_id}_${item.pergunta_id}`;
+      if (!journalMap.has(key)) {
+        journalMap.set(key, item);
+      } else {
+        const existing = journalMap.get(key)!;
+        const timeExisting = new Date(existing.updated_at || existing.created_at || 0).getTime();
+        const timeCurrent = new Date(item.updated_at || item.created_at || 0).getTime();
+        if (timeCurrent > timeExisting) {
+          journalMap.set(key, item);
+        }
+      }
+    }
+    const eligibleJournal = Array.from(journalMap.values());
+
+    // Deduplicação de mutações legadas de respostas_auditoria
+    const rawMutations = await getEligibleMutations(forceAll);
+    const mutMap = new Map<string, OutboxMutation>();
+    const duplicateMutIds: number[] = [];
+    const nonAuditMutations: OutboxMutation[] = [];
+
+    for (const m of rawMutations) {
+      if (m.table === 'respostas_auditoria' && m.payload?.auditoria_id && m.payload?.pergunta_id) {
+        const key = `${m.payload.auditoria_id}_${m.payload.pergunta_id}`;
+        if (!mutMap.has(key)) {
+          mutMap.set(key, m);
+        } else {
+          const existing = mutMap.get(key)!;
+          const timeExisting = new Date(existing.updated_at || existing.created_at || 0).getTime();
+          const timeCurrent = new Date(m.updated_at || m.created_at || 0).getTime();
+          if (timeCurrent > timeExisting) {
+            if (existing.id) duplicateMutIds.push(existing.id);
+            mutMap.set(key, m);
+          } else {
+            if (m.id) duplicateMutIds.push(m.id);
+          }
+        }
+      } else {
+        nonAuditMutations.push(m);
+      }
+    }
+
+    if (duplicateMutIds.length > 0) {
+      try {
+        await db.outbox_mutations.bulkDelete(duplicateMutIds);
+        console.log(`[SyncEngine] Limpeza: ${duplicateMutIds.length} mutações duplicadas antigas descartadas.`);
+      } catch (e) {}
+    }
+
+    const eligibleMutations = [...Array.from(mutMap.values()), ...nonAuditMutations];
     const eligibleFiles = await getEligibleFiles(forceAll);
-    const eligibleMutations = await getEligibleMutations(forceAll);
     const totalItems = eligibleJournal.length + eligibleFiles.length + eligibleMutations.length;
 
     console.log('[SYNC] Iniciando processamento linear da fila...', {
@@ -406,6 +502,11 @@ class SyncEngine {
       this._isSyncing = false;
       this._syncStartTime = 0;
       const counts = await getPendingCounts();
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('ms:sync-complete', {
+          detail: { drainedCount: 0, errorCount: 0, counts }
+        }));
+      }
       this._progress = {
         phase: this._connectionState === 'OFFLINE' ? 'offline' : 'idle',
         totalItems: 0,
@@ -505,7 +606,9 @@ class SyncEngine {
       // =========================================================================
       for (let j = 0; j < eligibleJournal.length; j++) {
         const item = eligibleJournal[j];
-        if (!item.id) continue;
+        if (!item.auditoria_id || !item.pergunta_id) continue;
+
+        const canonicalPerguntaId = normalizePerguntaId(item.pergunta_id);
 
         if (typeof navigator !== 'undefined' && !navigator.onLine) {
           console.log('[SyncEngine] Desconexão física durante o envio do journal. Parando ciclo.');
@@ -520,70 +623,170 @@ class SyncEngine {
           completedItems: drainedCount,
           progressPercent: currentPercent,
           currentItemType: item.file_blob ? 'foto' : 'checklist',
-          currentItemLabel: `Transmitindo (${drainedCount + 1} de ${totalItems}): Critério ${item.numero_criterio || item.pergunta_id}`
+          currentItemLabel: `Transmitindo (${drainedCount + 1} de ${totalItems}): Critério ${item.numero_criterio || canonicalPerguntaId}`
         };
         this.notify();
 
-        console.groupCollapsed(`[SYNC ENGINE] Journal Item #${item.id} (Auditoria: ${item.auditoria_id}, Pergunta: ${item.pergunta_id})`);
-        await markJournalItemStatus(item.id, 'syncing');
+        console.groupCollapsed(`[SYNC ENGINE] Journal Item (${item.auditoria_id} / ${canonicalPerguntaId})`);
+        await markJournalItemStatus(item.auditoria_id, item.pergunta_id, 'syncing');
 
         try {
           let publicUrl: string | null = item.evidencia_url || null;
 
-          // PASSO A (Upload Storage): Se houver file_blob, envia ao bucket 'evidencias'
+          // PASSO A (Upload Storage): Se houver file_blob com tamanho > 0, envia ao bucket 'evidencias'
           if (item.file_blob) {
-            const bucket = 'evidencias';
-            const rawExt = (item.file_name?.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
-            const storagePath = item.storage_path || `evidencias/${item.auditoria_id}_${item.pergunta_id}_${item.created_at || Date.now()}.${rawExt || 'jpg'}`;
+            const blobSize = (item.file_blob as any).size ?? 0;
+            if (blobSize === 0) {
+              console.warn(`[SYNC ENGINE] Arquivo de evidência para ${item.auditoria_id}/${canonicalPerguntaId} possui 0 bytes. Ignorando upload.`);
+            } else {
+              const bucket = 'evidencias';
+              const rawExt = (item.file_name?.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
+              const storagePath = item.storage_path || `evidencias/${item.auditoria_id}_${canonicalPerguntaId}_${item.created_at || Date.now()}.${rawExt || 'jpg'}`;
 
-            console.log('[SYNC ENGINE] Passo A: Upload do Blob ao Storage bucket evidencias:', storagePath);
-            let uploadRes = await supabase.storage
-              .from(bucket)
-              .upload(storagePath, item.file_blob, {
-                upsert: true,
-                contentType: item.mime_type || 'image/jpeg'
-              });
+              console.log('[SYNC ENGINE] Passo A: Upload do Blob ao Storage bucket evidencias:', storagePath, `(${blobSize} bytes)`);
+              let uploadRes = await supabase.storage
+                .from(bucket)
+                .upload(storagePath, item.file_blob, {
+                  upsert: true,
+                  contentType: item.mime_type || 'image/jpeg'
+                });
 
-            // Se erro 401 / JWT expirado, tenta renovação silenciosa
-            if (uploadRes.error && (
-              (uploadRes.error as any).statusCode === '401' ||
-              uploadRes.error.message?.toLowerCase().includes('jwt') ||
-              uploadRes.error.message?.toLowerCase().includes('token')
-            )) {
-              console.log('[SYNC ENGINE] Token expirado no upload do journal. Tentando refresh silencioso...');
-              try {
-                const { data: refData } = await supabase.auth.refreshSession();
-                if (refData?.session) {
-                  uploadRes = await supabase.storage
-                    .from(bucket)
-                    .upload(storagePath, item.file_blob, {
-                      upsert: true,
-                      contentType: item.mime_type || 'image/jpeg'
-                    });
+              // Se erro 401 / JWT expirado, tenta renovação silenciosa
+              if (uploadRes.error && (
+                (uploadRes.error as any).statusCode === '401' ||
+                uploadRes.error.message?.toLowerCase().includes('jwt') ||
+                uploadRes.error.message?.toLowerCase().includes('token')
+              )) {
+                console.log('[SYNC ENGINE] Token expirado no upload do journal. Tentando refresh silencioso...');
+                try {
+                  const { data: refData } = await supabase.auth.refreshSession();
+                  if (refData?.session) {
+                    uploadRes = await supabase.storage
+                      .from(bucket)
+                      .upload(storagePath, item.file_blob, {
+                        upsert: true,
+                        contentType: item.mime_type || 'image/jpeg'
+                      });
+                  }
+                } catch (rErr) {
+                  console.warn('[SYNC ENGINE] Falha ao tentar refresh durante upload do journal:', rErr);
                 }
-              } catch (rErr) {
-                console.warn('[SYNC ENGINE] Falha ao tentar refresh durante upload do journal:', rErr);
               }
-            }
 
-            if (uploadRes.error) {
-              console.error('[SYNC ENGINE] Erro no upload Storage do journal:', uploadRes.error);
-              throw uploadRes.error; // Erro no Storage -> lança erro e NÃO remove o item da fila!
-            }
+              if (uploadRes.error) {
+                console.error('[SYNC ENGINE] Erro no upload Storage do journal:', uploadRes.error);
+                throw uploadRes.error; // Erro no Storage -> lança erro e NÃO remove o item da fila!
+              }
 
-            const { data: pubData } = supabase.storage.from(bucket).getPublicUrl(storagePath);
-            publicUrl = pubData?.publicUrl || null;
-            console.log('[SYNC ENGINE] Passo A Concluído. URL pública gerada:', publicUrl);
+              const { data: pubData } = supabase.storage.from(bucket).getPublicUrl(storagePath);
+              publicUrl = pubData?.publicUrl || null;
+              console.log('[SYNC ENGINE] Passo A Concluído. URL pública gerada:', publicUrl);
+            }
           }
 
-          // PASSO B (Upsert Postgres): Executa o upsert sanitizado em respostas_auditoria
+          // PASSO B (Upsert Postgres): Executa o upsert sanitizado em respostas_auditoria com UUID canônico
           const nowIso = new Date().toISOString();
+          const isExplicitDelete = item.is_explicit_delete === true || item.evidencia_url === null;
+
+          // Blindagem estrita: URLs blob: efêmeras NUNCA devem ser enviadas ao Postgres remoto
+          let remoteEvidenciaUrl: string | null = isExplicitDelete ? null : (publicUrl || null);
+          if (!isExplicitDelete && !remoteEvidenciaUrl && item.evidencia_url) {
+            const raw = item.evidencia_url.trim();
+            if (!raw.startsWith('blob:')) {
+              remoteEvidenciaUrl = raw;
+            }
+          }
+
+          // Se for exclusão explícita, expurga arquivos do Storage e assegura remoteEvidenciaUrl = null
+          if (isExplicitDelete) {
+            remoteEvidenciaUrl = null;
+            try {
+              const prefix1 = `evidencia_${item.auditoria_id}_${canonicalPerguntaId}`;
+              const prefix2 = `${item.auditoria_id}_${canonicalPerguntaId}`;
+              const [res1, res2, res3] = await Promise.all([
+                supabase.storage.from('evidencias').list('', { search: prefix1 }),
+                supabase.storage.from('evidencias').list('', { search: prefix2 }),
+                supabase.storage.from('evidencias').list('evidencias', { search: prefix2 })
+              ]);
+              const filesToDelete: string[] = [];
+              if (res1.data) res1.data.forEach(f => filesToDelete.push(f.name));
+              if (res2.data) res2.data.forEach(f => filesToDelete.push(f.name));
+              if (res3.data) res3.data.forEach(f => filesToDelete.push(`evidencias/${f.name}`));
+              if (item.storage_path) filesToDelete.push(item.storage_path);
+              if (filesToDelete.length > 0) {
+                await supabase.storage.from('evidencias').remove([...new Set(filesToDelete)]);
+              }
+            } catch (stDelErr) {
+              console.warn('[SYNC ENGINE] Aviso ao remover arquivos do storage para item excluído:', stDelErr);
+            }
+          } else if (!remoteEvidenciaUrl && (item.file_blob || item.evidencia_url)) {
+            // Se NÃO for exclusão e o usuário enviou uma evidência (blob/url), mas ainda não temos URL pública oficial:
+            try {
+              const prefix = `evidencia_${item.auditoria_id}_${canonicalPerguntaId}`;
+              const { data: stFiles } = await supabase.storage.from('evidencias').list('', { limit: 5, search: prefix });
+              if (stFiles && stFiles.length > 0) {
+                stFiles.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+                const { data: pData } = supabase.storage.from('evidencias').getPublicUrl(stFiles[0].name);
+                if (pData?.publicUrl) remoteEvidenciaUrl = pData.publicUrl;
+              }
+            } catch (searchErr) {
+              console.warn('[SYNC ENGINE] Aviso ao verificar storage para URL pública:', searchErr);
+            }
+          }
+
+          let targetAuditoriaId = item.auditoria_id;
+          if (targetAuditoriaId && (targetAuditoriaId.startsWith('mock-') || targetAuditoriaId.startsWith('assigned-pend-') || targetAuditoriaId.startsWith('temp-'))) {
+            try {
+              const cachedAud = await db.cached_auditorias.get(targetAuditoriaId);
+              const targetPropId = cachedAud?.propriedade_id;
+              if (targetPropId && !targetPropId.startsWith('mock-')) {
+                const { data: realAudit } = await supabase
+                  .from('auditorias')
+                  .select('id')
+                  .eq('propriedade_id', targetPropId)
+                  .order('created_at', { ascending: false })
+                  .limit(1)
+                  .maybeSingle();
+
+                if (realAudit?.id) {
+                  console.log(`[SYNC ENGINE] Reconciliado ID sintético no journal: '${targetAuditoriaId}' -> '${realAudit.id}'`);
+                  targetAuditoriaId = realAudit.id;
+                } else {
+                  const { data: createdAudit } = await supabase
+                    .from('auditorias')
+                    .insert([{
+                      propriedade_id: targetPropId,
+                      status: 'Autoavaliação',
+                      data_agendamento: new Date().toISOString()
+                    }])
+                    .select('id')
+                    .maybeSingle();
+                  if (createdAudit?.id) {
+                    console.log(`[SYNC ENGINE] Auditoria criada para receber respostas do journal: ${createdAudit.id}`);
+                    targetAuditoriaId = createdAudit.id;
+                  }
+                }
+
+                if (targetAuditoriaId && targetAuditoriaId !== item.auditoria_id) {
+                  await db.cached_respostas.delete([item.auditoria_id, canonicalPerguntaId]);
+                  if (cachedAud) {
+                    await db.cached_auditorias.put({ ...cachedAud, id: targetAuditoriaId });
+                    await db.cached_auditorias.delete(item.auditoria_id);
+                  }
+                }
+              }
+            } catch (reconErr) {
+              console.warn('[SYNC ENGINE] Aviso ao reconciliar auditoria sintética no journal:', reconErr);
+            }
+          }
+
           const payload = {
-            auditoria_id: item.auditoria_id,
-            pergunta_id: item.pergunta_id,
+            auditoria_id: targetAuditoriaId,
+            pergunta_id: canonicalPerguntaId, // UUID canônico garantido!
             conforme: item.conforme ?? false, // Impede violação de NOT NULL (Erro 23502)
+            nao_se_aplica: item.nao_se_aplica ?? false,
             observacoes: item.observacoes || '',
-            evidencia_url: publicUrl || item.evidencia_url || null,
+            evidencia_url: isExplicitDelete ? null : remoteEvidenciaUrl,
             updated_at: nowIso
           };
 
@@ -618,29 +821,67 @@ class SyncEngine {
           }
 
           // PASSO C (Atualização do Cache Local): Salva registro confirmado com URL definitiva em db.cached_respostas
+          if (item.pergunta_id !== canonicalPerguntaId) {
+            try {
+              await db.cached_respostas.delete([item.auditoria_id, item.pergunta_id]);
+              await removeJournalItem(item.auditoria_id, item.pergunta_id);
+            } catch {}
+          }
+
           await db.cached_respostas.put({
-            auditoria_id: item.auditoria_id,
-            pergunta_id: item.pergunta_id,
+            auditoria_id: targetAuditoriaId,
+            pergunta_id: canonicalPerguntaId,
             conforme: item.conforme ?? false,
             observacoes: item.observacoes || '',
-            evidencia_url: payload.evidencia_url,
+            evidencia_url: isExplicitDelete ? null : (payload.evidencia_url || null),
             numero_criterio: item.numero_criterio,
             updated_at: nowIso,
-            evidencia_uploaded_at: payload.evidencia_url ? nowIso : null,
-            data_envio: payload.evidencia_url ? nowIso : null
+            evidencia_uploaded_at: (!isExplicitDelete && payload.evidencia_url) ? nowIso : null,
+            data_envio: (!isExplicitDelete && payload.evidencia_url) ? nowIso : null
           });
           console.log('[SYNC ENGINE] Passo C Concluído: Cache local atualizado com URL definitiva.');
 
           // PASSO D (Deleção Segura do Journal): Executa delete exclusivamente após confirmação do Postgres (status 200/201)
-          await db.sync_journal.delete(item.id);
-          console.log(`[SYNC ENGINE] Passo D Concluído: Item #${item.id} removido do sync_journal após 2PC confirmado.`);
+          if (item.id) {
+            await db.sync_journal.delete(item.id);
+          }
+          await removeJournalItem(item.auditoria_id, canonicalPerguntaId);
+          if (item.pergunta_id !== canonicalPerguntaId) {
+            await removeJournalItem(item.auditoria_id, item.pergunta_id);
+          }
+
+          // Limpeza atômica de mutações legadas e arquivos de outbox órfãos para evitar pendências presas
+          try {
+            const companionMuts = await db.outbox_mutations
+              .filter(m => m.table === 'respostas_auditoria' && 
+                           m.payload?.auditoria_id === item.auditoria_id && 
+                           normalizePerguntaId(m.payload?.pergunta_id) === canonicalPerguntaId)
+              .toArray();
+            for (const cm of companionMuts) {
+              if (cm.id) await db.outbox_mutations.delete(cm.id);
+              if (cm.file_ids && cm.file_ids.length > 0) {
+                for (const fid of cm.file_ids) {
+                  await removeFile(fid);
+                }
+              }
+            }
+
+            // Remove também arquivo correspondente em outbox_files caso ainda persista
+            const relatedFiles = await db.outbox_files
+              .filter(f => f.file_name?.includes(item.auditoria_id) && f.file_name?.includes(canonicalPerguntaId))
+              .toArray();
+            for (const rf of relatedFiles) {
+              await removeFile(rf.id);
+            }
+          } catch {}
+          console.log(`[SYNC ENGINE] Passo D Concluído: Item [${item.auditoria_id}, ${canonicalPerguntaId}] e dependências reconciliadas com sucesso.`);
           
           drainedCount++;
           console.groupEnd();
         } catch (itemErr: any) {
           errorCount++;
           const errMsg = itemErr?.message || String(itemErr);
-          console.error(`[SYNC ENGINE] Falha ao processar item #${item.id} do journal:`, errMsg);
+          console.error(`[SYNC ENGINE] Falha ao processar item [${item.auditoria_id}, ${item.pergunta_id}] do journal:`, errMsg);
 
           const isNetwork = !navigator.onLine ||
             itemErr?.name === 'AbortError' ||
@@ -649,7 +890,7 @@ class SyncEngine {
             errMsg.includes('network connection lost') ||
             itemErr?.code === 'PGRST000';
 
-          await markJournalItemStatus(item.id, 'failed', errMsg);
+          await markJournalItemStatus(item.auditoria_id, item.pergunta_id, 'failed', errMsg);
 
           if (isNetwork) {
             hadPhysicalNetworkFailure = true;
@@ -738,7 +979,7 @@ class SyncEngine {
           }
 
           await markFileStatus(file.id, 'uploading');
-          let publicUrl = '';
+          let publicUrl = (file.status === 'uploaded_pending_db' && file.public_url) ? file.public_url : '';
           const blobSize = file.file_blob ? ((file.file_blob as any).size || 0) : (file.file_size || 0);
 
           // LOG DETALHADO MANDATÓRIO: tamanho do Blob, bucket e caminho de destino
@@ -752,8 +993,11 @@ class SyncEngine {
 
           // Upload no bucket designado com proteção de try/catch contra exceções de fetch/rede
           let upErr: any = null;
-          try {
-            const uploadRes = await supabase.storage
+          if (publicUrl) {
+            console.log('[SYNC ENGINE] Arquivo já enviado para o Storage previamente. Reutilizando URL pública:', publicUrl);
+          } else {
+            try {
+              const uploadRes = await supabase.storage
               .from(file.bucket)
               .upload(file.storage_path, file.file_blob, {
                 cacheControl: '3600',
@@ -767,7 +1011,7 @@ class SyncEngine {
             upErr = storageEx;
             console.log('4. Resposta Storage (exceção):', { error: storageEx });
           }
-
+          }
           let finalUpErr = upErr;
 
           // Se erro 401 / JWT expirado, tenta renovação silenciosa de token
@@ -843,14 +1087,55 @@ class SyncEngine {
 
           if (publicUrl) {
             fileUrlMap.set(file.id, publicUrl);
-            // CORREÇÃO 1: TWO-PHASE COMMIT (2PC - FASE 1: NÃO DELETAR O ARQUIVO DO DEXIE AQUI!)
-            // Marca o arquivo como uploaded_pending_db e armazena a public_url no Dexie.
-            // O Blob físico é PRESERVADO no IndexedDB até que o Postgres confirme o salvamento!
+
+            // Verifica se há alguma mutação pendente na fila que processe este arquivo
+            const hasPendingMutation = eligibleMutations.some(m => m.file_ids && m.file_ids.includes(file.id));
+            if (!hasPendingMutation) {
+              console.log(`[SYNC ENGINE] Arquivo #${file.id} sem mutação pendente vinculada. Reconciliando com o banco...`);
+              const pathOrName = file.storage_path || file.file_name || '';
+              const match = pathOrName.match(/evidencia_([0-9a-fA-F-]+)_([0-9a-fA-F-]+)/);
+              if (match) {
+                const audId = match[1];
+                const rawPergId = match[2];
+                const canonPergId = normalizePerguntaId(rawPergId);
+                const nowIso = new Date().toISOString();
+
+                try {
+                  await supabase
+                    .from('respostas_auditoria')
+                    .update({ evidencia_url: publicUrl, updated_at: nowIso })
+                    .match({ auditoria_id: audId, pergunta_id: canonPergId });
+
+                  const cached = await db.cached_respostas.get([audId, canonPergId]);
+                  if (cached) {
+                    await db.cached_respostas.put({
+                      ...cached,
+                      evidencia_url: publicUrl,
+                      updated_at: nowIso,
+                      evidencia_uploaded_at: cached.evidencia_uploaded_at || nowIso,
+                      data_envio: cached.data_envio || nowIso
+                    });
+                  }
+                  console.log(`[SYNC ENGINE] Reconciliação direta de evidência concluída para ${audId} / ${canonPergId}`);
+                } catch (reconErr) {
+                  console.warn('[SYNC ENGINE] Aviso ao atualizar respostas_auditoria diretamente:', reconErr);
+                }
+              }
+
+              await removeFile(file.id);
+              drainedCount++;
+              this._consecutiveNetworkErrors = 0;
+              console.log(`[SYNC ENGINE] [2PC - Concluído] Arquivo órfão ${file.id} reconciliado e purgado do IndexedDB.`);
+              console.groupEnd();
+              continue;
+            }
+
+            // CORREÇÃO 1: TWO-PHASE COMMIT (2PC - FASE 1)
             await markFileStatus(file.id, 'uploaded_pending_db', publicUrl);
             drainedCount++;
             await this.notify();
             this._consecutiveNetworkErrors = 0;
-            console.log('[SYNC ENGINE] [2PC - Fase 1] Arquivo salvo no Storage. Deleção travada até confirmação do Postgres:', {
+            console.log('[SYNC ENGINE] [2PC - Fase 1] Arquivo salvo no Storage. Deleção travada até confirmação da mutação Postgres:', {
               id: file.id,
               url: publicUrl.startsWith('data:') ? 'Data URL (Base64)' : publicUrl
             });
@@ -957,10 +1242,28 @@ class SyncEngine {
 
             // CORREÇÃO 2: Sanitização da restrição NOT NULL na coluna 'conforme'
             // CORREÇÃO 4: Reconciliação de auditorias sintéticas
+            if (mutation.table === 'pendencias') {
+              if ('auditoria_id' in payload) {
+                delete payload.auditoria_id;
+              }
+            }
+
+            if (mutation.table === 'auditorias') {
+              if ('propriedades' in payload) {
+                delete payload.propriedades;
+              }
+            }
+
             if (mutation.table === 'respostas_auditoria') {
+              if (payload.pergunta_id) {
+                payload.pergunta_id = normalizePerguntaId(payload.pergunta_id);
+              }
               if (payload.conforme === null || payload.conforme === undefined) {
                 console.warn(`[SYNC ENGINE] Sanitizando payload de respostas_auditoria #${mutation.id}: 'conforme' é null/undefined. Aplicando fallback 'false' para cumprir NOT NULL.`);
                 payload.conforme = false;
+              }
+              if (payload.nao_se_aplica !== undefined) {
+                payload.nao_se_aplica = !!payload.nao_se_aplica;
               }
 
               if (payload.auditoria_id && (payload.auditoria_id.startsWith('mock-') || payload.auditoria_id.startsWith('assigned-pend-') || payload.auditoria_id.startsWith('temp-'))) {
@@ -1228,7 +1531,42 @@ class SyncEngine {
       this._syncStartTime = 0;
       const counts = await getPendingCounts();
 
-      if (errorCount === 0 && drainedCount > 0) {
+      if (counts.total === 0) {
+        // TUDO ATUALIZADO NO BANCO DE DADOS (0 PENDÊNCIAS)
+        this._connectionState = 'ONLINE';
+        this._isOnline = true;
+        this._consecutiveNetworkErrors = 0;
+
+        this._progress = {
+          phase: drainedCount > 0 ? 'success' : 'idle',
+          totalItems: drainedCount,
+          completedItems: drainedCount,
+          progressPercent: 100,
+          lastDrainedCount: drainedCount,
+          deadLetterCount: 0
+        };
+        this.notify();
+
+        if (this._successTimerId) clearTimeout(this._successTimerId);
+        if (drainedCount > 0) {
+          this._successTimerId = setTimeout(() => {
+            if (this._progress.phase === 'success') {
+              this._progress = {
+                phase: this._connectionState === 'OFFLINE' ? 'offline' : 'idle',
+                totalItems: 0,
+                completedItems: 0,
+                progressPercent: 0,
+                deadLetterCount: 0
+              };
+              this.notify();
+            }
+          }, 3000);
+        }
+      } else if (errorCount === 0 && drainedCount > 0) {
+        this._connectionState = 'ONLINE';
+        this._isOnline = true;
+        this._consecutiveNetworkErrors = 0;
+
         this._progress = {
           phase: 'success',
           totalItems,
@@ -1251,7 +1589,7 @@ class SyncEngine {
             };
             this.notify();
           }
-        }, 4000);
+        }, 3000);
       } else if (errorCount > 0) {
         const hasDeadLetter = counts.deadLetter > 0;
         const msg = hadPhysicalNetworkFailure

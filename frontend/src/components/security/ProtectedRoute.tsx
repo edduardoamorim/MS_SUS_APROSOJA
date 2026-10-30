@@ -1,4 +1,3 @@
-
 import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { Loader2 } from 'lucide-react';
@@ -21,16 +20,33 @@ export default function ProtectedRoute({ allowedRoles }: ProtectedRouteProps) {
     );
   }
 
-  // Se não estiver logado, redireciona para o login
+  // Se não houver usuário no AuthContext
   if (!user) {
+    // Blindagem de Contingência Offline: se houver sessão de fallback em localStorage, autoriza
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('ms_auth_fallback_session') : null;
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (parsed?.user) {
+          const userRole = parsed.role || 'tecnico';
+          if (allowedRoles.includes(userRole)) {
+            return <Outlet />;
+          }
+        }
+      } catch (e) {}
+    }
     return <Navigate to="/login" replace />;
   }
 
-  // Se estiver logado mas a role não bater, redireciona para Não Autorizado
+  // Se estiver logado mas a role não bater
   if (!role || !allowedRoles.includes(role)) {
+    const lastRole = typeof localStorage !== 'undefined' ? localStorage.getItem('ms_last_active_role') : null;
+    if (lastRole && allowedRoles.includes(lastRole)) {
+      return <Outlet />;
+    }
     return <Navigate to="/unauthorized" replace />;
   }
 
-  // Se tudo certo, renderiza o componente filho (Outlet gerencia as rotas filhas)
+  // Se tudo certo, renderiza o componente filho
   return <Outlet />;
 }

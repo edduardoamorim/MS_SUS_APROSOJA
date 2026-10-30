@@ -57,6 +57,45 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
     error: null as string | null | undefined
   });
 
+  // Escuta ativa direta dos eventos nativos do navegador (0ms)
+  useEffect(() => {
+    const handleOnline = () => {
+      console.log('[SyncContext] Evento online nativo recebido');
+      setState(prev => ({
+        ...prev,
+        isOnline: true,
+        connectionState: prev.connectionState === 'OFFLINE' ? 'ONLINE' : prev.connectionState,
+        syncProgress: {
+          ...prev.syncProgress,
+          phase: prev.syncProgress.phase === 'offline' ? 'idle' : prev.syncProgress.phase
+        }
+      }));
+      syncEngine.setOnlineImmediately();
+    };
+
+    const handleOffline = () => {
+      console.log('[SyncContext] Evento offline nativo recebido (Modo Campo 0ms)');
+      setState(prev => ({
+        ...prev,
+        isOnline: false,
+        connectionState: 'OFFLINE',
+        syncProgress: {
+          ...prev.syncProgress,
+          phase: 'offline'
+        }
+      }));
+      syncEngine.setOfflineImmediately();
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
   useEffect(() => {
     const unsubscribe = syncEngine.subscribe(newState => {
       setState({

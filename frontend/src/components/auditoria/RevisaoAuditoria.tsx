@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { CheckCircle2, AlertCircle, X, ShieldCheck, Image as ImageIcon, Search, Loader2, FileText } from 'lucide-react';
+import { CheckCircle2, AlertCircle, MinusCircle, X, ShieldCheck, Image as ImageIcon, Search, Loader2, FileText } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { cleanEvidenceUrl, isPdfEvidence } from '../../lib/evidenceService';
 
 interface RevisaoAuditoriaProps {
   propriedadeNome: string;
@@ -12,9 +13,9 @@ interface RevisaoAuditoriaProps {
 }
 
 const MOCK_RESPOSTAS = [
-  { id: '1', secao: 'Meio Ambiente', criterio: '1.1', enunciado: 'A propriedade possui reserva legal averbada e protegida?', conforme: true, observacao: 'Área devidamente cercada.', evidencia: 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?w=400&h=300&fit=crop' },
-  { id: '2', secao: 'Meio Ambiente', criterio: '1.2', enunciado: 'Existe plano de gestão de resíduos sólidos?', conforme: false, observacao: 'Falta lixeiras para químicos no galpão norte.', evidencia: null },
-  { id: '3', secao: 'Trabalhista', criterio: '2.1', enunciado: 'Trabalhadores utilizam EPI?', conforme: true, observacao: 'Verificado na frente de plantio.', evidencia: 'https://images.unsplash.com/photo-1588681664899-f142ff2dc9b1?w=400&h=300&fit=crop' },
+  { id: '1', secao: 'Meio Ambiente', criterio: '1.1', enunciado: 'A propriedade possui reserva legal averbada e protegida?', conforme: true, nao_se_aplica: false, observacao: 'Área devidamente cercada.', evidencia: 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?w=400&h=300&fit=crop' },
+  { id: '2', secao: 'Meio Ambiente', criterio: '1.2', enunciado: 'Existe plano de gestão de resíduos sólidos?', conforme: false, nao_se_aplica: false, observacao: 'Falta lixeiras para químicos no galpão norte.', evidencia: null },
+  { id: '3', secao: 'Trabalhista', criterio: '2.1', enunciado: 'Trabalhadores utilizam EPI?', conforme: true, nao_se_aplica: false, observacao: 'Verificado na frente de plantio.', evidencia: 'https://images.unsplash.com/photo-1588681664899-f142ff2dc9b1?w=400&h=300&fit=crop' },
 ];
 
 export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, onReject, auditoriaId }: RevisaoAuditoriaProps) {
@@ -35,6 +36,7 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
           .select(`
             id,
             conforme,
+            nao_se_aplica,
             observacao,
             evidencia_url,
             perguntas_rtrs (
@@ -66,8 +68,9 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
             criterio: (r.perguntas_rtrs as any)?.numero_criterio || 'N/A',
             enunciado: (r.perguntas_rtrs as any)?.enunciado || '',
             conforme: r.conforme,
-            observacao: r.observacao || 'Nenhum comentário.',
-            evidencia: r.evidencia_url
+            nao_se_aplica: !!r.nao_se_aplica,
+            observacao: (r as any).observacoes || (r as any).observacao || 'Nenhum comentário.',
+            evidencia: cleanEvidenceUrl(r.evidencia_url)
           })).sort((a, b) => {
             const partsA = parseNum(a.criterio);
             const partsB = parseNum(b.criterio);
@@ -103,8 +106,10 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
 
   const getScore = () => {
     if (respostas.length === 0) return 0;
-    const conformes = respostas.filter(r => r.conforme).length;
-    return Math.round((conformes / respostas.length) * 100);
+    const aplicaveis = respostas.filter(r => !r.nao_se_aplica);
+    if (aplicaveis.length === 0) return 100;
+    const conformes = aplicaveis.filter(r => r.conforme).length;
+    return Math.round((conformes / aplicaveis.length) * 100);
   };
 
   return createPortal(
@@ -165,14 +170,16 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
                   <p className="font-bold text-gray-900 mb-3">{resp.enunciado}</p>
                   
                   <div className="flex items-start gap-2 mb-2">
-                    {resp.conforme ? (
+                    {resp.nao_se_aplica ? (
+                      <MinusCircle className="w-5 h-5 text-slate-500 shrink-0 mt-0.5" />
+                    ) : resp.conforme ? (
                       <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
                     ) : (
                       <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
                     )}
                     <div>
-                      <span className={`font-bold ${resp.conforme ? 'text-emerald-700' : 'text-red-700'}`}>
-                        {resp.conforme ? 'Conforme' : 'Não Conforme'}
+                      <span className={`font-bold ${resp.nao_se_aplica ? 'text-slate-600' : resp.conforme ? 'text-emerald-700' : 'text-red-700'}`}>
+                        {resp.nao_se_aplica ? 'Não se Aplica' : resp.conforme ? 'Conforme' : 'Não Conforme'}
                       </span>
                       <p className="text-sm text-gray-600 mt-1"><span className="font-semibold text-gray-800">Obs do Auditor:</span> {resp.observacao}</p>
                     </div>
@@ -183,7 +190,7 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
                 <div className="w-full md:w-64 bg-gray-100 border-t md:border-t-0 md:border-l border-gray-200 flex flex-col items-center justify-center p-4">
                   <span className="text-xs font-bold text-gray-500 uppercase mb-2">Evidência Fotográfica / PDF</span>
                   {resp.evidencia ? (
-                    resp.evidencia.toLowerCase().includes('.pdf') ? (
+                    isPdfEvidence(resp.evidencia) ? (
                       <a
                         href={resp.evidencia}
                         target="_blank"

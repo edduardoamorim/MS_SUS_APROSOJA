@@ -7,6 +7,7 @@ import { supabase } from '../../lib/supabase';
 import Modal from '../../components/ui/Modal';
 import ConfirmAction from '../../components/ui/ConfirmAction';
 import { useToast } from '../../context/ToastContext';
+import { cleanEvidenceUrl, isPdfEvidence } from '../../lib/evidenceService';
 
 export default function GestorDocumentos() {
   const { success, error } = useToast();
@@ -180,24 +181,10 @@ export default function GestorDocumentos() {
   };
 
   const handleOpenEvidencia = (url?: string | null) => {
-    if (!url || !url.trim()) return;
-    let cleanUrl = url.trim();
+    const cleanUrl = cleanEvidenceUrl(url);
+    if (!cleanUrl) return;
 
-    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://') && !cleanUrl.startsWith('data:')) {
-      try {
-        const bucket = cleanUrl.includes('auditoria-evidencias') ? 'auditoria-evidencias' : 'evidencias';
-        const filePath = cleanUrl.replace(/^(evidencias|auditoria-evidencias)\//, '');
-        const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
-        if (data?.publicUrl) cleanUrl = data.publicUrl;
-      } catch (e) {
-        console.warn('Erro ao obter URL pública do storage:', e);
-      }
-    }
-
-    const lower = cleanUrl.toLowerCase();
-    const isPdf = lower.includes('.pdf') || lower.startsWith('data:application/pdf');
-
-    if (isPdf) {
+    if (isPdfEvidence(cleanUrl)) {
       setPdfAmpliado(cleanUrl);
     } else {
       setFotoAmpliada(cleanUrl);

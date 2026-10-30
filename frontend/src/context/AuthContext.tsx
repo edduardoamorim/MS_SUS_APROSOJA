@@ -132,30 +132,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (session?.user) {
         setSession(session);
         setUser(session.user);
+        const userRole = session.user.user_metadata?.role || localStorage.getItem('ms_last_active_role') || 'tecnico';
+        localStorage.setItem('ms_auth_fallback_session', JSON.stringify({
+          user: session.user,
+          role: userRole
+        }));
         loadUserRole(session.user).finally(() => setLoading(false));
       } else {
         const stored = localStorage.getItem('ms_auth_fallback_session');
         if (stored) {
           try {
             const parsed = JSON.parse(stored);
-            if (parsed.user && parsed.role) {
+            if (parsed.user) {
               setSession({ access_token: 'fallback-token', user: parsed.user } as any);
               setUser(parsed.user);
-              setRole(parsed.role);
+              setRole(parsed.role || 'tecnico');
               setLoading(false);
               return;
             }
-          } catch (e) {
-            localStorage.removeItem('ms_auth_fallback_session');
-          }
+          } catch (e) {}
         }
-        setSession(null);
-        setUser(null);
-        setRole(null);
+        const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+        if (!isOffline) {
+          setSession(null);
+          setUser(null);
+          setRole(null);
+        }
         setLoading(false);
       }
     }).catch(err => {
       console.warn('Erro ao obter sessão remota, usando cache local:', err);
+      const stored = localStorage.getItem('ms_auth_fallback_session');
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          if (parsed.user) {
+            setUser(parsed.user);
+            setRole(parsed.role || 'tecnico');
+            setSession({ access_token: 'fallback-token', user: parsed.user } as any);
+            setLoading(false);
+            return;
+          }
+        } catch (e) {}
+      }
       const lastRole = localStorage.getItem('ms_last_active_role') || 'tecnico';
       setRole(lastRole);
       setLoading(false);
@@ -165,10 +184,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (session?.user) {
         setSession(session);
         setUser(session.user);
+        const userRole = session.user.user_metadata?.role || localStorage.getItem('ms_last_active_role') || 'tecnico';
+        localStorage.setItem('ms_auth_fallback_session', JSON.stringify({
+          user: session.user,
+          role: userRole
+        }));
         await loadUserRole(session.user);
       } else {
+        // Blindagem contra perda de sessão em oscilações de rede offline
+        const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
         const stored = localStorage.getItem('ms_auth_fallback_session');
-        if (!stored) {
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            if (parsed.user) {
+              setUser(parsed.user);
+              setRole(parsed.role || 'tecnico');
+              setSession({ access_token: 'fallback-token', user: parsed.user } as any);
+              setLoading(false);
+              return;
+            }
+          } catch (e) {}
+        }
+        if (!isOffline) {
           setSession(null);
           setUser(null);
           setRole(null);

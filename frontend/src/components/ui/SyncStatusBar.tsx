@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { WifiOff, Database, RefreshCw, CheckCircle2, CloudCheck, AlertTriangle, Trash2, LogIn, Cloud } from 'lucide-react';
+import { WifiOff, Database, RefreshCw, CheckCircle2, AlertTriangle, Trash2, LogIn } from 'lucide-react';
 import { useSync } from '../../context/SyncContext';
 import { useAuth } from '../../context/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { syncEngine } from '../../services/syncEngine';
+import { db } from '../../lib/offlineDb';
 
 export default function SyncStatusBar() {
   const { connectionState, isOnline, isSyncing, pendingCounts, syncProgress, syncNow, purgeQueue } = useSync();
@@ -28,7 +29,14 @@ export default function SyncStatusBar() {
       return;
     }
 
-    // Debounce de transição para estados de erro, falha parcial e instabilidade
+    // Feedback imediato para offline (0ms) - NUNCA debouncar transição para Modo Campo!
+    if (!isOnline || syncProgress.phase === 'offline' || connectionState === 'OFFLINE') {
+      setActiveDisplayPhase('offline');
+      lastPhaseChangeRef.current = now;
+      return;
+    }
+
+    // Debounce de transição apenas para estados de aviso/erro transitório
     if (elapsed >= 1000) {
       setActiveDisplayPhase(syncProgress.phase);
       lastPhaseChangeRef.current = now;
@@ -40,7 +48,7 @@ export default function SyncStatusBar() {
       }, remaining);
       return () => clearTimeout(timer);
     }
-  }, [syncProgress.phase, isSyncing]);
+  }, [syncProgress.phase, isSyncing, isOnline, connectionState]);
 
   // Auto-limpeza reativa: se o usuário está autenticado, nunca permite fase auth_required presa
   useEffect(() => {
@@ -67,38 +75,67 @@ export default function SyncStatusBar() {
     }
   }, [isOnline, pendingCounts.total, isSyncing, syncProgress.phase]);
 
-  // 1. Fase idle: conectado, estável, sem pendências e sem sincronização ativa
-  if (
+  const isActuallyOffline =
+    (typeof navigator !== 'undefined' && !navigator.onLine) ||
+    !isOnline ||
+    connectionState === 'OFFLINE' ||
+    activeDisplayPhase === 'offline' ||
+    syncProgress.phase === 'offline';
+
+  const isIdle =
+    !isActuallyOffline &&
     (activeDisplayPhase === 'idle' || syncProgress.phase === 'idle') &&
     !isSyncing &&
     pendingCounts.total === 0 &&
-    (isOnline || connectionState === 'ONLINE') &&
-    (pendingCounts.deadLetter || 0) === 0
-  ) {
-    return null;
-  }
+    isOnline &&
+    connectionState !== 'OFFLINE' &&
+    (pendingCounts.deadLetter || 0) === 0;
 
-  // 2. Fase: Sessão Expirada / Login Necessário (APENAS se não houver usuário autenticado no AuthContext)
-  if (activeDisplayPhase === 'auth_required' && !user) {
-    const handleLoginOrRevalidate = async () => {
-      try {
-        if (user) {
-          const { data, error: refErr } = await supabase.auth.refreshSession();
-          if (!refErr && data?.session) {
-            syncEngine.clearAuthError();
-            await syncNow(true);
-            return;
+  const renderContent = () => {
+    // 1. Fase offline prioritária (Modo Campo Ativo confirmado - 0ms)
+    if (isActuallyOffline) {
+      return (
+        <div className="bg-gradient-to-r from-amber-700 via-amber-800 to-amber-900 text-white px-4 py-2 sm:py-2.5 shadow-md flex items-center justify-between text-xs sm:text-sm font-semibold border-b border-amber-950 animate-fade-in">
+          <div className="flex items-center gap-2 max-w-5xl mx-auto w-full justify-between">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="p-1 bg-white/20 rounded-md shrink-0">
+                <WifiOff className="w-4 h-4 text-amber-100" />
+              </div>
+              <div className="truncate">
+                <span className="font-extrabold uppercase tracking-wide text-amber-200 mr-1.5">[Modo Campo Ativo]</span>
+                <span className="truncate">Você está offline. Vistorias, respostas e fotos serão salvas no aparelho.</span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 bg-black/30 px-2.5 py-1 rounded-full text-xs font-bold text-amber-100 border border-white/15 shrink-0">
+              <Database className="w-3.5 h-3.5 text-amber-300" />
+              <span>{pendingCounts.total} item(ns) na fila local</span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // 2. Fase: Sessão Expirada / Login Necessário
+    if (activeDisplayPhase === 'auth_required' && !user) {
+      const handleLoginOrRevalidate = async () => {
+        try {
+          if (user) {
+            const { data, error: refErr } = await supabase.auth.refreshSession();
+            if (!refErr && data?.session) {
+              syncEngine.clearAuthError();
+              await syncNow(true);
+              return;
+            }
           }
+          await logout();
+        } catch (err) {
+          console.warn('Erro ao processar redirecionamento de login:', err);
         }
-        await logout();
-      } catch (err) {
-        console.warn('Erro ao processar redirecionamento de login:', err);
-      }
-      window.location.href = '/login';
-    };
+        window.location.href = '/login';
+      };
 
-    return (
-      <div className="w-full transition-all duration-300 ease-in-out shrink-0 z-30">
+      return (
         <div className="bg-gradient-to-r from-amber-900 via-orange-950 to-amber-950 text-white px-4 py-2.5 shadow-md flex items-center justify-between border-b border-amber-800 animate-fade-in">
           <div className="flex items-center justify-between max-w-5xl mx-auto w-full gap-3">
             <div className="flex items-center gap-2.5 min-w-0">
@@ -125,18 +162,16 @@ export default function SyncStatusBar() {
             </button>
           </div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
 
-  // 3. Fase de sincronização ativa (upload de fotos ou envio de mutações)
-  if (activeDisplayPhase === 'syncing' || isSyncing) {
-    const total = syncProgress.totalItems || pendingCounts.total || 1;
-    const completed = syncProgress.completedItems || 0;
-    const percent = syncProgress.progressPercent ?? (total > 0 ? Math.round((completed / total) * 100) : 0);
+    // 3. Fase de sincronização ativa
+    if (activeDisplayPhase === 'syncing' || isSyncing) {
+      const total = syncProgress.totalItems || pendingCounts.total || 1;
+      const completed = syncProgress.completedItems || 0;
+      const percent = syncProgress.progressPercent ?? (total > 0 ? Math.round((completed / total) * 100) : 0);
 
-    return (
-      <div className="w-full transition-all duration-300 ease-in-out shrink-0 z-30">
+      return (
         <div className="bg-gradient-to-r from-slate-950 via-blue-950 to-slate-950 text-white px-4 py-2.5 shadow-lg border-b border-blue-800/60 relative overflow-hidden animate-fade-in">
           <div className="flex items-center justify-between max-w-5xl mx-auto w-full gap-3">
             {/* Esquerda: Indicador girando + Tipo de item */}
@@ -173,16 +208,14 @@ export default function SyncStatusBar() {
             />
           </div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
 
-  // 4. Fase de sucesso efêmero (4 segundos de confirmação)
-  if (activeDisplayPhase === 'success' || syncProgress.phase === 'success') {
-    const drained = syncProgress.lastDrainedCount || syncProgress.completedItems || 1;
+    // 4. Fase de sucesso efêmero (3 segundos de confirmação)
+    if (activeDisplayPhase === 'success' || syncProgress.phase === 'success') {
+      const drained = syncProgress.lastDrainedCount || syncProgress.completedItems || 1;
 
-    return (
-      <div className="w-full transition-all duration-300 ease-in-out shrink-0 z-30">
+      return (
         <div className="bg-gradient-to-r from-[#1B7547] via-emerald-800 to-[#0B3B23] text-white px-4 py-2 sm:py-2.5 shadow-md flex items-center justify-between text-xs sm:text-sm font-semibold border-b border-emerald-950 animate-fade-in">
           <div className="flex items-center gap-2.5 max-w-5xl mx-auto w-full">
             <div className="p-1 bg-white/20 rounded-md shrink-0">
@@ -194,27 +227,30 @@ export default function SyncStatusBar() {
             </div>
           </div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
 
-  // 5. Fase de falha parcial ou erro de envio com Dead-Letter Queue
-  if (activeDisplayPhase === 'partial_failure' || activeDisplayPhase === 'error' || syncProgress.phase === 'partial_failure' || syncProgress.phase === 'error') {
-    const deadLetterCount = syncProgress.deadLetterCount ?? pendingCounts.deadLetter ?? 0;
-    const hasDeadLetter = deadLetterCount > 0;
+    // 5. Fase de falha parcial ou erro de envio com Dead-Letter Queue
+    if (pendingCounts.total > 0 && (activeDisplayPhase === 'partial_failure' || activeDisplayPhase === 'error' || syncProgress.phase === 'partial_failure' || syncProgress.phase === 'error')) {
+      const deadLetterCount = syncProgress.deadLetterCount ?? pendingCounts.deadLetter ?? 0;
+      const hasDeadLetter = deadLetterCount > 0;
 
-    const handlePurge = async () => {
-      setPurging(true);
-      try {
-        await purgeQueue();
-        await syncNow(true);
-      } finally {
-        setPurging(false);
-      }
-    };
+      const handlePurge = async () => {
+        setPurging(true);
+        try {
+          await db.sync_journal.where('status').equals('failed').delete();
+          await purgeQueue();
+          syncEngine.clearAuthError();
+          setActiveDisplayPhase('idle');
+          await syncEngine.notify();
+        } catch (err) {
+          console.warn('Erro ao purgar itens com falha:', err);
+        } finally {
+          setPurging(false);
+        }
+      };
 
-    return (
-      <div className="w-full transition-all duration-300 ease-in-out shrink-0 z-30">
+      return (
         <div className="bg-gradient-to-r from-rose-950 via-rose-900 to-red-950 text-white px-4 py-2.5 shadow-md flex items-center justify-between border-b border-rose-950 animate-fade-in">
           <div className="flex items-center justify-between max-w-5xl mx-auto w-full gap-3">
             <div className="flex items-center gap-2.5 min-w-0">
@@ -260,117 +296,19 @@ export default function SyncStatusBar() {
             </div>
           </div>
         </div>
-      </div>
-    );
-  }
-
-  // 6. Fase de conexão instável em área rural (aviso suave sem flapping para offline)
-  if (connectionState === 'UNSTABLE') {
-    return (
-      <div className="w-full transition-all duration-300 ease-in-out shrink-0 z-30">
-        <div className="bg-gradient-to-r from-amber-950 via-yellow-950 to-amber-900 text-white px-4 py-2 sm:py-2.5 shadow-md flex items-center justify-between text-xs sm:text-sm font-semibold border-b border-amber-900 animate-fade-in">
-          <div className="flex items-center gap-2 max-w-5xl mx-auto w-full justify-between">
-            <div className="flex items-center gap-2 min-w-0">
-              <div className="p-1 bg-amber-500/20 rounded-md shrink-0 border border-amber-400/30">
-                <AlertTriangle className="w-4 h-4 text-amber-300" />
-              </div>
-              <div className="truncate">
-                <span className="font-extrabold uppercase tracking-wide text-amber-300 mr-1.5">[Sinal Instável]</span>
-                <span className="text-amber-100 truncate">Oscilação detectada. Tentativas automáticas com Backoff resiliente ativo.</span>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 shrink-0">
-              {pendingCounts.total > 0 && (
-                <span className="text-xs bg-black/30 px-2.5 py-1 rounded-full text-amber-200 border border-white/10">
-                  {pendingCounts.total} pendência(s)
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={() => syncNow(true)}
-                disabled={isSyncing}
-                className={`px-2.5 py-1 bg-white/15 hover:bg-white/25 text-white rounded-lg text-xs font-bold transition-all border border-white/20 flex items-center gap-1.5 ${
-                  isSyncing ? 'pointer-events-none opacity-60 cursor-not-allowed' : 'cursor-pointer active:scale-95'
-                }`}
-              >
-                <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
-                <span>{isSyncing ? 'Sincronizando...' : 'Sincronizar'}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // 6.5. Fase: Conectado com itens na fila local prontos para sincronizar (NÃO É OFFLINE!)
-  if (isOnline || connectionState === 'ONLINE') {
-    if (pendingCounts.total > 0) {
-      return (
-        <div className="w-full transition-all duration-300 ease-in-out shrink-0 z-30">
-          <div className="bg-gradient-to-r from-blue-900 via-indigo-950 to-blue-950 text-white px-4 py-2 sm:py-2.5 shadow-md flex items-center justify-between text-xs sm:text-sm font-semibold border-b border-blue-900 animate-fade-in">
-            <div className="flex items-center gap-2 max-w-5xl mx-auto w-full justify-between">
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="p-1 bg-blue-500/20 rounded-md shrink-0 border border-blue-400/30">
-                  <CloudCheck className="w-4 h-4 text-blue-300" />
-                </div>
-                <div className="truncate">
-                  <span className="font-extrabold uppercase tracking-wide text-blue-300 mr-1.5">[Conectado]</span>
-                  <span className="text-slate-200 truncate">
-                    {pendingCounts.total} item(ns) na fila local prontos para sincronizar.
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => syncNow(true)}
-                  disabled={isSyncing}
-                  className={`px-3 py-1 bg-blue-500 hover:bg-blue-600 text-slate-950 font-black rounded-lg text-xs transition-all flex items-center gap-1.5 shadow-xs ${
-                    isSyncing ? 'pointer-events-none opacity-60 cursor-not-allowed' : 'cursor-pointer active:scale-95'
-                  }`}
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                  <span>{isSyncing ? 'Sincronizando...' : 'Sincronizar Agora'}</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
       );
     }
 
-    // Se estiver online e sem pendências, não renderiza banner
     return null;
-  }
+  };
 
-  // 7. Fase offline padrão (Modo Campo Ativo confirmado - APENAS SE REALMENTE OFFLINE!)
-  if (!isOnline || connectionState === 'OFFLINE') {
-    return (
-      <div className="w-full transition-all duration-300 ease-in-out shrink-0 z-30">
-        <div className="bg-gradient-to-r from-amber-700 via-amber-800 to-amber-900 text-white px-4 py-2 sm:py-2.5 shadow-md flex items-center justify-between text-xs sm:text-sm font-semibold border-b border-amber-950 animate-fade-in">
-          <div className="flex items-center gap-2 max-w-5xl mx-auto w-full justify-between">
-            <div className="flex items-center gap-2 min-w-0">
-              <div className="p-1 bg-white/20 rounded-md shrink-0">
-                <WifiOff className="w-4 h-4 text-amber-100" />
-              </div>
-              <div className="truncate">
-                <span className="font-extrabold uppercase tracking-wide text-amber-200 mr-1.5">[Modo Campo Ativo]</span>
-                <span className="truncate">Você está offline. Vistorias, respostas e fotos serão salvas no aparelho.</span>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 bg-black/30 px-2.5 py-1 rounded-full text-xs font-bold text-amber-100 border border-white/15 shrink-0">
-              <Database className="w-3.5 h-3.5 text-amber-300" />
-              <span>{pendingCounts.total} item(ns) na fila local</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return null;
+  return (
+    <div
+      className={`w-full transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] shrink-0 z-30 overflow-hidden ${
+        isIdle ? 'max-h-0 opacity-0 pointer-events-none' : 'max-h-20 opacity-100'
+      }`}
+    >
+      {renderContent()}
+    </div>
+  );
 }

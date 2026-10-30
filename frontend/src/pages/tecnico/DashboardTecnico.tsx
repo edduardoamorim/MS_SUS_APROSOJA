@@ -1,7 +1,9 @@
+import { useSync } from '../../context/SyncContext';
+import defaultAuditoriasJson from '../../data/default_auditorias.json';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { MapPin, ClipboardList, CheckCircle2, CalendarDays, Clock, Plus, Trash2, Loader2, Search, Map as MapIcon, AlertTriangle, Eye, FileText, ChevronRight, FolderOpen, Image as ImageIcon, Download, ExternalLink, X } from 'lucide-react';
+import { MapPin, ClipboardList, CheckCircle2, CalendarDays, Clock, Plus, Trash2, Loader2, Search, Map as MapIcon, AlertTriangle, Eye, FileText, ChevronRight, FolderOpen, Image as ImageIcon, Download, ExternalLink, X, WifiOff, Database, DownloadCloud, ClipboardCheck } from 'lucide-react';
 import type { FeatureCollection } from 'geojson';
 import MapView from '../../components/map/MapView';
 import { supabase, createIsolatedAuthClient } from '../../lib/supabase';
@@ -17,11 +19,113 @@ import { ListSkeleton, AuditCardSkeleton } from '../../components/ui/Skeleton';
 import ConfirmAction from '../../components/ui/ConfirmAction';
 import AuditDetailModal from '../../components/auditoria/AuditDetailModal';
 import { resolveMunicipioFromCarOrName } from '../../lib/geoUtils';
-import { resolveFarmEtapa, persistFarmEtapa } from '../../lib/etapaUtils';
-import { enqueueMutation, getCachedReadData, cacheReadData, generateUUID, getCachedAuditorias, bulkSaveAuditorias, useLiveAuditorias, updateCachedAuditoria, compareAuditoriasDeterministically, resetAuthFailedQueueItems } from '../../lib/offlineDb';
-import { prepareFieldModeData, getLastFieldPrepInfo } from '../../services/precacheService';
-import { DownloadCloud } from 'lucide-react';
+import { resolveFarmEtapa, persistFarmEtapa, normalizeEtapa } from '../../lib/etapaUtils';
+import { db, enqueueMutation, getCachedReadData, cacheReadData, generateUUID, getCachedAuditorias, bulkSaveAuditorias, useLiveAuditorias, updateCachedAuditoria, compareAuditoriasDeterministically, resetAuthFailedQueueItems, getPendingEvidenceKeys, getCachedPendenciasByPropriedade, bulkSavePendencias } from '../../lib/offlineDb';
+import { prepareFieldModeData, getLastFieldPrepInfo, seedDefaultAuditorias, hydrateAuditoriasCache } from '../../services/precacheService';
 import { syncEngine } from '../../services/syncEngine';
+import { normalizePerguntaId } from '../../constants/rtrsMapping';
+import { cleanEvidenceUrl, isPdfEvidence } from '../../lib/evidenceService';
+
+
+// Helper canônico de identificação de critério (disponível em todo o módulo sem erro de escopo)
+export function getCanonicalCrit(item: any): string {
+  if (!item) return '';
+  if (item.pergunta_id) {
+    const canon = normalizePerguntaId(item.pergunta_id);
+    if (canon) return canon;
+  }
+  if (item.id && typeof item.id === 'string' && item.id.startsWith('resp-')) {
+    const withoutResp = item.id.slice(5);
+    const m = withoutResp.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/);
+    if (m) return normalizePerguntaId(m[0]);
+    const critMatch = withoutResp.match(/\d+\.\d+\.\d+/);
+    if (critMatch) return normalizePerguntaId(critMatch[0]);
+  }
+  return normalizePerguntaId(item.id) || item.nome || '';
+}
+
+// Helper unificado para associação de técnico responsável
+export function isTechnicianMatch(tecId: string | null | undefined, user: any): boolean {
+  if (!tecId) return true;
+  const userEmail = (user?.email || '').toLowerCase();
+  const userId = user?.id;
+  if (userId && tecId === userId) return true;
+  if (tecId === 'tec-patricia-01' && userEmail.includes('analistacampo1')) return true;
+  if (tecId === 'tec-alexandre-02' && userEmail.includes('analistacampo2')) return true;
+  if (tecId === 'tec-vistoriador-03' && userEmail.includes('tecnico@ms')) return true;
+  if (userEmail.includes('analistacampo1') && tecId === 'b02f1f87-b998-4f4f-a66b-e169b28c0df5') return true;
+  if (userEmail.includes('analistacampo2') && tecId === 'cf4ebd0f-f933-4853-8adc-3a65da55ec6d') return true;
+  if (userEmail.includes('tecnico@ms') && tecId === 'bb03c918-ed79-479c-87bf-c8f65a95ac2c') return true;
+  return false;
+}
+
+// Helpers de Inicialização Imediata (Zero Skeleton / 0ms Cold Start Offline)
+export function getInitialDefaultAuditorias(): any[] {
+  try {
+    return (defaultAuditoriasJson as any[]).map(a => {
+      const propFound = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
+      const propId = a.propriedade_id || propFound?.id;
+      return {
+        id: a.id,
+        propriedade_id: propId,
+        tecnico_responsavel_id: a.tecnico_responsavel_id,
+        data_agendamento: a.data_agendamento,
+        status: a.status || 'EM ANDAMENTO',
+        etapa: normalizeEtapa(a.etapa) || 'Prospecção',
+        ultima_alteracao_at: a.ultima_alteracao_at || a.updated_at || a.created_at || new Date().toISOString(),
+        propriedades: propFound || { nome_fazenda: 'Fazenda', nome_produtor: 'Produtor' },
+        created_at: a.created_at || new Date().toISOString(),
+        updated_at: a.updated_at || new Date().toISOString()
+      };
+    }).sort(compareAuditoriasDeterministically);
+  } catch {
+    return [];
+  }
+}
+
+export function getInitialDefaultProperties(): any[] {
+  return getInitialDefaultAuditorias().map(c => {
+    const prop = Array.isArray(c.propriedades) ? c.propriedades[0] : c.propriedades;
+    return {
+      id: c.propriedade_id || prop?.id || c.id,
+      nome_fazenda: prop?.nome_fazenda || 'Fazenda',
+      nome_produtor: prop?.nome_produtor || 'Produtor',
+      codigo_car: prop?.codigo_car || ''
+    };
+  });
+}
+
+export function getInitialFarmsGeoJSON(): FeatureCollection {
+  try {
+    const features = (defaultAuditoriasJson as any[]).map((a, index) => {
+      const p = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
+      const geom = p?.geom || {
+        type: 'Point',
+        coordinates: [-54.5, -20.5]
+      };
+      return {
+        type: 'Feature' as const,
+        properties: {
+          id: a.propriedade_id || p?.id || a.id,
+          name: p?.nome_fazenda || 'Fazenda',
+          municipio: formatMunicipioName(p?.municipio || 'Mato Grosso do Sul'),
+          tecnico_nome: 'Técnico de Campo',
+          tecnico_id: a.tecnico_responsavel_id || 'tec-campo',
+          color: '#1B7547',
+          isMine: true,
+          status: a.status || 'EM ANDAMENTO',
+          produtor: p?.nome_produtor || 'Produtor Rural',
+          ultima_alteracao_at: a.ultima_alteracao_at || a.updated_at || a.created_at,
+          data_agendamento: a.data_agendamento || null
+        },
+        geometry: geom
+      };
+    });
+    return { type: 'FeatureCollection', features };
+  } catch {
+    return { type: 'FeatureCollection', features: [] };
+  }
+}
 
 function formatMunicipioName(str?: string | null): string {
   if (!str || str.trim().length === 0) return 'Mato Grosso do Sul, MS';
@@ -112,7 +216,14 @@ export default function DashboardTecnico() {
 
   // Documentação e Evidências States
   const [documentos, setDocumentos] = useState<any[]>([]);
-  const [loadingDocs, setLoadingDocs] = useState(false);
+  const [loadingDocs, setLoadingDocs] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return new URLSearchParams(window.location.search).get('tab') === 'documentacao';
+    }
+    return false;
+  });
+  const isFetchingDocsRef = useRef(false);
+  const hasQueuedDocsFetchRef = useRef(false);
   const [selectedDocPropId, setSelectedDocPropId] = useState('');
   const [selectedDocCategoria, setSelectedDocCategoria] = useState('');
   const [docSearchQuery, setDocSearchQuery] = useState('');
@@ -129,6 +240,7 @@ export default function DashboardTecnico() {
   useEffect(() => {
     if (activeTab === 'documentacao') {
       fetchTechnicalDocuments();
+      fetchAudits();
     } else if (activeTab === 'auditorias') {
       fetchAudits();
     } else if (activeTab === 'mapa') {
@@ -142,7 +254,10 @@ export default function DashboardTecnico() {
       if (now - lastAuditsFetchRef.current > 30000) {
         if (activeTab === 'auditorias') fetchAudits();
         else if (activeTab === 'mapa') fetchCollaborativeMapData();
-        else if (activeTab === 'documentacao') fetchTechnicalDocuments();
+        else if (activeTab === 'documentacao') {
+          fetchTechnicalDocuments();
+          fetchAudits();
+        }
       }
     };
     window.addEventListener('focus', onFocus);
@@ -153,145 +268,348 @@ export default function DashboardTecnico() {
     const handleEvidenceUploaded = () => {
       fetchTechnicalDocuments();
     };
+    const handleSyncComplete = () => {
+      fetchTechnicalDocuments();
+      fetchAudits();
+    };
     window.addEventListener('ms:evidence-uploaded', handleEvidenceUploaded);
+    window.addEventListener('ms:sync-complete', handleSyncComplete);
+    window.addEventListener('ms:outbox-changed', handleSyncComplete);
     return () => {
       window.removeEventListener('ms:evidence-uploaded', handleEvidenceUploaded);
+      window.removeEventListener('ms:sync-complete', handleSyncComplete);
+      window.removeEventListener('ms:outbox-changed', handleSyncComplete);
     };
   }, []);
 
-  const getAssignedPropIdsForCurrentTech = async (): Promise<Set<string>> => {
-    const set = new Set<string>();
-    const userEmail = (user?.email || '').toLowerCase();
-    const userId = user?.id;
+  const resolveTechnicianProperties = async (): Promise<{
+    assignedPropIds: Set<string>;
+    realAudits: any[];
+    realProps: any[];
+  }> => {
+    const assignedPropIds = new Set<string>();
+    let realAudits: any[] = [];
+    let realProps: any[] = [];
 
-    // 1. A partir das auditorias já carregadas no estado
-    (auditorias || []).forEach(a => {
-      if (a.propriedade_id) set.add(a.propriedade_id);
-      if (a.propriedades?.id) set.add(a.propriedades.id);
-    });
+    const defaultMockIds = new Set((defaultAuditoriasJson as any[]).map(a => a.id));
+    const defaultMockPropIds = new Set((defaultAuditoriasJson as any[]).map(a => a.propriedade_id));
 
-    // 2. Se a lista estiver vazia, busca diretamente no banco
-    if (set.size === 0) {
-      const { data: auds } = await supabase
-        .from('auditorias')
-        .select('propriedade_id, tecnico_responsavel_id');
+    // 1. Tentar ler do Dexie auditorias que sejam reais (não apenas os mocks iniciais)
+    try {
+      const cached = await db.cached_auditorias.toArray();
+      const realCached = cached.filter(c => !c.id.startsWith('mock-') && !defaultMockIds.has(c.id));
+      if (realCached.length > 0) {
+        realAudits = cached;
+        cached.forEach(a => {
+          if (isTechnicianMatch(a.tecnico_responsavel_id, user)) {
+            if (a.propriedade_id) assignedPropIds.add(a.propriedade_id);
+            const p = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
+            if (p?.id) assignedPropIds.add(p.id);
+          }
+        });
+      }
+    } catch (e) {}
 
-      (auds || []).forEach((a: any) => {
-        const tecId = a.tecnico_responsavel_id;
-        if (!tecId || !a.propriedade_id) return;
+    // 2. Se estiver online e ainda não tivermos propriedades reais mapeadas (ou apenas mocks padrão)
+    const hasOnlyMocks = assignedPropIds.size === 0 || Array.from(assignedPropIds).every(id => defaultMockPropIds.has(id));
+    if (hasOnlyMocks && typeof navigator !== 'undefined' && navigator.onLine) {
+      try {
+        const { data: remoteAuds, error: audErr } = await supabase
+          .from('auditorias')
+          .select(`
+            id,
+            propriedade_id,
+            tecnico_responsavel_id,
+            status,
+            etapa,
+            data_agendamento,
+            created_at,
+            updated_at,
+            propriedades (
+              id,
+              nome_fazenda,
+              nome_produtor,
+              codigo_car,
+              codigo_sigef,
+              municipio,
+              etapa
+            )
+          `)
+          .order('updated_at', { ascending: false, nullsFirst: false });
 
-        if (userId && tecId === userId) set.add(a.propriedade_id);
-        else if (tecId === 'tec-patricia-01' && userEmail.includes('analistacampo1')) set.add(a.propriedade_id);
-        else if (tecId === 'tec-alexandre-02' && userEmail.includes('analistacampo2')) set.add(a.propriedade_id);
-        else if (tecId === 'tec-vistoriador-03' && userEmail.includes('tecnico@ms')) set.add(a.propriedade_id);
-        else if (userEmail.includes('analistacampo1') && tecId === 'b02f1f87-b998-4f4f-a66b-e169b28c0df5') set.add(a.propriedade_id);
-        else if (userEmail.includes('analistacampo2') && tecId === 'cf4ebd0f-f933-4853-8adc-3a65da55ec6d') set.add(a.propriedade_id);
-        else if (userEmail.includes('tecnico@ms') && tecId === 'bb03c918-ed79-479c-87bf-c8f65a95ac2c') set.add(a.propriedade_id);
+        if (!audErr && remoteAuds && remoteAuds.length > 0) {
+          realAudits = remoteAuds;
+          const propMap = new Map<string, any>();
+
+          remoteAuds.forEach((a: any) => {
+            const p = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
+            const pId = a.propriedade_id || p?.id;
+            if (p && pId) propMap.set(pId, p);
+
+            if (isTechnicianMatch(a.tecnico_responsavel_id, user)) {
+              if (pId) assignedPropIds.add(pId);
+            }
+          });
+
+          realProps = Array.from(propMap.values());
+
+          // Hidrata o cache do Dexie e o estado em background
+          if (remoteAuds.length > 0) {
+            bulkSaveAuditorias(remoteAuds).catch(() => {});
+            setAuditorias(remoteAuds);
+            if (realProps.length > 0) {
+              setProperties(realProps);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[Docs] Falha ao resolver auditorias do Supabase:', err);
+      }
+    }
+
+    // 3. Fallback para auditorias em memória
+    if (assignedPropIds.size === 0) {
+      (auditorias || []).forEach(a => {
+        if (a.propriedade_id) assignedPropIds.add(a.propriedade_id);
+        const p = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
+        if (p?.id) assignedPropIds.add(p.id);
       });
     }
 
-    return set;
+    return { assignedPropIds, realAudits, realProps };
+  };
+
+  const getAssignedPropIdsForCurrentTech = async (): Promise<Set<string>> => {
+    const { assignedPropIds } = await resolveTechnicianProperties();
+    return assignedPropIds;
   };
 
   const fetchTechnicalDocuments = async () => {
+    if (isFetchingDocsRef.current) {
+      hasQueuedDocsFetchRef.current = true;
+      return;
+    }
+    isFetchingDocsRef.current = true;
     setLoadingDocs(true);
     try {
-      // 1. Carregamento IMEDIATO (0ms) do Dexie local para não travar a tela em spinner
-      const localList: any[] = [];
+      // 1. Carregamento IMEDIATO (0ms) do Dexie local com DEDUPLICAÇÃO ESTRITA
+      const localChecklistMap = new Map<string, any>();
+      const localPendsList: any[] = [];
+      let localList: any[] = [];
+      let pendingEvidenceKeys = new Set<string>();
+      let cachedAudsList: any[] = [];
+
+      const pergMap = new Map<string, any>();
+      const auditMap = new Map<string, any>();
+      const propMap = new Map<string, any>();
+      const deletedEvidenceKeys = new Set<string>();
+
+      // Inicializa mapeamento inicial a partir de props/state
+      (properties || []).forEach(p => {
+        if (p.id) propMap.set(p.id, p);
+      });
+      (auditorias || []).forEach(a => {
+        if (a.id) auditMap.set(a.id, a);
+        if (a.propriedade_id) auditMap.set(a.propriedade_id, a);
+        const p = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
+        if (p && (p.id || a.propriedade_id)) {
+          propMap.set(p.id || a.propriedade_id, p);
+        }
+      });
+
+      // Helper para resolução unificada de fazenda e propriedade acessível em todo o escopo
+      const resolveFarmInfo = (auditIdOrPropId?: string) => {
+        if (!auditIdOrPropId) return { propId: '', fazendaNome: 'Fazenda', produtorNome: 'Produtor' };
+        const audit = auditMap.get(auditIdOrPropId);
+        const propRel = Array.isArray(audit?.propriedades) ? audit.propriedades[0] : audit?.propriedades;
+        const propId = audit?.propriedade_id || propRel?.id || (propMap.has(auditIdOrPropId) ? auditIdOrPropId : '');
+        const prop = propRel || (propId ? propMap.get(propId) : null) || propMap.get(auditIdOrPropId) || {};
+        return {
+          propId: propId || auditIdOrPropId,
+          fazendaNome: prop.nome_fazenda || audit?.nome_fazenda || 'Fazenda',
+          produtorNome: prop.nome_produtor || audit?.nome_produtor || 'Produtor'
+        };
+      };
+
       try {
-        const [cachedPergs, cachedAuds, localResps, localPends, localFiles, outboxMutations, localJournal] = await Promise.all([
+        const [cachedPergs, cachedAuds, localResps, localPends, localFiles, outboxMutations, localJournal, fetchedPendingKeys] = await Promise.all([
           db.cached_perguntas.toArray(),
           db.cached_auditorias.toArray(),
           db.cached_respostas.filter(r => !!r.evidencia_url).toArray(),
           db.cached_pendencias.filter(p => !!p.evidencia_url).toArray(),
           db.outbox_files.toArray(),
           db.outbox_mutations.toArray(),
-          db.sync_journal.toArray()
+          db.sync_journal.toArray(),
+          getPendingEvidenceKeys()
         ]);
+        pendingEvidenceKeys = fetchedPendingKeys;
+        cachedAudsList = cachedAuds;
 
-        const pergMap = new Map<string, any>();
-        cachedPergs.forEach(p => pergMap.set(p.id, p));
-
-        const auditMap = new Map<string, any>();
-        cachedAuds.forEach(a => auditMap.set(a.id, a));
-        (auditorias || []).forEach(a => auditMap.set(a.id, a));
-
-        const propMap = new Map<string, any>();
-        (auditorias || []).forEach(a => {
-          if (a.propriedade_id && a.propriedades) propMap.set(a.propriedade_id, a.propriedades);
+        cachedPergs.forEach(p => {
+          if (p.id) pergMap.set(p.id, p);
+          if (p.numero_criterio) pergMap.set(normalizePerguntaId(p.numero_criterio), p);
         });
-        (cachedAuds || []).forEach(a => {
-          if (a.propriedade_id && a.propriedades) propMap.set(a.propriedade_id, a.propriedades);
+
+        cachedAuds.forEach(a => {
+          if (a.id) auditMap.set(a.id, a);
+          if (a.propriedade_id) auditMap.set(a.propriedade_id, a);
+          const p = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
+          if (p && (p.id || a.propriedade_id)) {
+            propMap.set(p.id || a.propriedade_id, p);
+          }
         });
         (properties || []).forEach(p => {
           if (p.id) propMap.set(p.id, p);
         });
-
-        // Mapeia blobs locais da outbox para gerar URLs funcionais (reconstituição no F5)
-        const outboxFilesMap = new Map<string, string>();
-        localFiles.forEach(f => {
-          if (f.file_blob) {
-            try {
-              const bUrl = URL.createObjectURL(f.file_blob);
-              outboxFilesMap.set(String(f.id), bUrl);
-              outboxFilesMap.set(f.storage_path, bUrl);
-              outboxFilesMap.set(f.file_name, bUrl);
-            } catch (e) {}
+        (auditorias || []).forEach(a => {
+          const p = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
+          if (p && (p.id || a.propriedade_id)) {
+            propMap.set(p.id || a.propriedade_id, p);
           }
         });
 
-        // Mapa de mutações pendentes para vincular arquivos e respostas
-        const mutationMap = new Map<string, any>();
+        // Utiliza getCanonicalCrit exportado no topo do módulo
+
+        // Mapa de mutações para vincular arquivos e respostas
         const fileIdToMutationMap = new Map<string, any>();
         outboxMutations.forEach(m => {
-          if (m.table === 'respostas_auditoria' && m.payload?.auditoria_id && m.payload?.pergunta_id) {
-            const key = `${m.payload.auditoria_id}-${m.payload.pergunta_id}`;
-            mutationMap.set(key, m);
-            if (m.file_ids && Array.isArray(m.file_ids)) {
-              m.file_ids.forEach((fid: any) => {
-                fileIdToMutationMap.set(String(fid), m);
-              });
-            }
+          if (m.file_ids && Array.isArray(m.file_ids)) {
+            m.file_ids.forEach((fid: any) => {
+              fileIdToMutationMap.set(String(fid), m);
+            });
           }
         });
 
-        const processedRespKeys = new Set<string>();
+        // Mapeamento estrito de arquivos e blobs locais
+        const strictFileMap = new Map<string, string>();
 
-        // 1. Respostas locais salvas no Dexie
-        localResps.forEach(r => {
-          const respKey = `${r.auditoria_id}-${r.pergunta_id}`;
-          processedRespKeys.add(respKey);
+        localFiles.forEach(f => {
+          if (!f.file_blob) return;
+          let bUrl = '';
+          try {
+            bUrl = URL.createObjectURL(f.file_blob);
+          } catch (e) {
+            return;
+          }
 
-          const audit = auditMap.get(r.auditoria_id);
-          const propRel = Array.isArray(audit?.propriedades) ? audit.propriedades[0] : audit?.propriedades;
-          const propId = audit?.propriedade_id || propRel?.id || r.auditoria_id;
-          const prop = propRel || propMap.get(propId) || {};
-          const perg = pergMap.get(r.pergunta_id);
+          const mut = fileIdToMutationMap.get(String(f.id));
+          let auditId = mut?.payload?.auditoria_id;
+          let perguntaId = mut?.payload?.pergunta_id;
 
-          let previewUrl = r.evidencia_url;
-          // Reconstituição de preview se for blob revogado pelo F5 ou apontamento do outbox
-          for (const [pathKey, blobUrl] of outboxFilesMap.entries()) {
-            if (pathKey.includes(r.pergunta_id) || (previewUrl && previewUrl.includes(pathKey))) {
-              previewUrl = blobUrl;
-              break;
+          if (!auditId || !perguntaId) {
+            const match = (f.storage_path || f.file_name || '').match(/evidencia_([0-9a-fA-F-]+)_([0-9a-fA-F-]+)/);
+            if (match) {
+              auditId = auditId || match[1];
+              perguntaId = perguntaId || match[2];
             }
           }
 
-          const hasPendingOutbox = mutationMap.has(respKey) || localFiles.some(f => f.storage_path.includes(r.pergunta_id));
-          const isBlobOrB64 = previewUrl && (String(previewUrl).startsWith('blob:') || String(previewUrl).startsWith('data:'));
-          const isLocalPending = hasPendingOutbox || isBlobOrB64;
+          if (auditId && perguntaId) {
+            const canonPergId = normalizePerguntaId(perguntaId);
+            strictFileMap.set(`${auditId}_${canonPergId}`, bUrl);
+          }
+        });
+
+        // Identifica evidências explicitamente deletadas no sync_journal para supressão imediata
+        deletedEvidenceKeys.clear();
+        localJournal.forEach(jItem => {
+          if (!jItem.auditoria_id || !jItem.pergunta_id) return;
+          const canonPergId = normalizePerguntaId(jItem.pergunta_id);
+          const strictKey = `${jItem.auditoria_id}_${canonPergId}`;
+          if (jItem.is_explicit_delete || jItem.evidencia_url === null) {
+            deletedEvidenceKeys.add(strictKey);
+            strictFileMap.delete(strictKey);
+          }
+        });
+
+        // Mescla blobs do sync_journal no strictFileMap
+        localJournal.forEach(jItem => {
+          if (!jItem.auditoria_id || !jItem.pergunta_id) return;
+          const canonPergId = normalizePerguntaId(jItem.pergunta_id);
+          const strictKey = `${jItem.auditoria_id}_${canonPergId}`;
+
+          if (deletedEvidenceKeys.has(strictKey)) return;
+
+          if (jItem.file_blob) {
+            try {
+              const bUrl = URL.createObjectURL(jItem.file_blob);
+              strictFileMap.set(strictKey, bUrl);
+            } catch (e) {}
+          } else if (jItem.evidencia_url && !strictFileMap.has(strictKey)) {
+            strictFileMap.set(strictKey, jItem.evidencia_url);
+          }
+        });
+
+        // Inserção deduplicada no localChecklistMap
+        const upsertLocalChecklist = (incoming: any) => {
+          const canonCrit = getCanonicalCrit(incoming);
+          const dedupKey = `${incoming.propriedade_id || incoming.fazendaNome}_${canonCrit}`;
+          if (!localChecklistMap.has(dedupKey)) {
+            localChecklistMap.set(dedupKey, incoming);
+          } else {
+            const existing = localChecklistMap.get(dedupKey);
+            const timeExisting = new Date(existing.dataEnvioReal || existing.data || 0).getTime();
+            const timeIncoming = new Date(incoming.dataEnvioReal || incoming.data || 0).getTime();
+            const preferIncoming = timeIncoming >= timeExisting;
+
+            const isIncomingBlob = incoming.arquivo_url && (String(incoming.arquivo_url).startsWith('blob:') || String(incoming.arquivo_url).startsWith('data:'));
+            const isExistingBlob = existing.arquivo_url && (String(existing.arquivo_url).startsWith('blob:') || String(existing.arquivo_url).startsWith('data:'));
+
+            const finalUrl = (isIncomingBlob && !isExistingBlob)
+              ? incoming.arquivo_url
+              : (preferIncoming && incoming.arquivo_url)
+              ? incoming.arquivo_url
+              : (existing.arquivo_url || incoming.arquivo_url);
+
+            const incomingPending = !!incoming.isLocalPending;
+            const existingPending = !!existing.isLocalPending;
+
+            localChecklistMap.set(dedupKey, {
+              ...existing,
+              ...incoming,
+              id: existing.id || incoming.id,
+              arquivo_url: finalUrl,
+              data: preferIncoming ? incoming.data : existing.data,
+              dataEnvioReal: preferIncoming ? incoming.dataEnvioReal : existing.dataEnvioReal,
+              isLocalPending: preferIncoming ? incomingPending : (incomingPending || existingPending),
+              fazendaNome: (existing.fazendaNome && existing.fazendaNome !== 'Fazenda') ? existing.fazendaNome : (incoming.fazendaNome || 'Fazenda'),
+              produtorNome: (existing.produtorNome && existing.produtorNome !== 'Produtor') ? existing.produtorNome : (incoming.produtorNome || 'Produtor'),
+              nome: (incoming.nome && incoming.nome.length > (existing.nome?.length || 0)) ? incoming.nome : existing.nome
+            });
+          }
+        };
+
+        // 1. Processar cached_respostas locais
+        localResps.forEach(r => {
+          const canonPergId = normalizePerguntaId(r.pergunta_id);
+          const strictKey = `${r.auditoria_id}_${canonPergId}`;
+          if (deletedEvidenceKeys.has(strictKey)) return;
+
+          const { propId, fazendaNome, produtorNome } = resolveFarmInfo(r.auditoria_id);
+          const perg = pergMap.get(canonPergId) || pergMap.get(r.pergunta_id);
+
+          let previewUrl = r.evidencia_url;
+          if (!previewUrl || previewUrl.startsWith('blob:')) {
+            if (strictFileMap.has(strictKey)) {
+              previewUrl = strictFileMap.get(strictKey)!;
+            }
+          }
+
+          const isLocalPending = pendingEvidenceKeys.has(strictKey);
 
           const numCrit = perg?.numero_criterio ? `Critério ${perg.numero_criterio} - ` : (r.numero_criterio ? `Critério ${r.numero_criterio} - ` : '');
           const critTitle = perg?.enunciado ? `${numCrit}${perg.enunciado}` : (numCrit || `Critério RTRS`);
           const dataEnvioReal = (r as any).evidencia_uploaded_at || r.updated_at || r.created_at || new Date().toISOString();
 
-          localList.push({
-            id: `resp-${r.auditoria_id}-${r.pergunta_id}`,
+          upsertLocalChecklist({
+            id: `resp-${r.auditoria_id}-${canonPergId}`,
             nome: critTitle,
             categoria: 'CHECKLIST RTRS',
             propriedade_id: propId,
-            fazendaNome: prop.nome_fazenda || audit?.propriedades?.nome_fazenda || 'Fazenda',
-            produtorNome: prop.nome_produtor || audit?.propriedades?.nome_produtor || 'Produtor',
+            auditoria_id: r.auditoria_id,
+            pergunta_id: canonPergId,
+            fazendaNome,
+            produtorNome,
             arquivo_url: previewUrl,
             origem: 'Auditoria In Loco',
             data: dataEnvioReal,
@@ -304,9 +622,13 @@ export default function DashboardTecnico() {
         });
 
         // 1.5. Processar itens do Unified WAL (db.sync_journal)
-        // Garante exibição híbrida imediata das evidências recém-anexadas (offline e pós-F5)
         localJournal.forEach(jItem => {
+          if (jItem.is_explicit_delete || jItem.evidencia_url === null) return;
           if (!jItem.file_blob && !jItem.evidencia_url) return;
+
+          const canonPergId = normalizePerguntaId(jItem.pergunta_id);
+          const strictKey = `${jItem.auditoria_id}_${canonPergId}`;
+          if (deletedEvidenceKeys.has(strictKey)) return;
 
           let previewUrl = jItem.evidencia_url || '';
           if (jItem.file_blob) {
@@ -314,79 +636,70 @@ export default function DashboardTecnico() {
               previewUrl = URL.createObjectURL(jItem.file_blob);
             } catch (e) {}
           }
+          if (!previewUrl && strictFileMap.has(strictKey)) {
+            previewUrl = strictFileMap.get(strictKey)!;
+          }
 
-          const audit = auditMap.get(jItem.auditoria_id);
-          const propRel = Array.isArray(audit?.propriedades) ? audit.propriedades[0] : audit?.propriedades;
-          const propId = audit?.propriedade_id || propRel?.id || jItem.auditoria_id;
-          const prop = propRel || propMap.get(propId) || {};
-          const perg = pergMap.get(jItem.pergunta_id);
+          const { propId, fazendaNome, produtorNome } = resolveFarmInfo(jItem.auditoria_id);
+          const perg = pergMap.get(canonPergId) || pergMap.get(jItem.pergunta_id);
+
+          const isLocalPending = pendingEvidenceKeys.has(strictKey);
 
           const numCrit = perg?.numero_criterio ? `Critério ${perg.numero_criterio} - ` : (jItem.numero_criterio ? `Critério ${jItem.numero_criterio} - ` : '');
           const critTitle = perg?.enunciado ? `${numCrit}${perg.enunciado}` : (numCrit || `Critério RTRS`);
           const dataEnvioReal = jItem.updated_at || new Date(jItem.created_at || Date.now()).toISOString();
 
-          const docId = `resp-${jItem.auditoria_id}-${jItem.pergunta_id}`;
-          const existingIdx = localList.findIndex(x => x.id === docId);
-          if (existingIdx >= 0) {
-            localList[existingIdx].isLocalPending = true;
-            if (previewUrl && (previewUrl.startsWith('blob:') || !localList[existingIdx].arquivo_url)) {
-              localList[existingIdx].arquivo_url = previewUrl;
-            }
-            localList[existingIdx].dataEnvioReal = dataEnvioReal;
-            localList[existingIdx].data = dataEnvioReal;
-            localList[existingIdx].updated_at = jItem.updated_at;
-          } else {
-            processedRespKeys.add(`${jItem.auditoria_id}-${jItem.pergunta_id}`);
-            localList.push({
-              id: docId,
-              nome: critTitle,
-              categoria: 'CHECKLIST RTRS',
-              propriedade_id: propId,
-              fazendaNome: prop.nome_fazenda || audit?.propriedades?.nome_fazenda || 'Fazenda',
-              produtorNome: prop.nome_produtor || audit?.propriedades?.nome_produtor || 'Produtor',
-              arquivo_url: previewUrl,
-              origem: 'Auditoria In Loco',
-              data: dataEnvioReal,
-              dataEnvioReal: dataEnvioReal,
-              updated_at: jItem.updated_at,
-              created_at: new Date(jItem.created_at || Date.now()).toISOString(),
-              isLocalPending: true,
-              podeDeletar: false
-            });
-          }
+          upsertLocalChecklist({
+            id: `resp-${jItem.auditoria_id}-${canonPergId}`,
+            nome: critTitle,
+            categoria: 'CHECKLIST RTRS',
+            propriedade_id: propId,
+            auditoria_id: jItem.auditoria_id,
+            pergunta_id: canonPergId,
+            fazendaNome,
+            produtorNome,
+            arquivo_url: previewUrl,
+            origem: 'Auditoria In Loco',
+            data: dataEnvioReal,
+            dataEnvioReal: dataEnvioReal,
+            updated_at: jItem.updated_at,
+            created_at: new Date(jItem.created_at || Date.now()).toISOString(),
+            isLocalPending: !!isLocalPending,
+            podeDeletar: false
+          });
         });
 
-        // 2. Mutações da outbox_mutations com fotos ainda não inseridas em cached_respostas
+        // 2. Processar mutações da outbox (apenas ativamente pendentes)
         outboxMutations.forEach(m => {
+          if (m.status !== 'pending' && m.status !== 'pending_retry' && m.status !== 'syncing') return;
+
           if (m.table === 'respostas_auditoria' && m.payload?.auditoria_id && m.payload?.pergunta_id) {
-            const respKey = `${m.payload.auditoria_id}-${m.payload.pergunta_id}`;
-            if (!processedRespKeys.has(respKey) && (m.payload.evidencia_url || (m.file_ids && m.file_ids.length > 0))) {
-              processedRespKeys.add(respKey);
-              const audit = auditMap.get(m.payload.auditoria_id);
-              const propRel = Array.isArray(audit?.propriedades) ? audit.propriedades[0] : audit?.propriedades;
-              const propId = audit?.propriedade_id || propRel?.id || m.payload.auditoria_id;
-              const prop = propRel || propMap.get(propId) || {};
-              const perg = pergMap.get(m.payload.pergunta_id);
+            const canonPergId = normalizePerguntaId(m.payload.pergunta_id);
+            const strictKey = `${m.payload.auditoria_id}_${canonPergId}`;
+            if (deletedEvidenceKeys.has(strictKey)) return;
+            if (m.payload.evidencia_url === null && (!m.file_ids || m.file_ids.length === 0)) return;
+
+            if (m.payload.evidencia_url || (m.file_ids && m.file_ids.length > 0) || strictFileMap.has(strictKey)) {
+              const { propId, fazendaNome, produtorNome } = resolveFarmInfo(m.payload.auditoria_id);
+              const perg = pergMap.get(canonPergId) || pergMap.get(m.payload.pergunta_id);
 
               let previewUrl = m.payload.evidencia_url || '';
-              for (const fid of (m.file_ids || [])) {
-                if (outboxFilesMap.has(String(fid))) {
-                  previewUrl = outboxFilesMap.get(String(fid))!;
-                  break;
-                }
+              if (!previewUrl && strictFileMap.has(strictKey)) {
+                previewUrl = strictFileMap.get(strictKey)!;
               }
 
               const numCrit = perg?.numero_criterio ? `Critério ${perg.numero_criterio} - ` : '';
               const critTitle = perg?.enunciado ? `${numCrit}${perg.enunciado}` : `Critério RTRS`;
               const dataEnvioReal = m.payload.evidencia_uploaded_at || m.payload.updated_at || m.created_at || new Date().toISOString();
 
-              localList.push({
-                id: `resp-${m.payload.auditoria_id}-${m.payload.pergunta_id}`,
+              upsertLocalChecklist({
+                id: `resp-${m.payload.auditoria_id}-${canonPergId}`,
                 nome: critTitle,
                 categoria: 'CHECKLIST RTRS',
                 propriedade_id: propId,
-                fazendaNome: prop.nome_fazenda || 'Fazenda',
-                produtorNome: prop.nome_produtor || 'Produtor',
+                pergunta_id: canonPergId,
+                fazendaNome,
+                produtorNome,
                 arquivo_url: previewUrl,
                 origem: 'Auditoria In Loco',
                 data: dataEnvioReal,
@@ -400,43 +713,43 @@ export default function DashboardTecnico() {
           }
         });
 
-        // 3. Arquivos brutos da outbox_files
+        // 3. Processar arquivos da outbox (apenas uploads ativamente pendentes)
         localFiles.forEach(f => {
+          if (f.status !== 'pending' && f.status !== 'uploading' && f.status !== 'pending_retry') return;
+
           const mut = fileIdToMutationMap.get(String(f.id));
           let auditId = mut?.payload?.auditoria_id;
           let perguntaId = mut?.payload?.pergunta_id;
 
           if (!auditId || !perguntaId) {
-            const match = f.file_name.match(/evidencia_([^_]+)_([^_]+)_/);
+            const match = (f.storage_path || f.file_name || '').match(/evidencia_([0-9a-fA-F-]+)_([0-9a-fA-F-]+)/);
             if (match) {
               auditId = auditId || match[1];
               perguntaId = perguntaId || match[2];
             }
           }
 
-          const respKey = auditId && perguntaId ? `${auditId}-${perguntaId}` : null;
-          if (respKey && processedRespKeys.has(respKey)) {
-            return; // Já incluído
-          }
-          if (respKey) processedRespKeys.add(respKey);
+          if (!auditId || !perguntaId) return;
 
-          const audit = auditId ? auditMap.get(auditId) : null;
-          const propRel = Array.isArray(audit?.propriedades) ? audit.propriedades[0] : audit?.propriedades;
-          const propId = audit?.propriedade_id || propRel?.id || 'local';
-          const prop = propRel || propMap.get(propId) || {};
-          const perg = perguntaId ? pergMap.get(perguntaId) : null;
+          const canonPergId = normalizePerguntaId(perguntaId);
+          const strictKey = `${auditId}_${canonPergId}`;
+          if (deletedEvidenceKeys.has(strictKey)) return;
+
+          const { propId, fazendaNome, produtorNome } = resolveFarmInfo(auditId);
+          const perg = pergMap.get(canonPergId) || pergMap.get(perguntaId);
 
           const numCrit = perg?.numero_criterio ? `Critério ${perg.numero_criterio} - ` : '';
           const critTitle = perg?.enunciado ? `${numCrit}${perg.enunciado}` : (numCrit || f.file_name);
-          const blobUrl = outboxFilesMap.get(String(f.id)) || outboxFilesMap.get(f.storage_path) || f.public_url || '';
+          const blobUrl = strictFileMap.get(strictKey) || f.public_url || '';
 
-          localList.push({
-            id: respKey ? `resp-${auditId}-${perguntaId}` : `local-file-${f.id}`,
+          upsertLocalChecklist({
+            id: `resp-${auditId}-${canonPergId}`,
             nome: critTitle,
             categoria: 'CHECKLIST RTRS',
             propriedade_id: propId,
-            fazendaNome: prop.nome_fazenda || (auditId ? 'Fazenda' : 'Dispositivo Local'),
-            produtorNome: prop.nome_produtor || 'Técnico',
+            pergunta_id: canonPergId,
+            fazendaNome,
+            produtorNome,
             arquivo_url: blobUrl,
             origem: 'Auditoria In Loco',
             data: f.created_at,
@@ -448,7 +761,7 @@ export default function DashboardTecnico() {
 
         localPends.forEach(p => {
           const prop = propMap.get(p.propriedade_id) || {};
-          localList.push({
+          localPendsList.push({
             id: `pend-${p.id}`,
             nome: p.titulo,
             categoria: 'REGULARIZAÇÃO',
@@ -463,6 +776,8 @@ export default function DashboardTecnico() {
           });
         });
 
+        localList = [...localChecklistMap.values(), ...localPendsList];
+
         if (localList.length > 0) {
           localList.sort((a, b) => new Date(b.dataEnvioReal || b.data || b.updated_at || b.created_at || 0).getTime() - new Date(a.dataEnvioReal || a.data || a.updated_at || a.created_at || 0).getTime());
           setDocumentos(localList);
@@ -471,122 +786,174 @@ export default function DashboardTecnico() {
         console.warn('[Docs] Aviso ao carregar documentos do Dexie local:', dexieErr);
       }
 
-      // Se offline, encerra mantendo os dados locais
+      // Se offline, encerra mantendo os dados locais deduplicados
       if (typeof navigator !== 'undefined' && !navigator.onLine) {
         setLoadingDocs(false);
         return;
       }
 
-      // 2. Busca remota no Supabase com TIMEOUT ESTRITO DE 5 SEGUNDOS
-      const assignedSet = await getAssignedPropIdsForCurrentTech();
-
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Timeout de 5s na busca remota de documentos')), 5000)
-      );
+      // 2. Busca remota no Supabase com proteção e resolução ativa de propriedades
+      const { assignedPropIds } = await resolveTechnicianProperties();
 
       const remoteFetchPromise = async () => {
-        let genDocs: any[] | null = null;
-        try {
-          const { data } = await supabase
-            .from('documentos_propriedade')
-            .select(`
-              id,
-              nome,
-              categoria,
-              propriedade_id,
-              arquivo_url,
-              created_at,
-              propriedades (
-                nome_fazenda,
-                nome_produtor
-              )
-            `)
-            .order('created_at', { ascending: false });
-          genDocs = data;
-        } catch (e) {
-          console.warn('Tabela documentos_propriedade inacessível:', e);
+        const fetchGenDocs = async () => {
+          try {
+            return await supabase
+              .from('documentos_propriedade')
+              .select(`
+                id,
+                nome,
+                categoria,
+                propriedade_id,
+                arquivo_url,
+                created_at,
+                propriedades (
+                  nome_fazenda,
+                  nome_produtor
+                )
+              `)
+              .order('created_at', { ascending: false });
+          } catch (e) {
+            console.warn('Tabela documentos_propriedade inacessível:', e);
+            return { data: null, error: e };
+          }
+        };
+
+        const fetchRespData = async () => {
+          try {
+            return await supabase
+              .from('respostas_auditoria')
+              .select(`
+                id,
+                auditoria_id,
+                pergunta_id,
+                evidencia_url,
+                created_at,
+                updated_at,
+                auditorias (
+                  id,
+                  propriedade_id,
+                  status,
+                  tecnico_responsavel_id,
+                  propriedades (
+                    id,
+                    nome_fazenda,
+                    nome_produtor
+                  )
+                ),
+                perguntas_rtrs (
+                  numero_criterio,
+                  secao,
+                  enunciado
+                )
+              `)
+              .not('evidencia_url', 'is', null)
+              .order('created_at', { ascending: false });
+          } catch (e) {
+            console.warn('Tabela respostas_auditoria inacessível:', e);
+            return { data: null, error: e };
+          }
+        };
+
+        const fetchPendsData = async () => {
+          try {
+            return await supabase
+              .from('pendencias')
+              .select(`
+                id,
+                propriedade_id,
+                titulo,
+                evidencia_url,
+                status,
+                created_at,
+                propriedades (
+                  nome_fazenda,
+                  nome_produtor
+                )
+              `)
+              .not('evidencia_url', 'is', null)
+              .order('created_at', { ascending: false });
+          } catch (e) {
+            console.warn('Tabela pendencias inacessível:', e);
+            return { data: null, error: e };
+          }
+        };
+
+        const [genDocsRes, respDataRes, pendsDataRes] = await Promise.all([
+          fetchGenDocs(),
+          fetchRespData(),
+          fetchPendsData()
+        ]);
+
+        const genDocs = genDocsRes?.data || null;
+        const respData = respDataRes?.data || null;
+        const pendsData = pendsDataRes?.data || null;
+
+        // Hidratação silenciosa das respostas e evidências no Dexie local para garantir 0ms nas próximas vezes
+        if (respData && respData.length > 0) {
+          const toCache: any[] = [];
+          respData.forEach((r: any) => {
+            if (r.auditoria_id && r.pergunta_id && r.evidencia_url) {
+              toCache.push({
+                id: r.id,
+                auditoria_id: r.auditoria_id,
+                pergunta_id: r.pergunta_id,
+                evidencia_url: r.evidencia_url,
+                created_at: r.created_at,
+                updated_at: r.updated_at
+              });
+            }
+          });
+          if (toCache.length > 0) {
+            db.cached_respostas.bulkPut(toCache).catch(() => {});
+          }
         }
-
-        const { data: respData } = await supabase
-          .from('respostas_auditoria')
-          .select(`
-            id,
-            auditoria_id,
-            pergunta_id,
-            evidencia_url,
-            created_at,
-            updated_at,
-            auditorias (
-              propriedade_id,
-              status,
-              propriedades (
-                nome_fazenda,
-                nome_produtor
-              )
-            ),
-            perguntas_rtrs (
-              numero_criterio,
-              secao,
-              enunciado
-            )
-          `)
-          .not('evidencia_url', 'is', null)
-          .order('created_at', { ascending: false });
-
-        const { data: pendsData } = await supabase
-          .from('pendencias')
-          .select(`
-            id,
-            propriedade_id,
-            titulo,
-            evidencia_url,
-            status,
-            created_at,
-            propriedades (
-              nome_fazenda,
-              nome_produtor
-            )
-          `)
-          .not('evidencia_url', 'is', null)
-          .order('created_at', { ascending: false });
 
         const remoteList: any[] = [];
 
         if (genDocs) {
           genDocs.forEach((d: any) => {
-            if (assignedSet.has(d.propriedade_id)) {
-              remoteList.push({
-                id: d.id,
-                nome: d.nome,
-                categoria: d.categoria,
-                propriedade_id: d.propriedade_id,
-                fazendaNome: d.propriedades?.nome_fazenda || 'Geral',
-                produtorNome: d.propriedades?.nome_produtor || 'N/A',
-                arquivo_url: d.arquivo_url,
-                origem: 'Armazenamento Geral',
-                data: d.created_at,
-                podeDeletar: true
-              });
-            }
+            const propRel = Array.isArray(d.propriedades) ? d.propriedades[0] : d.propriedades;
+            remoteList.push({
+              id: d.id,
+              nome: d.nome,
+              categoria: d.categoria,
+              propriedade_id: d.propriedade_id,
+              fazendaNome: propRel?.nome_fazenda || 'Geral',
+              produtorNome: propRel?.nome_produtor || 'N/A',
+              arquivo_url: d.arquivo_url,
+              origem: 'Armazenamento Geral',
+              data: d.created_at,
+              podeDeletar: true
+            });
           });
         }
 
         if (respData) {
           respData.forEach((r: any) => {
-            const propId = r.auditorias?.propriedade_id;
-            if (propId && (assignedSet.size === 0 || assignedSet.has(propId))) {
-              const numCrit = r.perguntas_rtrs?.numero_criterio ? `Critério ${r.perguntas_rtrs.numero_criterio} - ` : '';
-              const title = r.perguntas_rtrs?.enunciado ? `${numCrit}${r.perguntas_rtrs.enunciado}` : `Princípio ${r.perguntas_rtrs?.secao || 'RTRS'} - ${numCrit || 'N/A'}`;
+            const audit = Array.isArray(r.auditorias) ? r.auditorias[0] : r.auditorias;
+            const propRel = Array.isArray(audit?.propriedades) ? audit.propriedades[0] : audit?.propriedades;
+            const fallbackFarm = resolveFarmInfo(r.auditoria_id);
+            const propId = audit?.propriedade_id || propRel?.id || fallbackFarm.propId;
+
+            if (propId) {
+              const canonPergId = getCanonicalCrit(r);
+              const perg = Array.isArray(r.perguntas_rtrs) ? r.perguntas_rtrs[0] : r.perguntas_rtrs;
+              const pergFallback = pergMap.get(canonPergId) || pergMap.get(r.pergunta_id);
+              const numCrit = perg?.numero_criterio ? `Critério ${perg.numero_criterio} - ` : (pergFallback?.numero_criterio ? `Critério ${pergFallback.numero_criterio} - ` : '');
+              const title = perg?.enunciado ? `${numCrit}${perg.enunciado}` : (pergFallback?.enunciado ? `${numCrit}${pergFallback.enunciado}` : `Princípio ${perg?.secao || 'RTRS'} - ${numCrit || 'N/A'}`);
               const dataEnvioReal = (r as any).evidencia_uploaded_at || r.updated_at || r.created_at;
               remoteList.push({
-                id: `resp-${r.auditoria_id || ''}-${r.pergunta_id || r.id}`,
+                id: `resp-${r.auditoria_id || ''}-${canonPergId}`,
                 nome: title,
                 categoria: 'CHECKLIST RTRS',
                 propriedade_id: propId,
-                fazendaNome: r.auditorias?.propriedades?.nome_fazenda || 'Fazenda',
-                produtorNome: r.auditorias?.propriedades?.nome_produtor || 'N/A',
+                auditoria_id: r.auditoria_id,
+                pergunta_id: canonPergId,
+                fazendaNome: propRel?.nome_fazenda || audit?.nome_fazenda || fallbackFarm.fazendaNome || 'Fazenda',
+                produtorNome: propRel?.nome_produtor || audit?.nome_produtor || fallbackFarm.produtorNome || 'N/A',
                 arquivo_url: r.evidencia_url,
-                origem: r.auditorias?.status === 'Autoavaliação' ? 'Autoavaliação RTRS' : 'Auditoria In Loco',
+                origem: audit?.status === 'Autoavaliação' ? 'Autoavaliação RTRS' : 'Auditoria In Loco',
                 data: dataEnvioReal,
                 dataEnvioReal: dataEnvioReal,
                 updated_at: r.updated_at,
@@ -599,14 +966,15 @@ export default function DashboardTecnico() {
 
         if (pendsData) {
           pendsData.forEach((p: any) => {
-            if (p.propriedade_id && (assignedSet.size === 0 || assignedSet.has(p.propriedade_id))) {
+            const propRel = Array.isArray(p.propriedades) ? p.propriedades[0] : p.propriedades;
+            if (p.propriedade_id) {
               remoteList.push({
                 id: `pend-${p.id}`,
                 nome: p.titulo,
                 categoria: 'REGULARIZAÇÃO',
                 propriedade_id: p.propriedade_id,
-                fazendaNome: p.propriedades?.nome_fazenda || 'Fazenda',
-                produtorNome: p.propriedades?.nome_produtor || 'N/A',
+                fazendaNome: propRel?.nome_fazenda || 'Fazenda',
+                produtorNome: propRel?.nome_produtor || 'N/A',
                 arquivo_url: p.evidencia_url,
                 origem: `Resolução de Pendência (${p.status})`,
                 data: p.created_at,
@@ -620,77 +988,233 @@ export default function DashboardTecnico() {
       };
 
       try {
+        const timeoutPromise = new Promise<any[]>((resolve) =>
+          setTimeout(() => {
+            console.warn('[Docs] Timeout de 15s na busca remota de documentos.');
+            resolve([]);
+          }, 15000)
+        );
+
         const fetchedRemote = await Promise.race([remoteFetchPromise(), timeoutPromise]);
 
-        // MESCLAGEM INTELIGENTE SEM DESCARTE:
-        // Mantém todos os documentos remotos e combina com evidências locais preservando o timestamp mais recente
+        // MESCLAGEM INTELIGENTE COM DEDUPLICAÇÃO ESTRITA POR CRITÉRIO E PROPRIEDADE
         const mergedMap = new Map<string, any>();
 
         (fetchedRemote || []).forEach(doc => {
-          mergedMap.set(doc.id, {
+          if (doc.auditoria_id && doc.pergunta_id) {
+            const strictKey = `${doc.auditoria_id}_${normalizePerguntaId(doc.pergunta_id)}`;
+            if (deletedEvidenceKeys.has(strictKey)) return;
+          }
+          const canonPergId = doc.categoria === 'CHECKLIST RTRS' ? getCanonicalCrit(doc) : '';
+          const dedupKey = doc.categoria === 'CHECKLIST RTRS'
+            ? `${doc.propriedade_id || doc.fazendaNome}_${canonPergId || doc.nome}`
+            : doc.id;
+
+          mergedMap.set(dedupKey, {
             ...doc,
             isLocalPending: false
           });
         });
 
         localList.forEach(doc => {
-          if (mergedMap.has(doc.id)) {
-            const existing = mergedMap.get(doc.id);
+          const canonPergId = doc.categoria === 'CHECKLIST RTRS' ? getCanonicalCrit(doc) : '';
+          const auditId = doc.auditoria_id || (doc.id && doc.id.startsWith('resp-') ? doc.id.split('-')[1] : '');
+          const strictKey = `${auditId || ''}_${canonPergId}`;
+
+          if (doc.categoria === 'CHECKLIST RTRS' && deletedEvidenceKeys.has(strictKey)) {
+            return;
+          }
+
+          const dedupKey = doc.categoria === 'CHECKLIST RTRS'
+            ? `${doc.propriedade_id || doc.fazendaNome}_${canonPergId || doc.nome}`
+            : doc.id;
+
+          if (mergedMap.has(dedupKey)) {
+            const existing = mergedMap.get(dedupKey);
             const timeExisting = new Date(existing.dataEnvioReal || existing.data || existing.updated_at || existing.created_at || 0).getTime();
             const timeIncoming = new Date(doc.dataEnvioReal || doc.data || doc.updated_at || doc.created_at || 0).getTime();
 
-            const isLocalBlob = doc.arquivo_url && (String(doc.arquivo_url).startsWith('blob:') || String(doc.arquivo_url).startsWith('data:'));
-            const useIncoming = timeIncoming >= timeExisting || isLocalBlob || doc.isLocalPending;
+            const hasPendingQueue = pendingEvidenceKeys.has(strictKey);
 
-            mergedMap.set(doc.id, {
+            const isLocalBlob = doc.arquivo_url && (String(doc.arquivo_url).startsWith('blob:') || String(doc.arquivo_url).startsWith('data:'));
+            // Um registro com URL pública no Supabase Storage só é pendente se houver uma nova alteração pendente na fila
+            const isTrulyPending = hasPendingQueue || (isLocalBlob && !existing.arquivo_url);
+            const preferLocal = isTrulyPending || (!existing.arquivo_url && !!doc.arquivo_url) || (timeIncoming > timeExisting && isLocalBlob);
+
+            const finalUrl = (preferLocal && doc.arquivo_url) ? doc.arquivo_url : (existing.arquivo_url || doc.arquivo_url);
+
+            // Sincroniza o cache local com a URL pública oficial do Supabase
+            if (existing.arquivo_url && String(existing.arquivo_url).startsWith('http') && !hasPendingQueue) {
+              const auditIdToUpdate = existing.auditoria_id || doc.auditoria_id;
+              if (auditIdToUpdate && canonPergId) {
+                db.cached_respostas
+                  .where('auditoria_id')
+                  .equals(auditIdToUpdate)
+                  .and(r => normalizePerguntaId(r.pergunta_id) === canonPergId)
+                  .modify({ evidencia_url: existing.arquivo_url })
+                  .catch(() => {});
+              }
+            }
+
+            mergedMap.set(dedupKey, {
               ...existing,
               ...doc,
-              isLocalPending: doc.isLocalPending ?? existing.isLocalPending,
-              data: useIncoming && timeIncoming > timeExisting ? doc.data : existing.data,
-              dataEnvioReal: useIncoming && timeIncoming > timeExisting ? doc.dataEnvioReal : existing.dataEnvioReal,
-              arquivo_url: isLocalBlob ? doc.arquivo_url : (existing.arquivo_url || doc.arquivo_url)
+              id: existing.id || doc.id,
+              fazendaNome: (existing.fazendaNome && existing.fazendaNome !== 'Fazenda') ? existing.fazendaNome : (doc.fazendaNome || 'Fazenda'),
+              produtorNome: (existing.produtorNome && existing.produtorNome !== 'Produtor') ? existing.produtorNome : (doc.produtorNome || 'Produtor'),
+              isLocalPending: isTrulyPending,
+              data: preferLocal ? doc.data : (existing.data || doc.data),
+              dataEnvioReal: preferLocal ? doc.dataEnvioReal : (existing.dataEnvioReal || doc.dataEnvioReal),
+              arquivo_url: finalUrl
             });
           } else {
-            mergedMap.set(doc.id, doc);
+            const hasPendingQueue = pendingEvidenceKeys.has(strictKey);
+            const isTrulyPending = hasPendingQueue || (doc.arquivo_url && !String(doc.arquivo_url).startsWith('http'));
+
+            // Se o documento NÃO veio na busca do Postgres remoto e NÃO está pendente na fila local,
+            // significa que ele foi excluído no banco remoto!
+            if (doc.categoria === 'CHECKLIST RTRS' && !hasPendingQueue && fetchedRemote !== null) {
+              if (auditId && canonPergId) {
+                db.cached_respostas
+                  .where('auditoria_id')
+                  .equals(auditId)
+                  .and(r => normalizePerguntaId(r.pergunta_id) === canonPergId)
+                  .modify({ evidencia_url: null, evidencia_uploaded_at: null, data_envio: null })
+                  .catch(() => {});
+              }
+              return; // Suprime a evidência excluída
+            }
+
+            mergedMap.set(dedupKey, {
+              ...doc,
+              isLocalPending: isTrulyPending
+            });
           }
         });
 
-        const combinedList = Array.from(mergedMap.values());
-        combinedList.sort((a, b) => {
+        // BLINDAGEM FINAL CONTRA REPETIÇÕES: Garante unicidade estrita por critério + fazenda
+        const finalUniqueMap = new Map<string, any>();
+        Array.from(mergedMap.values()).forEach(item => {
+          const canonCrit = item.categoria === 'CHECKLIST RTRS'
+            ? (getCanonicalCrit(item) || item.nome)
+            : item.id;
+          const uniqueKey = `${item.propriedade_id || item.fazendaNome}_${item.categoria}_${canonCrit}`;
+          if (!finalUniqueMap.has(uniqueKey)) {
+            finalUniqueMap.set(uniqueKey, item);
+          } else {
+            const prev = finalUniqueMap.get(uniqueKey);
+            const timePrev = new Date(prev.dataEnvioReal || prev.data || 0).getTime();
+            const timeItem = new Date(item.dataEnvioReal || item.data || 0).getTime();
+            if (timeItem >= timePrev) {
+              finalUniqueMap.set(uniqueKey, {
+                ...prev,
+                ...item,
+                id: prev.id || item.id,
+                fazendaNome: (prev.fazendaNome && prev.fazendaNome !== 'Fazenda') ? prev.fazendaNome : (item.fazendaNome || 'Fazenda'),
+                produtorNome: (prev.produtorNome && prev.produtorNome !== 'Produtor') ? prev.produtorNome : (item.produtorNome || 'Produtor'),
+                isLocalPending: item.isLocalPending !== undefined ? item.isLocalPending : prev.isLocalPending,
+                arquivo_url: item.arquivo_url || prev.arquivo_url
+              });
+            }
+          }
+        });
+
+        const finalList = Array.from(finalUniqueMap.values());
+        finalList.sort((a, b) => {
           const timeA = new Date(a.dataEnvioReal || a.data || a.updated_at || a.created_at || 0).getTime();
           const timeB = new Date(b.dataEnvioReal || b.data || b.updated_at || b.created_at || 0).getTime();
           return timeB - timeA; // Mais recente sempre no topo absoluto
         });
-        setDocumentos(combinedList);
+        setDocumentos(finalList);
       } catch (raceErr) {
-        console.warn('[Docs] Busca remota de documentos expirou (timeout 5s). Mantendo documentos locais.');
+        console.warn('[Docs] Aviso na consulta remota de documentos:', raceErr);
         if (localList.length > 0) {
-          setDocumentos(localList);
+          const finalLocalUnique = new Map<string, any>();
+          localList.forEach(item => {
+            const canonCrit = item.categoria === 'CHECKLIST RTRS'
+              ? (getCanonicalCrit(item) || item.nome)
+              : item.id;
+            const uniqueKey = `${item.propriedade_id || item.fazendaNome}_${item.categoria}_${canonCrit}`;
+            if (!finalLocalUnique.has(uniqueKey)) {
+              finalLocalUnique.set(uniqueKey, item);
+            }
+          });
+          setDocumentos(Array.from(finalLocalUnique.values()));
         }
       }
     } catch (err: any) {
       console.error('Erro ao carregar documentos no técnico:', err);
     } finally {
       setLoadingDocs(false);
+      isFetchingDocsRef.current = false;
+      if (hasQueuedDocsFetchRef.current) {
+        hasQueuedDocsFetchRef.current = false;
+        fetchTechnicalDocuments();
+      }
     }
   };
 
-  const [loading, setLoading] = useState(true);
-  // SINGLE SOURCE OF TRUTH: A UI consome EXCLUSIVAMENTE o Dexie via useLiveAuditorias
-  const auditorias = useLiveAuditorias();
+  const { isOnline, connectionState } = useSync();
+  const isOfflineMode = (typeof navigator !== 'undefined' && !navigator.onLine) || !isOnline || connectionState === 'OFFLINE';
 
+  const [loading, setLoading] = useState(false);
+  const liveAuditorias = useLiveAuditorias();
+  const [auditorias, setAuditorias] = useState<any[]>(getInitialDefaultAuditorias);
+  const [properties, setProperties] = useState<any[]>(getInitialDefaultProperties);
+  const [isPreparingField, setIsPreparingField] = useState(false);
+  const [lastPrepSummary, setLastPrepSummary] = useState<string | null>(null);
+
+  // Sincronização reativa contínua com o Dexie (SSOT)
   useEffect(() => {
-    if (auditorias && auditorias.length > 0) {
+    if (liveAuditorias && liveAuditorias.length > 0) {
+      setAuditorias(liveAuditorias);
       setLoading(false);
     }
-  }, [auditorias.length]);
+  }, [liveAuditorias]);
+
+  // Prioridade de leitura local imediata (0ms) ao montar
+  useEffect(() => {
+    let isMounted = true;
+    const initLocalData = async () => {
+      try {
+        let local = await db.cached_auditorias.toArray();
+        if (!local || local.length === 0) {
+          local = await seedDefaultAuditorias();
+        }
+        if (!isMounted) return;
+        if (local && local.length > 0) {
+          const sorted = [...local].sort(compareAuditoriasDeterministically);
+          setAuditorias(sorted);
+          setLoading(false);
+          const localProps = sorted.map(c => {
+            const prop = Array.isArray(c.propriedades) ? c.propriedades[0] : c.propriedades;
+            return {
+              id: c.propriedade_id || prop?.id || c.id,
+              nome_fazenda: prop?.nome_fazenda || 'Fazenda',
+              nome_produtor: prop?.nome_produtor || 'Produtor',
+              codigo_car: prop?.codigo_car || ''
+            };
+          });
+          setProperties(localProps);
+        }
+      } catch (e) {
+        if (isMounted) setLoading(false);
+      }
+      fetchCollaborativeMapData();
+      getLastFieldPrepInfo().then(info => {
+        if (info?.summary) setLastPrepSummary(info.summary);
+      }).catch(() => {});
+    };
+    initLocalData();
+    return () => { isMounted = false; };
+  }, []);
   const [showQuestionario, setShowQuestionario] = useState(false);
   const [activeAuditoria, setActiveAuditoria] = useState<any>(null);
   const [fotoAmpliada, setFotoAmpliada] = useState<string | null>(null);
   const [pdfAmpliado, setPdfAmpliado] = useState<string | null>(null);
 
   // Map & Collaborative States
-  const [farmsData, setFarmsData] = useState<FeatureCollection>({ type: 'FeatureCollection', features: [] });
+  const [farmsData, setFarmsData] = useState<FeatureCollection>(getInitialFarmsGeoJSON);
   const [selectedFarmId, setSelectedFarmId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [allAuditorias, setAllAuditorias] = useState<any[]>([]);
@@ -703,9 +1227,9 @@ export default function DashboardTecnico() {
   const lastAuditsFetchRef = useRef(0);
 
   // Lista memoizada para a etapa ativa (elimina re-cálculos a cada render)
-    const filteredAuditorias = useMemo(() => {
+  const filteredAuditorias = useMemo(() => {
     const filtered = auditorias.filter(a => {
-      const etapa = a.etapa === 'Auditoria Prévia' || a.etapa === 'Auditoria Oficial' ? a.etapa : 'Prospecção';
+      const etapa = normalizeEtapa(a.etapa);
       return etapa === technicalEtapaTab;
     });
     return filtered.sort(compareAuditoriasDeterministically);
@@ -717,7 +1241,7 @@ export default function DashboardTecnico() {
     let previa = 0;
     let oficial = 0;
     auditorias.forEach(a => {
-      const etapa = a.etapa === 'Auditoria Prévia' || a.etapa === 'Auditoria Oficial' ? a.etapa : 'Prospecção';
+      const etapa = normalizeEtapa(a.etapa);
       if (etapa === 'Auditoria Prévia') previa++;
       else if (etapa === 'Auditoria Oficial') oficial++;
       else prospecao++;
@@ -733,7 +1257,7 @@ export default function DashboardTecnico() {
   const [motivoRejeicaoText, setMotivoRejeicaoText] = useState('');
 
   // Autonomy States
-  const [properties, setProperties] = useState<any[]>([]);
+  // properties initialized above with getInitialDefaultProperties
   const [producers, setProducers] = useState<any[]>([]);
   const [showCreateFarmModal, setShowCreateFarmModal] = useState(false);
   const [showScheduleAuditModal, setShowScheduleAuditModal] = useState(false);
@@ -819,11 +1343,9 @@ export default function DashboardTecnico() {
   ]);
 
   useEffect(() => {
-    if (user) {
-      fetchAudits();
-      fetchAuxiliaryData();
-      fetchCollaborativeMapData();
-    }
+    fetchAudits();
+    fetchAuxiliaryData();
+    fetchCollaborativeMapData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
@@ -833,14 +1355,31 @@ export default function DashboardTecnico() {
       const { data: propsData } = await supabase
         .from('propriedades')
         .select('id, nome_fazenda, nome_produtor, codigo_car');
-      if (propsData) setProperties(propsData);
+      if (propsData && propsData.length > 0) {
+        setProperties(propsData);
+      } else {
+        const local = await db.cached_auditorias.toArray();
+        if (local && local.length > 0) {
+          setProperties(local.map(c => {
+            const p = Array.isArray(c.propriedades) ? c.propriedades[0] : c.propriedades;
+            return {
+              id: c.propriedade_id || p?.id || c.id,
+              nome_fazenda: p?.nome_fazenda || 'Fazenda',
+              nome_produtor: p?.nome_produtor || 'Produtor',
+              codigo_car: p?.codigo_car || ''
+            };
+          }));
+        }
+      }
 
       // 2. Fetch producers
       const { data: prodsData } = await supabase
         .from('perfis')
         .select('id, nome, email, regiao')
         .eq('role', 'produtor');
-      if (prodsData) setProducers(prodsData);
+      if (prodsData && prodsData.length > 0) {
+        setProducers(prodsData);
+      }
 
       // 3. Fetch all technicians
       const { data: tecsData } = await supabase
@@ -849,7 +1388,20 @@ export default function DashboardTecnico() {
         .eq('role', 'tecnico');
       if (tecsData) setAllTechnicians(tecsData);
     } catch (err) {
-      console.error('Erro ao carregar dados auxiliares:', err);
+      try {
+        const local = await db.cached_auditorias.toArray();
+        if (local && local.length > 0) {
+          setProperties(local.map(c => {
+            const p = Array.isArray(c.propriedades) ? c.propriedades[0] : c.propriedades;
+            return {
+              id: c.propriedade_id || p?.id || c.id,
+              nome_fazenda: p?.nome_fazenda || 'Fazenda',
+              nome_produtor: p?.nome_produtor || 'Produtor',
+              codigo_car: p?.codigo_car || ''
+            };
+          }));
+        }
+      } catch (e) {}
     }
   }
 
@@ -949,21 +1501,55 @@ export default function DashboardTecnico() {
   async function fetchCollaborativeMapData() {
     try {
       // 1. Carregar TODAS as propriedades cadastradas na tabela 'propriedades'
-      const { data: propsList, error: propsError } = await supabase
-        .from('propriedades')
-        .select('id, nome_fazenda, nome_produtor, codigo_car, codigo_sigef, municipio, geom, produtor_id, created_at, updated_at')
-        .order('updated_at', { ascending: false, nullsFirst: false });
-
-      if (propsError) throw propsError;
+      let propsList: any[] = [];
+      let auds: any[] = [];
+      try {
+        const { data: pData, error: pErr } = await supabase
+          .from('propriedades')
+          .select('id, nome_fazenda, nome_produtor, codigo_car, codigo_sigef, municipio, geom, produtor_id, created_at, updated_at')
+          .order('updated_at', { ascending: false, nullsFirst: false });
+        if (!pErr && pData && pData.length > 0) {
+          propsList = pData;
+        }
+      } catch (e) {}
 
       // 2. Carregar TODAS as auditorias com técnicos responsáveis
-      const { data: auds } = await supabase
-        .from('auditorias')
-        .select('id, status, data_agendamento, tecnico_responsavel_id, propriedade_id, created_at, updated_at')
-        .order('updated_at', { ascending: false, nullsFirst: false });
+      try {
+        const { data: aData, error: aErr } = await supabase
+          .from('auditorias')
+          .select('id, status, data_agendamento, tecnico_responsavel_id, propriedade_id, created_at, updated_at')
+          .order('updated_at', { ascending: false, nullsFirst: false });
+        if (!aErr && aData && aData.length > 0) {
+          auds = aData;
+          setAllAuditorias(aData);
+        }
+      } catch (e) {}
 
-      if (auds) {
-        setAllAuditorias(auds);
+      // Fallback local-first do Dexie se offline ou retorno vazio
+      if (propsList.length === 0) {
+        let cached = await db.cached_auditorias.toArray();
+        if (!cached || cached.length === 0) {
+          cached = await seedDefaultAuditorias();
+        }
+        if (cached && cached.length > 0) {
+          auds = cached;
+          setAllAuditorias(cached);
+          propsList = cached.map(c => {
+            const prop = Array.isArray(c.propriedades) ? c.propriedades[0] : c.propriedades;
+            return {
+              id: c.propriedade_id || prop?.id || c.id,
+              nome_fazenda: prop?.nome_fazenda || 'Fazenda',
+              nome_produtor: prop?.nome_produtor || 'Produtor',
+              codigo_car: prop?.codigo_car || null,
+              codigo_sigef: prop?.codigo_sigef || null,
+              municipio: prop?.municipio || 'Mato Grosso do Sul',
+              geom: prop?.geom || null,
+              produtor_id: null,
+              created_at: c.created_at,
+              updated_at: c.updated_at
+            };
+          });
+        }
       }
 
       // 2.5 Buscar carimbos de atividade compostos
@@ -1157,7 +1743,8 @@ export default function DashboardTecnico() {
           const finalMunicipio = formatMunicipioName(resolvedMunicipio);
 
           const featureColor = tecId ? getTechnicianColor(tecName, index) : '#94a3b8';
-          const isMineFarm = tecId ? (user?.id && tecId === user.id) : true;
+          const isOfflineMap = typeof navigator !== 'undefined' && !navigator.onLine;
+          const isMineFarm = isOfflineMap ? true : (tecId ? (user?.id ? tecId === user.id : true) : true);
 
           return {
             type: 'Feature' as const,
@@ -1390,6 +1977,85 @@ export default function DashboardTecnico() {
         }
       }
 
+      if (!isSuccess) {
+        // MODO CAMPO LOCAL-FIRST: Se a rede falhar ou estiver offline, salva no Dexie e enfileira na Outbox
+        const nowIso = new Date().toISOString();
+        const prodNome = novoProdutorData.nome || selectedProdutorId || 'Produtor Rural';
+
+        for (const p of processedProps) {
+          const propId = generateUUID();
+          const auditId = generateUUID();
+          const farmName = p.nome_fazenda || `Fazenda Prospecção`;
+
+          const newAuditItem = {
+            id: auditId,
+            propriedade_id: propId,
+            tecnico_responsavel_id: user?.id || 'b02f1f87-b998-4f4f-a66b-e169b28c0df5',
+            data_agendamento: nowIso.split('T')[0],
+            status: 'EM ANDAMENTO',
+            etapa: 'Prospecção',
+            ultima_alteracao_at: nowIso,
+            created_at: nowIso,
+            updated_at: nowIso,
+            propriedades: {
+              id: propId,
+              nome_fazenda: farmName,
+              nome_produtor: prodNome,
+              codigo_car: p.codigo_car || null,
+              codigo_sigef: p.codigo_sigef || null,
+              municipio: 'Mato Grosso do Sul',
+              geom: p.geom || null,
+              etapa: 'Prospecção',
+              created_at: nowIso,
+              updated_at: nowIso
+            }
+          };
+
+          await db.cached_auditorias.put(newAuditItem as any);
+
+          // Enfileira inserção da propriedade e da auditoria
+          await enqueueMutation({
+            table: 'propriedades',
+            action: 'insert',
+            payload: {
+              id: propId,
+              nome_fazenda: farmName,
+              nome_produtor: prodNome,
+              codigo_car: p.codigo_car || null,
+              codigo_sigef: p.codigo_sigef || null,
+              origem_cadastro: p.origem || 'CAR',
+              geom: p.geom || null,
+              created_at: nowIso,
+              updated_at: nowIso
+            },
+            on_conflict: 'id'
+          });
+
+          if (autoScheduleAudit) {
+            await enqueueMutation({
+              table: 'auditorias',
+              action: 'insert',
+              payload: {
+                id: auditId,
+                propriedade_id: propId,
+                tecnico_responsavel_id: user?.id,
+                data_agendamento: nowIso.split('T')[0],
+                status: 'EM ANDAMENTO',
+                etapa: 'Prospecção',
+                created_at: nowIso,
+                updated_at: nowIso
+              },
+              on_conflict: 'id'
+            });
+          }
+
+          setAuditorias(prev => [newAuditItem, ...prev]);
+          setProperties(prev => [{ id: propId, nome_fazenda: farmName, nome_produtor: prodNome, codigo_car: p.codigo_car || '' }, ...prev]);
+        }
+
+        isSuccess = true;
+      }
+
       if (isSuccess) {
         success('Cadastro de prospecção e fazendas realizado com sucesso!');
         setShowCreateFarmModal(false);
@@ -1403,8 +2069,6 @@ export default function DashboardTecnico() {
         fetchAuxiliaryData();
         fetchAudits();
         fetchCollaborativeMapData();
-      } else {
-        error('Não foi possível salvar a propriedade. Verifique as informações.');
       }
     } catch (err: any) {
       console.error('Erro ao cadastrar:', err);
@@ -1432,48 +2096,103 @@ export default function DashboardTecnico() {
         updated_at: nowIso
       };
 
-      // 1. Verificar se já existe uma auditoria para esta fazenda
-      const { data: existingAudits } = await supabase
-        .from('auditorias')
-        .select('id')
-        .eq('propriedade_id', auditFormData.propriedade_id)
-        .order('created_at', { ascending: false });
-
-      if (existingAudits && existingAudits.length > 0) {
-        const targetId = existingAudits[0].id;
-        const { error: err } = await supabase
+      let scheduledOnline = false;
+      try {
+        const { data: existingAudits, error: fetchErr } = await supabase
           .from('auditorias')
-          .update({
+          .select('id')
+          .eq('propriedade_id', auditFormData.propriedade_id)
+          .order('created_at', { ascending: false });
+
+        if (!fetchErr) {
+          if (existingAudits && existingAudits.length > 0) {
+            const targetId = existingAudits[0].id;
+            const { error: err } = await supabase
+              .from('auditorias')
+              .update({
+                tecnico_responsavel_id: user?.id,
+                data_agendamento: auditFormData.data_agendamento,
+                status: 'Visita de Campo',
+                updated_at: nowIso
+              })
+              .eq('id', targetId);
+
+            if (!err) scheduledOnline = true;
+          } else {
+            const { error: err } = await supabase
+              .from('auditorias')
+              .insert([{ ...payload, created_at: nowIso }]);
+
+            if (!err) scheduledOnline = true;
+          }
+
+          if (scheduledOnline) {
+            await supabase
+              .from('propriedades')
+              .update({ updated_at: nowIso })
+              .eq('id', auditFormData.propriedade_id);
+          }
+        }
+      } catch (netErr) {
+        console.warn('[OFFLINE] Falha de rede ao agendar online, aplicando persistência local:', netErr);
+      }
+
+      // Sempre garante persistência local no Dexie e enfileiramento na Outbox (Local-First)
+      const existing = auditorias.find(a => a.propriedade_id === auditFormData.propriedade_id);
+      const targetAuditId = existing ? existing.id : generateUUID();
+      const propObj = properties.find(p => p.id === auditFormData.propriedade_id);
+
+      const updatedItem = {
+        ...(existing || {}),
+        id: targetAuditId,
+        propriedade_id: auditFormData.propriedade_id,
+        tecnico_responsavel_id: user?.id || existing?.tecnico_responsavel_id || 'b02f1f87-b998-4f4f-a66b-e169b28c0df5',
+        data_agendamento: auditFormData.data_agendamento,
+        status: 'Visita de Campo',
+        etapa: existing?.etapa || 'Prospecção',
+        ultima_alteracao_at: nowIso,
+        updated_at: nowIso,
+        propriedades: existing?.propriedades || propObj || {
+          id: auditFormData.propriedade_id,
+          nome_fazenda: propObj?.nome_fazenda || 'Fazenda',
+          nome_produtor: propObj?.nome_produtor || 'Produtor Rural'
+        }
+      };
+
+      await db.cached_auditorias.put(updatedItem as any);
+
+      if (!scheduledOnline) {
+        await enqueueMutation({
+          table: 'auditorias',
+          action: existing && !existing.id.startsWith('mock-') ? 'update' : 'upsert',
+          payload: {
+            id: targetAuditId,
+            propriedade_id: auditFormData.propriedade_id,
             tecnico_responsavel_id: user?.id,
             data_agendamento: auditFormData.data_agendamento,
             status: 'Visita de Campo',
             updated_at: nowIso
-          })
-          .eq('id', targetId);
-
-        if (err) throw err;
-      } else {
-        const { error: err } = await supabase
-          .from('auditorias')
-          .insert([{ ...payload, created_at: nowIso }]);
-
-        if (err) throw err;
+          },
+          on_conflict: 'id'
+        });
       }
 
-      // Atualizar também a data de alteração da propriedade
-      await supabase
-        .from('propriedades')
-        .update({ updated_at: nowIso })
-        .eq('id', auditFormData.propriedade_id);
+      setAuditorias(prev => {
+        const found = prev.some(a => a.id === targetAuditId);
+        if (found) {
+          return prev.map(a => a.id === targetAuditId ? { ...a, ...updatedItem } : a);
+        }
+        return [updatedItem, ...prev];
+      });
 
-      success('Vistoria agendada e atribuída com sucesso!');
+      success('Vistoria agendada e salva com sucesso!');
       setShowScheduleAuditModal(false);
       
       fetchAudits();
       fetchCollaborativeMapData();
     } catch (err: any) {
       console.error('Erro ao agendar vistoria:', err);
-      error('Erro ao agendar vistoria: ' + err.message);
+      error('Erro ao agendar vistoria: ' + (err.message || 'Erro inesperado'));
     }
   };
 
@@ -1484,12 +2203,44 @@ export default function DashboardTecnico() {
       const nowIso = new Date().toISOString();
 
       if (propId) {
-        await persistFarmEtapa(propId, novaEtapa);
-        await supabase.from('propriedades').update({ updated_at: nowIso }).eq('id', propId);
+        await persistFarmEtapa(propId, auditId, novaEtapa);
+        if (typeof navigator !== 'undefined' && navigator.onLine) {
+          try {
+            await supabase.from('propriedades').update({ updated_at: nowIso }).eq('id', propId);
+          } catch {
+            await enqueueMutation({
+              table: 'propriedades',
+              action: 'update',
+              payload: { id: propId, updated_at: nowIso }
+            });
+          }
+        } else {
+          await enqueueMutation({
+            table: 'propriedades',
+            action: 'update',
+            payload: { id: propId, updated_at: nowIso }
+          });
+        }
       }
 
       if (auditId && !auditId.startsWith('v-audit-') && !auditId.startsWith('mock-')) {
-        await supabase.from('auditorias').update({ etapa: novaEtapa, updated_at: nowIso }).eq('id', auditId);
+        if (typeof navigator !== 'undefined' && navigator.onLine) {
+          try {
+            await supabase.from('auditorias').update({ etapa: novaEtapa, updated_at: nowIso }).eq('id', auditId);
+          } catch {
+            await enqueueMutation({
+              table: 'auditorias',
+              action: 'update',
+              payload: { id: auditId, etapa: novaEtapa, updated_at: nowIso }
+            });
+          }
+        } else {
+          await enqueueMutation({
+            table: 'auditorias',
+            action: 'update',
+            payload: { id: auditId, etapa: novaEtapa, updated_at: nowIso }
+          });
+        }
       }
 
       if (auditId) {
@@ -1521,6 +2272,17 @@ export default function DashboardTecnico() {
       return;
     }
 
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      await enqueueMutation({
+        table: 'auditorias',
+        action: 'update',
+        payload: { id: auditoriaId, status: 'Certificada' }
+      });
+      success('Auditoria liberada e certificada localmente (Modo Campo)!');
+      setCertifyConfirmId(null);
+      return;
+    }
+
     try {
       const { error: err } = await supabase
         .from('auditorias')
@@ -1530,8 +2292,12 @@ export default function DashboardTecnico() {
       
       success('Auditoria liberada e certificada com sucesso!');
     } catch (err: any) {
-      console.error('Erro ao certificar auditoria:', err);
-      error('Erro ao certificar: ' + err.message);
+      await enqueueMutation({
+        table: 'auditorias',
+        action: 'update',
+        payload: { id: auditoriaId, status: 'Certificada' }
+      });
+      success('Auditoria liberada e enfileirada para envio.');
     } finally {
       setCertifyConfirmId(null);
     }
@@ -1566,169 +2332,210 @@ export default function DashboardTecnico() {
     isFetchingAuditsRef.current = true;
     lastAuditsFetchRef.current = now;
 
-    // Se offline, a UI já está sendo alimentada pelo Dexie em 0ms
+    // 1. CARREGAMENTO IMEDIATO LOCAL-FIRST DO DEXIE (CACHE-FIRST / 0ms)
+    try {
+      let local = await db.cached_auditorias.toArray();
+      if (!local || local.length === 0) {
+        local = await seedDefaultAuditorias();
+      }
+      if (local && local.length > 0) {
+        const sorted = [...local].sort(compareAuditoriasDeterministically);
+        setAuditorias(sorted);
+        setLoading(false);
+      }
+    } catch (e) {
+      console.warn('[OFFLINE] Falha na leitura imediata do Dexie:', e);
+    }
+
+    // 2. Se offline pelo navigator, encerra a busca remota imediatamente preservando o cache local
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       setLoading(false);
       isFetchingAuditsRef.current = false;
       return;
     }
 
+    // 3. Em segundo plano (se online), consulta o Supabase com proteção absoluta contra esvaziamento
     try {
-      const { data: propsData } = await supabase
-        .from('propriedades')
-        .select('id, nome_fazenda, nome_produtor, codigo_car, municipio, created_at, updated_at');
+      const fetchPromise = (async () => {
+        const { data: propsData, error: propsErr } = await supabase
+          .from('propriedades')
+          .select('id, nome_fazenda, nome_produtor, codigo_car, codigo_sigef, municipio, geom, etapa, created_at, updated_at');
 
-      const propMap = new Map<string, any>();
-      (propsData || []).forEach(p => propMap.set(p.id, p));
-
-      const { data: auditsData } = await supabase
-        .from('auditorias')
-        .select(`
-          id,
-          data_agendamento,
-          status,
-          tecnico_responsavel_id,
-          propriedade_id,
-          created_at,
-          updated_at,
-          propriedades (
+        const { data: auditsData, error: audErr } = await supabase
+          .from('auditorias')
+          .select(`
             id,
-            nome_fazenda,
-            nome_produtor,
-            codigo_car,
-            municipio,
+            data_agendamento,
+            status,
+            etapa,
+            tecnico_responsavel_id,
+            propriedade_id,
             created_at,
-            updated_at
-          )
-        `)
-        .order('updated_at', { ascending: false, nullsFirst: false });
+            updated_at,
+            propriedades (
+              id,
+              nome_fazenda,
+              nome_produtor,
+              codigo_car,
+              codigo_sigef,
+              municipio,
+              geom,
+              etapa,
+              created_at,
+              updated_at
+            )
+          `)
+          .order('updated_at', { ascending: false, nullsFirst: false });
 
-      const { auditRespMap, propPendsMap } = await fetchLatestActivityTimestamps();
-
-      const userEmail = (user?.email || '').toLowerCase();
-      const userName = (user?.user_metadata?.full_name || user?.nome || '').toLowerCase();
-
-      const auditByProp = new Map<string, any>();
-
-      (auditsData || []).forEach((a: any) => {
-        const propRel = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
-        const propFound = propRel || propMap.get(a.propriedade_id);
-        const propId = a.propriedade_id || propFound?.id;
-        if (!propId) return;
-
-        const resolvedEtapa = resolveFarmEtapa(propId, propFound?.etapa, a.etapa);
-
-        const lastTs = computeCompositeUltimaAlteracao({
-          auditUpdatedAt: a.updated_at,
-          auditCreatedAt: a.created_at,
-          propUpdatedAt: propFound?.updated_at,
-          propCreatedAt: propFound?.created_at,
-          auditId: a.id,
-          propId: propId,
-          farmName: propFound?.nome_fazenda,
-          auditRespMap,
-          propPendsMap
-        });
-
-        const auditItem = {
-          ...a,
-          etapa: resolvedEtapa,
-          ultima_alteracao_at: lastTs,
-          propriedades: propFound || { nome_fazenda: 'Fazenda', nome_produtor: 'Produtor' }
-        };
-
-        const existing = auditByProp.get(propId);
-        if (!existing) {
-          auditByProp.set(propId, auditItem);
-        } else {
-          const existingHasResp = existing.id && auditRespMap.has(existing.id);
-          const newHasResp = a.id && auditRespMap.has(a.id);
-          if (!existingHasResp && newHasResp) {
-            auditByProp.set(propId, auditItem);
-          } else if (existingHasResp === newHasResp) {
-            const timeExisting = new Date(existing.ultima_alteracao_at || existing.updated_at || 0).getTime();
-            const timeNew = new Date(lastTs || a.updated_at || 0).getTime();
-            if (timeNew > timeExisting) {
-              auditByProp.set(propId, auditItem);
-            }
-          }
+        // PROTEÇÃO CRÍTICA CONTRA RESPOSTA NULA/VAZIA OU ERRO DE REDE:
+        // Se a rede falhar ou não retornar registros, NUNCA zerar o estado local!
+        if (propsErr || audErr || !propsData || propsData.length === 0 || !auditsData || auditsData.length === 0) {
+          console.warn('[OFFLINE/REVALIDATION] Falha de rede ou resposta vazia do Supabase. Mantendo dados locais intactos.');
+          return;
         }
-      });
 
-      const allList: any[] = Array.from(auditByProp.values());
+        const propMap = new Map<string, any>();
+        propsData.forEach(p => propMap.set(p.id, p));
 
-      const existingPropIds = new Set(allList.map(a => a.propriedade_id));
-      (propsData || []).forEach(p => {
-        if (!existingPropIds.has(p.id)) {
+        const { auditRespMap, propPendsMap } = await fetchLatestActivityTimestamps();
+
+        const userEmail = (user?.email || '').toLowerCase();
+
+        const auditByProp = new Map<string, any>();
+
+        auditsData.forEach((a: any) => {
+          const propRel = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
+          const propFound = propRel || propMap.get(a.propriedade_id);
+          const propId = a.propriedade_id || propFound?.id;
+          if (!propId) return;
+
+          const resolvedEtapa = resolveFarmEtapa(propId, propFound?.etapa, a.etapa);
+
           const lastTs = computeCompositeUltimaAlteracao({
-            auditUpdatedAt: null,
-            auditCreatedAt: null,
-            propUpdatedAt: p.updated_at,
-            propCreatedAt: p.created_at,
-            auditId: `mock-audit-${p.id}`,
-            propId: p.id,
-            farmName: p.nome_fazenda,
+            auditUpdatedAt: a.updated_at,
+            auditCreatedAt: a.created_at,
+            propUpdatedAt: propFound?.updated_at,
+            propCreatedAt: propFound?.created_at,
+            auditId: a.id,
+            propId: propId,
+            farmName: propFound?.nome_fazenda,
             auditRespMap,
             propPendsMap
           });
 
-          allList.push({
-            id: `mock-audit-${p.id}`,
-            propriedade_id: p.id,
-            tecnico_responsavel_id: user?.id || null,
-            data_agendamento: new Date().toISOString(),
-            status: 'Autoavaliação',
-            etapa: resolveFarmEtapa(p.id, p.etapa),
+          const auditItem = {
+            ...a,
+            etapa: resolvedEtapa,
             ultima_alteracao_at: lastTs,
-            propriedades: p
-          });
-        }
-      });
+            propriedades: propFound || { nome_fazenda: 'Fazenda', nome_produtor: 'Produtor' }
+          };
 
-      // Buscar prazos de pendências
-      const pendenciasPrazoMap = new Map<string, string>();
-      try {
-        const { data: pendenciasData } = await supabase
-          .from('pendencias')
-          .select('propriedade_id, prazo, status')
-          .neq('status', 'Resolvida')
-          .not('prazo', 'is', null)
-          .order('prazo', { ascending: true });
-
-        if (pendenciasData) {
-          pendenciasData.forEach((pend: any) => {
-            const existing = pendenciasPrazoMap.get(pend.propriedade_id);
-            if (!existing || new Date(pend.prazo) < new Date(existing)) {
-              pendenciasPrazoMap.set(pend.propriedade_id, pend.prazo);
+          const existing = auditByProp.get(propId);
+          if (!existing) {
+            auditByProp.set(propId, auditItem);
+          } else {
+            const existingHasResp = existing.id && auditRespMap.has(existing.id);
+            const newHasResp = a.id && auditRespMap.has(a.id);
+            if (!existingHasResp && newHasResp) {
+              auditByProp.set(propId, auditItem);
+            } else if (existingHasResp === newHasResp) {
+              const timeExisting = new Date(existing.ultima_alteracao_at || existing.updated_at || 0).getTime();
+              const timeNew = new Date(lastTs || a.updated_at || 0).getTime();
+              if (timeNew > timeExisting) {
+                auditByProp.set(propId, auditItem);
+              }
             }
-          });
+          }
+        });
+
+        const allList: any[] = Array.from(auditByProp.values());
+
+        const existingPropIds = new Set(allList.map(a => a.propriedade_id));
+        propsData.forEach(p => {
+          if (!existingPropIds.has(p.id)) {
+            const lastTs = computeCompositeUltimaAlteracao({
+              auditUpdatedAt: null,
+              auditCreatedAt: null,
+              propUpdatedAt: p.updated_at,
+              propCreatedAt: p.created_at,
+              auditId: `mock-audit-${p.id}`,
+              propId: p.id,
+              farmName: p.nome_fazenda,
+              auditRespMap,
+              propPendsMap
+            });
+
+            allList.push({
+              id: `mock-audit-${p.id}`,
+              propriedade_id: p.id,
+              tecnico_responsavel_id: user?.id || null,
+              data_agendamento: new Date().toISOString(),
+              status: 'Autoavaliação',
+              etapa: resolveFarmEtapa(p.id, p.etapa),
+              ultima_alteracao_at: lastTs,
+              propriedades: p
+            });
+          }
+        });
+
+        // Buscar prazos de pendências
+        const pendenciasPrazoMap = new Map<string, string>();
+        try {
+          const { data: pendenciasData } = await supabase
+            .from('pendencias')
+            .select('propriedade_id, prazo, status')
+            .neq('status', 'Resolvida')
+            .not('prazo', 'is', null)
+            .order('prazo', { ascending: true });
+
+          if (pendenciasData) {
+            pendenciasData.forEach((pend: any) => {
+              const existing = pendenciasPrazoMap.get(pend.propriedade_id);
+              if (!existing || new Date(pend.prazo) < new Date(existing)) {
+                pendenciasPrazoMap.set(pend.propriedade_id, pend.prazo);
+              }
+            });
+          }
+        } catch (e) {}
+
+        allList.forEach(a => {
+          a.prazo_pendencia = pendenciasPrazoMap.get(a.propriedade_id) || null;
+        });
+
+        // Filtrar para o técnico logado de forma resiliente
+        const filteredForTech = allList.filter((a: any) => {
+          const tecId = a.tecnico_responsavel_id;
+          if (!tecId) return true;
+          if (user?.id && tecId === user.id) return true;
+          if (tecId === 'tec-patricia-01' && userEmail.includes('analistacampo1')) return true;
+          if (tecId === 'tec-alexandre-02' && userEmail.includes('analistacampo2')) return true;
+          if (tecId === 'tec-vistoriador-03' && userEmail.includes('tecnico@ms')) return true;
+          if (userEmail.includes('analistacampo1') && tecId === 'b02f1f87-b998-4f4f-a66b-e169b28c0df5') return true;
+          if (userEmail.includes('analistacampo2') && tecId === 'cf4ebd0f-f933-4853-8adc-3a65da55ec6d') return true;
+          if (userEmail.includes('tecnico@ms') && tecId === 'bb03c918-ed79-479c-87bf-c8f65a95ac2c') return true;
+          return true; // No modo offline ou testes, garante visibilidade de todas
+        });
+
+        // PROTEÇÃO CONTRA SOBRESCRITA POR ARRAY VAZIO:
+        // Só atualiza Dexie e state se encontramos pelo menos 1 registro válido
+        if (filteredForTech && filteredForTech.length > 0) {
+          filteredForTech.sort(compareAuditoriasDeterministically);
+          await bulkSaveAuditorias(filteredForTech);
+          setAuditorias(filteredForTech);
+        } else {
+          console.warn('[REVALIDATION] Nenhum registro retornado para o técnico. Mantendo cache local intacto.');
         }
-      } catch (e) {}
+      })();
 
-      allList.forEach(a => {
-        a.prazo_pendencia = pendenciasPrazoMap.get(a.propriedade_id) || null;
-      });
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Timeout de rede na consulta remota de auditorias')), 6000)
+      );
 
-      // Filtrar para o técnico logado
-      const filteredForTech = allList.filter((a: any) => {
-        const tecId = a.tecnico_responsavel_id;
-        if (!tecId) return true;
-        if (user?.id && tecId === user.id) return true;
-        if (tecId === 'tec-patricia-01' && userEmail.includes('analistacampo1')) return true;
-        if (tecId === 'tec-alexandre-02' && userEmail.includes('analistacampo2')) return true;
-        if (tecId === 'tec-vistoriador-03' && userEmail.includes('tecnico@ms')) return true;
-        return true; // No modo offline, permite visualizar todas as atribuídas
-      });
-
-      // Ordenação determinística estrita idêntica à do Dexie
-      filteredForTech.sort(compareAuditoriasDeterministically);
-
-      // Reconciliação atômica no Dexie (SSOT): a UI é atualizada via useLiveAuditorias sem swap de cards
-      await bulkSaveAuditorias(filteredForTech);
+      await Promise.race([fetchPromise, timeoutPromise]);
     } catch (err: any) {
-      console.warn('Usando auditorias do cache local Dexie:', err);
+      console.warn('[OFFLINE] Falha na rede ao atualizar auditorias. Mantendo cache local:', err);
     } finally {
-      setLoading(false);
+      setLoading(false); // IMPRESCINDÍVEL: nunca deixar a tela em skeleton infinito
       isFetchingAuditsRef.current = false;
     }
   }
@@ -1774,6 +2581,20 @@ export default function DashboardTecnico() {
       return;
     }
 
+    // 1. Leitura Local-First imediata do Dexie (0ms)
+    try {
+      const localPends = await getCachedPendenciasByPropriedade(prop.id);
+      if (localPends && localPends.length > 0) {
+        setPropPendencias(localPends);
+      }
+    } catch (e) {}
+
+    // 2. Se offline, encerra imediatamente mantendo os dados locais
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setLoadingPends(false);
+      return;
+    }
+
     try {
       const { data, error: err } = await supabase
         .from('pendencias')
@@ -1781,10 +2602,12 @@ export default function DashboardTecnico() {
         .eq('propriedade_id', prop.id)
         .order('created_at', { ascending: false });
       if (err) throw err;
-      setPropPendencias(data || []);
+      if (data) {
+        setPropPendencias(data);
+        await bulkSavePendencias(data);
+      }
     } catch (err: any) {
-      console.error('Erro ao buscar pendências:', err);
-      error('Erro ao carregar pendências: ' + err.message);
+      console.warn('Aviso ao carregar pendências remotas:', err);
     } finally {
       setLoadingPends(false);
     }
@@ -1901,28 +2724,13 @@ export default function DashboardTecnico() {
   const sampleEvidenceSVG = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><rect width="800" height="600" fill="%230f172a"/><rect x="40" y="40" width="720" height="520" rx="16" fill="%231e293b" stroke="%23334155" stroke-width="2"/><circle cx="400" cy="240" r="80" fill="%2310b981" opacity="0.2"/><path d="M400 180 L440 220 L420 220 L420 280 L380 280 L380 220 L360 220 Z" fill="%2310b981"/><text x="400" y="360" font-family="sans-serif" font-size="24" font-weight="bold" fill="%23f8fafc" text-anchor="middle">Evidência de Campo RTRS</text><text x="400" y="400" font-family="sans-serif" font-size="16" fill="%2394a3b8" text-anchor="middle">Comprovante de Conformidade Ambiental e Social</text><rect x="250" y="450" width="300" height="44" rx="22" fill="%2310b981"/><text x="400" y="478" font-family="sans-serif" font-size="14" font-weight="bold" fill="%23ffffff" text-anchor="middle">Documento Verificado ✓</text></svg>`;
 
   const handleOpenEvidencia = (url?: string | null) => {
-    if (!url || !url.trim() || url.trim() === 'resolvido' || url.trim() === 'comprovante' || url.trim().length < 5) {
-      setFotoAmpliada(sampleEvidenceSVG);
+    const cleanUrl = cleanEvidenceUrl(url);
+    if (!cleanUrl) {
+      warning('Nenhum arquivo ou imagem disponível para esta evidência.');
       return;
     }
-    let cleanUrl = url.trim();
 
-    // URLs blob: e data: locais nunca devem ser reescritas para o Supabase Storage
-    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://') && !cleanUrl.startsWith('data:') && !cleanUrl.startsWith('blob:')) {
-      try {
-        const bucket = cleanUrl.includes('auditoria-evidencias') ? 'auditoria-evidencias' : 'evidencias';
-        const filePath = cleanUrl.replace(/^(evidencias|auditoria-evidencias)\//, '');
-        const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
-        if (data?.publicUrl) cleanUrl = data.publicUrl;
-      } catch (e) {
-        console.warn('Erro ao obter URL pública do storage:', e);
-      }
-    }
-
-    const lower = cleanUrl.toLowerCase();
-    const isPdf = lower.includes('.pdf') || lower.startsWith('data:application/pdf');
-
-    if (isPdf) {
+    if (isPdfEvidence(cleanUrl)) {
       setPdfAmpliado(cleanUrl);
     } else {
       setFotoAmpliada(cleanUrl);
@@ -2022,12 +2830,13 @@ export default function DashboardTecnico() {
     }
   };
 
+  const isOfflineFilter = typeof navigator !== 'undefined' && !navigator.onLine;
   const filteredFarms = farmsData.features.filter(f => {
     const matchSearch = (f.properties?.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       (f.properties?.municipio || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       (f.properties?.tecnico_nome || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       (f.properties?.produtor || '').toLowerCase().includes(searchQuery.toLowerCase());
-    const matchFilter = filterMode === 'todas' || f.properties?.isMine;
+    const matchFilter = filterMode === 'todas' || f.properties?.isMine || isOfflineFilter;
     return matchSearch && matchFilter;
   });
 
@@ -2070,12 +2879,71 @@ export default function DashboardTecnico() {
             <span>Iniciar Vistoria</span>
           </button>
 
+          <button
+            type="button"
+            onClick={handlePrepareFieldMode}
+            disabled={isPreparingField}
+            className={`group relative flex items-center gap-2 px-4 py-3 rounded-2xl border transition-all duration-300 cursor-pointer disabled:opacity-60 overflow-hidden shadow-xs hover:shadow-md ${
+              lastPrepSummary
+                ? 'bg-emerald-50/80 hover:bg-emerald-100/90 text-emerald-950 border-emerald-300'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300/80'
+            }`}
+            title={
+              lastPrepSummary
+                ? `Modo Campo Pronto! ${lastPrepSummary}. Clique para atualizar novamente.`
+                : 'Sincronizar e preparar dados de fazendas e 115 critérios RTRS para trabalhar offline'
+            }
+          >
+            {isPreparingField ? (
+              <RefreshCw className="w-4 h-4 text-[#1B7547] animate-spin" />
+            ) : lastPrepSummary ? (
+              <CheckCircle2 className="w-4 h-4 text-[#1B7547] shrink-0" />
+            ) : (
+              <DownloadCloud className="w-4 h-4 text-[#1B7547] transition-transform group-hover:scale-110 shrink-0" />
+            )}
+            <span className="font-extrabold text-xs">
+              {isPreparingField
+                ? 'Preparando...'
+                : lastPrepSummary
+                ? 'Modo Campo Pronto'
+                : 'Baixar Dados Offline'}
+            </span>
+          </button>
+
           <div className="flex items-center gap-2 bg-slate-100 text-slate-700 px-4 py-2.5 rounded-2xl text-xs font-extrabold border border-slate-200 shadow-2xs">
             <CalendarDays className="w-4 h-4 text-[#1B7547]" />
             <span>Hoje, {new Date().toLocaleDateString('pt-BR')}</span>
           </div>
         </div>
       </div>
+
+      {/* Banner Informativo do Modo Campo no Portal do Técnico */}
+      {isOfflineMode && (
+        <div className="bg-gradient-to-r from-amber-500/15 via-amber-600/10 to-amber-500/5 border border-amber-500/40 rounded-3xl p-5 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-fade-in">
+          <div className="flex items-center gap-3.5">
+            <div className="p-3 bg-amber-500/20 text-amber-900 rounded-2xl border border-amber-500/30 shrink-0">
+              <WifiOff className="w-5 h-5 text-amber-800" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-black text-xs uppercase tracking-wider text-amber-950 bg-amber-200/90 px-2.5 py-0.5 rounded-md border border-amber-300">
+                  Modo Campo Ativo
+                </span>
+                <span className="text-xs font-extrabold text-amber-900">Operação 100% Desconectada</span>
+              </div>
+              <p className="text-xs text-amber-800/90 mt-1 font-medium">
+                Você pode realizar visitas, responder questionários RTRS e registrar evidências fotográficas offline. Os dados serão gravados com segurança no aparelho.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+            <div className="text-xs font-black text-amber-900 bg-amber-100/90 px-3.5 py-2 rounded-2xl border border-amber-300 shadow-2xs flex items-center gap-2">
+              <Database className="w-4 h-4 text-amber-700" />
+              <span>{auditorias.length} fazendas disponíveis</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Tabs Principais com Motion Design Padronizado */}
       <div className="bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 inline-flex flex-wrap gap-2 shadow-2xs">
@@ -2115,7 +2983,7 @@ export default function DashboardTecnico() {
       </div>
 
       {/* ====== TAB: MAPA & PROPRIEDADES COM MOTION FLUIDO ====== */}
-      <div key={`tab-mapa-${activeTab}`} className={activeTab === 'mapa' ? 'block animate-fade-in-up duration-300' : 'hidden'}>
+      <div className={activeTab === 'mapa' ? 'block animate-fade-in-up duration-300' : 'hidden'}>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left Panel: Farm List */}
           <div className="lg:col-span-1 space-y-4">
@@ -2307,7 +3175,7 @@ export default function DashboardTecnico() {
       </div>
 
       {/* ====== TAB: AUDITORIAS COM MOTION FLUIDO ====== */}
-      <div key={`tab-audits-${activeTab}`} className={activeTab === 'auditorias' ? 'block space-y-6 animate-fade-in-up duration-300' : 'hidden'}>
+      <div className={activeTab === 'auditorias' ? 'block space-y-6 animate-fade-in-up duration-300' : 'hidden'}>
         {/* SUB-ABAS DAS 3 ETAPAS COM MOTION DESIGN */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <button
@@ -2550,7 +3418,7 @@ export default function DashboardTecnico() {
       </div>
 
       {/* ====== TAB: DOCUMENTAÇÃO & EVIDÊNCIAS COM MOTION FLUIDO ====== */}
-      <div key={`tab-docs-${activeTab}`} className={activeTab === 'documentacao' ? 'block space-y-6 animate-fade-in-up duration-300' : 'hidden'}>
+      <div className={activeTab === 'documentacao' ? 'block space-y-6 animate-fade-in-up duration-300' : 'hidden'}>
         <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div>
             <div className="inline-flex items-center gap-2 bg-[#1B7547]/10 text-[#1B7547] px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider mb-2">
@@ -2586,14 +3454,26 @@ export default function DashboardTecnico() {
               className="px-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-xs font-extrabold text-slate-800 outline-none cursor-pointer focus:ring-4 focus:ring-[#1B7547]/15 focus:border-[#1B7547] transition-all shadow-2xs"
             >
               <option value="">Todas as Minhas Fazendas</option>
-              {properties
-                .filter(p => {
-                  const mySet = new Set((auditorias || []).map(a => a.propriedade_id).filter(Boolean));
-                  return mySet.size === 0 || mySet.has(p.id);
-                })
-                .map((p) => (
-                  <option key={p.id} value={p.id}>{p.nome_fazenda}</option>
-                ))}
+              {(() => {
+                const map = new Map<string, string>();
+                (properties || []).forEach(p => {
+                  if (p.id && p.nome_fazenda) map.set(p.id, p.nome_fazenda);
+                });
+                (auditorias || []).forEach(a => {
+                  const p = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
+                  const pId = a.propriedade_id || p?.id;
+                  const pNome = p?.nome_fazenda || a.nome_fazenda;
+                  if (pId && pNome && pNome !== 'Fazenda') map.set(pId, pNome);
+                });
+                (documentos || []).forEach(d => {
+                  if (d.propriedade_id && d.fazendaNome && d.fazendaNome !== 'Fazenda' && d.fazendaNome !== 'Geral') {
+                    map.set(d.propriedade_id, d.fazendaNome);
+                  }
+                });
+                return Array.from(map.entries()).map(([id, nome]) => (
+                  <option key={id} value={id}>{nome}</option>
+                ));
+              })()}
             </select>
 
             <select
@@ -2675,11 +3555,10 @@ export default function DashboardTecnico() {
                           </span>
                         </td>
                         <td className="px-6 py-4 text-slate-500 text-xs font-medium">{doc.origem}</td>
-                        <td className="px-6 py-4 text-slate-700 font-bold">
-                          <div className="flex flex-col">
-                            <span className="text-xs text-slate-800 font-extrabold">{formatUltimaAlteracao(doc.data).fullDate} às {formatUltimaAlteracao(doc.data).timeStr}</span>
-                            <span className="text-[10px] text-[#1B7547] font-bold">{formatUltimaAlteracao(doc.data).relative}</span>
-                          </div>
+                        <td className="px-6 py-4 text-slate-700 font-bold whitespace-nowrap">
+                          <span className="text-xs text-slate-800 font-extrabold">
+                            {formatUltimaAlteracao(doc.data).fullDate} às {formatUltimaAlteracao(doc.data).timeStr}
+                          </span>
                         </td>
                         <td className="px-6 py-4 text-center">
                           <button
@@ -3190,7 +4069,14 @@ export default function DashboardTecnico() {
                 className="w-full px-3 py-2 bg-background border border-input rounded-md text-sm focus:ring-1 focus:ring-primary focus:outline-none text-foreground"
               >
                 <option value="">Selecione uma fazenda...</option>
-                {properties.map(p => (
+                {(properties.length > 0 ? properties : auditorias.map(a => {
+                  const p = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
+                  return {
+                    id: a.propriedade_id || p?.id || a.id,
+                    nome_fazenda: p?.nome_fazenda || 'Fazenda',
+                    nome_produtor: p?.nome_produtor || 'Produtor Rural'
+                  };
+                })).map(p => (
                   <option key={p.id} value={p.id}>{p.nome_fazenda} ({p.nome_produtor})</option>
                 ))}
               </select>
@@ -3266,7 +4152,7 @@ export default function DashboardTecnico() {
                 src={fotoAmpliada} 
                 alt="Evidência Ampliada" 
                 onError={(e) => {
-                  (e.target as HTMLImageElement).src = sampleEvidenceSVG;
+                  console.warn('Erro ao renderizar imagem ampliada:', fotoAmpliada);
                 }}
                 className="max-w-full max-h-[75vh] object-contain rounded-xl" 
               />
@@ -3323,7 +4209,8 @@ export default function DashboardTecnico() {
               <iframe src={pdfAmpliado} className="w-full h-full border-none" title="Documento PDF" />
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
