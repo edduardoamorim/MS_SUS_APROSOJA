@@ -20,6 +20,7 @@ import {
   removeMutation,
   removeFile,
   rescueNotnullFailedMutations,
+  rehabilitateFailedQueueForRetry,
   onOutboxChange,
   cacheReadData,
   purgeCorruptedQueue,
@@ -70,6 +71,7 @@ class SyncEngine {
   private _currentUser: any | null = null;
   private _currentSession: any | null = null;
   private _consecutiveNetworkErrors: number = 0;
+  private _hasPendingResync: boolean = false;
   private _progress: SyncProgressInfo = {
     phase: typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'idle',
     totalItems: 0,
@@ -352,6 +354,57 @@ class SyncEngine {
   }
 
   /**
+   * Converte uma Data URL (data:image/jpeg;base64,...) em um Blob em memória (ArrayBuffer-backed)
+   * Essencial para reconstruir arquivos em dispositivos móveis (iOS Safari/WebKit)
+   */
+  private dataUrlToBlob(dataUrl: string): Blob | null {
+    try {
+      if (!dataUrl || !dataUrl.startsWith('data:')) return null;
+      const parts = dataUrl.split(',');
+      if (parts.length < 2) return null;
+      const mimeMatch = parts[0].match(/:(.*?);/);
+      const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+      const bstr = atob(parts[1]);
+      let n = bstr.length;
+      const u8arr = new Uint8Array(n);
+      while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+      }
+      return new Blob([u8arr.buffer], { type: mime });
+    } catch (e) {
+      console.warn('[SyncEngine] Falha ao converter DataURL em Blob:', e);
+      return null;
+    }
+  }
+
+  /**
+   * Extrai um Blob 100% íntegro em memória (ArrayBuffer) a partir de item.file_blob ou item.evidencia_url
+   * Blindado contra invalidação de ponteiros File no iOS Safari / WebKit IndexedDB
+   */
+  private async getSafeUploadBlob(rawBlob?: Blob | null, fallbackDataUrl?: string | null, defaultMime = 'image/jpeg'): Promise<{ blob: Blob; mimeType: string } | null> {
+    if (rawBlob) {
+      try {
+        const buf = await rawBlob.arrayBuffer();
+        if (buf && buf.byteLength > 0) {
+          const mime = rawBlob.type && rawBlob.type !== 'text/plain' ? rawBlob.type : defaultMime;
+          return { blob: new Blob([buf], { type: mime }), mimeType: mime };
+        }
+      } catch (err) {
+        console.warn('[SyncEngine] Ponteiro de Blob nativo ilegível no IndexedDB (comum no iOS Safari). Tentando reconstrução via DataURL...', err);
+      }
+    }
+
+    if (fallbackDataUrl && fallbackDataUrl.startsWith('data:')) {
+      const reconstructed = this.dataUrlToBlob(fallbackDataUrl);
+      if (reconstructed && reconstructed.size > 0) {
+        return { blob: reconstructed, mimeType: reconstructed.type || defaultMime };
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Checagem periódica e disparo automático de sincronização
    */
   public async checkConnectivityAndSync() {
@@ -385,21 +438,22 @@ class SyncEngine {
    * @param forceAll se true (acionado pelo usuário em 'Tentar Novamente'), processa os itens ignorando limites de backoff
    */
   public async syncNow(forceAll = false): Promise<{ success: boolean; drained: number; errors: number }> {
-    // 1. INVESTIGAÇÃO DE DEADLOCK / MUTEX TRAVADO:
-    // Se forceAll for true ou se a sincronização anterior estiver travada há mais de 15s (watchdog), destrava o mutex
+    // 1. INVESTIGAÇÃO DE DEADLOCK / MUTEX TRAVADO E RE-EXECUÇÃO AUTOMÁTICA:
+    // Se já houver sincronização em andamento e o tempo for menor que 15s, agenda uma nova rodada assim que a atual terminar.
     if (this._isSyncing) {
       const elapsed = this._syncStartTime > 0 ? Date.now() - this._syncStartTime : 0;
-      if (forceAll || elapsed > 15000) {
-        console.warn(`[SyncEngine] Mutex destravado (forceAll: ${forceAll}, decorrido: ${elapsed}ms). Forçando execução.`);
+      if (elapsed > 15000) {
+        console.warn(`[SyncEngine] Mutex destravado por watchdog (${elapsed}ms). Forçando execução.`);
         this._isSyncing = false;
         this._syncStartTime = 0;
       } else {
-        console.log('[SyncEngine] Sincronização já em andamento. Ignorando chamada concorrente.');
-        return { success: false, drained: 0, errors: 0 };
+        console.log('[SyncEngine] Sincronização em andamento. Agendando nova rodada imediata (_hasPendingResync = true).');
+        this._hasPendingResync = true;
+        return { success: true, drained: 0, errors: 0 };
       }
     }
 
-    // Cancelar backoff ou debounce pendente em clique forçado
+    // Cancelar backoff ou debounce pendente em clique forçado e reabilitar itens falhos
     if (forceAll) {
       if (this._onlineDebounceTimer) {
         clearTimeout(this._onlineDebounceTimer);
@@ -408,6 +462,11 @@ class SyncEngine {
       if (this._offlineDebounceTimer) {
         clearTimeout(this._offlineDebounceTimer);
         this._offlineDebounceTimer = null;
+      }
+      try {
+        await rehabilitateFailedQueueForRetry();
+      } catch (rehErr) {
+        console.warn('[SyncEngine] Aviso ao reabilitar itens da fila em forceAll:', rehErr);
       }
     }
 
@@ -632,61 +691,127 @@ class SyncEngine {
 
         try {
           let publicUrl: string | null = item.evidencia_url || null;
+          const isExplicitDelete = item.is_explicit_delete === true || item.evidencia_url === null;
 
-          // PASSO A (Upload Storage): Se houver file_blob com tamanho > 0, envia ao bucket 'evidencias'
-          if (item.file_blob) {
-            const blobSize = (item.file_blob as any).size ?? 0;
-            if (blobSize === 0) {
-              console.warn(`[SYNC ENGINE] Arquivo de evidência para ${item.auditoria_id}/${canonicalPerguntaId} possui 0 bytes. Ignorando upload.`);
+          // PASSO A (Upload Storage Blindado): Reconstrói o Blob em memória (iOS Safari safe) e tenta buckets 'evidencias' -> 'documentos-e-midias' -> fallback DataURL
+          if (!isExplicitDelete && (item.file_blob || (item.evidencia_url && item.evidencia_url.startsWith('data:')))) {
+            const safePayload = await this.getSafeUploadBlob(
+              item.file_blob,
+              item.evidencia_url,
+              item.mime_type || 'image/jpeg'
+            );
+
+            if (!safePayload || safePayload.blob.size === 0) {
+              console.warn(`[SYNC ENGINE] Blob indisponível para ${item.auditoria_id}/${canonicalPerguntaId}. Usando evidencia_url existente se válida.`);
             } else {
-              const bucket = 'evidencias';
-              const rawExt = (item.file_name?.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
-              const storagePath = item.storage_path || `evidencias/${item.auditoria_id}_${canonicalPerguntaId}_${item.created_at || Date.now()}.${rawExt || 'jpg'}`;
+              const { blob: safeBlob, mimeType: safeMime } = safePayload;
+              const rawExt = safeMime === 'application/pdf'
+                ? 'pdf'
+                : safeMime === 'image/png'
+                ? 'png'
+                : safeMime === 'image/webp'
+                ? 'webp'
+                : ((item.file_name?.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg');
+              const cleanExt = rawExt === 'jpeg' || rawExt === 'heic' || rawExt === 'heif' ? 'jpg' : rawExt;
+              const rawPath = item.storage_path || `evidencia_${item.auditoria_id}_${canonicalPerguntaId}_${item.created_at || Date.now()}.${cleanExt}`;
+              const storagePath = rawPath.replace(/^evidencias\//, '');
 
-              console.log('[SYNC ENGINE] Passo A: Upload do Blob ao Storage bucket evidencias:', storagePath, `(${blobSize} bytes)`);
-              let uploadRes = await supabase.storage
-                .from(bucket)
-                .upload(storagePath, item.file_blob, {
-                  upsert: true,
-                  contentType: item.mime_type || 'image/jpeg'
-                });
+              let uploadedSuccessfully = false;
+              let lastStorageError: any = null;
 
-              // Se erro 401 / JWT expirado, tenta renovação silenciosa
-              if (uploadRes.error && (
-                (uploadRes.error as any).statusCode === '401' ||
-                uploadRes.error.message?.toLowerCase().includes('jwt') ||
-                uploadRes.error.message?.toLowerCase().includes('token')
-              )) {
-                console.log('[SYNC ENGINE] Token expirado no upload do journal. Tentando refresh silencioso...');
-                try {
+              // 1. Tenta bucket principal 'evidencias'
+              console.log('[SYNC ENGINE] Passo A: Upload do Blob ao Storage bucket evidencias:', storagePath, `(${safeBlob.size} bytes, ${safeMime})`);
+              try {
+                let uploadRes = await supabase.storage
+                  .from('evidencias')
+                  .upload(storagePath, safeBlob, {
+                    cacheControl: '3600',
+                    upsert: true,
+                    contentType: safeMime
+                  });
+
+                if (uploadRes.error && (
+                  (uploadRes.error as any).statusCode === '401' ||
+                  uploadRes.error.message?.toLowerCase().includes('jwt') ||
+                  uploadRes.error.message?.toLowerCase().includes('token')
+                )) {
+                  console.log('[SYNC ENGINE] Token expirado no upload do journal. Tentando refresh silencioso...');
                   const { data: refData } = await supabase.auth.refreshSession();
                   if (refData?.session) {
                     uploadRes = await supabase.storage
-                      .from(bucket)
-                      .upload(storagePath, item.file_blob, {
+                      .from('evidencias')
+                      .upload(storagePath, safeBlob, {
+                        cacheControl: '3600',
                         upsert: true,
-                        contentType: item.mime_type || 'image/jpeg'
+                        contentType: safeMime
                       });
                   }
-                } catch (rErr) {
-                  console.warn('[SYNC ENGINE] Falha ao tentar refresh durante upload do journal:', rErr);
+                }
+
+                if (!uploadRes.error) {
+                  const { data: pubData } = supabase.storage.from('evidencias').getPublicUrl(storagePath);
+                  if (pubData?.publicUrl) {
+                    publicUrl = pubData.publicUrl;
+                    uploadedSuccessfully = true;
+                    console.log('[SYNC ENGINE] Passo A Concluído (bucket evidencias). URL pública gerada:', publicUrl);
+                  }
+                } else {
+                  lastStorageError = uploadRes.error;
+                  console.warn('[SYNC ENGINE] Aviso no upload para bucket evidencias:', uploadRes.error.message);
+                }
+              } catch (upEx: any) {
+                lastStorageError = upEx;
+                console.warn('[SYNC ENGINE] Exceção no upload para bucket evidencias:', upEx?.message);
+              }
+
+              // 2. Fallback para bucket secundário 'documentos-e-midias'
+              if (!uploadedSuccessfully) {
+                try {
+                  const secRes = await supabase.storage
+                    .from('documentos-e-midias')
+                    .upload(storagePath, safeBlob, {
+                      cacheControl: '3600',
+                      upsert: true,
+                      contentType: safeMime
+                    });
+                  if (!secRes.error) {
+                    const { data: secPub } = supabase.storage.from('documentos-e-midias').getPublicUrl(storagePath);
+                    if (secPub?.publicUrl) {
+                      publicUrl = secPub.publicUrl;
+                      uploadedSuccessfully = true;
+                      console.log('[SYNC ENGINE] Passo A Concluído (bucket secundário documentos-e-midias):', publicUrl);
+                    }
+                  }
+                } catch (secEx: any) {
+                  console.warn('[SYNC ENGINE] Aviso no fallback documentos-e-midias:', secEx?.message);
                 }
               }
 
-              if (uploadRes.error) {
-                console.error('[SYNC ENGINE] Erro no upload Storage do journal:', uploadRes.error);
-                throw uploadRes.error; // Erro no Storage -> lança erro e NÃO remove o item da fila!
+              // 3. Se ambos os buckets falharem, verifica se foi queda física de internet ou se podemos usar fallback DataURL Base64 para garantir salvamento no banco!
+              if (!uploadedSuccessfully) {
+                const errStr = String(lastStorageError?.message || lastStorageError || '');
+                const isPhysicalOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+                if (isPhysicalOffline) {
+                  throw lastStorageError || new Error('Dispositivo sem conexão física para upload');
+                }
+                if (item.evidencia_url && item.evidencia_url.startsWith('data:')) {
+                  publicUrl = item.evidencia_url;
+                  console.log('[SYNC ENGINE] Usando DataURL comprimida como fallback resiliente para garantir gravação imediata no Postgres.');
+                } else {
+                  const b64 = await this.blobToBase64(safeBlob);
+                  if (b64 && b64.startsWith('data:')) {
+                    publicUrl = b64;
+                    console.log('[SYNC ENGINE] Convertido Blob em DataURL Base64 como fallback resiliente para o Postgres.');
+                  } else if (lastStorageError) {
+                    throw lastStorageError;
+                  }
+                }
               }
-
-              const { data: pubData } = supabase.storage.from(bucket).getPublicUrl(storagePath);
-              publicUrl = pubData?.publicUrl || null;
-              console.log('[SYNC ENGINE] Passo A Concluído. URL pública gerada:', publicUrl);
             }
           }
 
           // PASSO B (Upsert Postgres): Executa o upsert sanitizado em respostas_auditoria com UUID canônico
           const nowIso = new Date().toISOString();
-          const isExplicitDelete = item.is_explicit_delete === true || item.evidencia_url === null;
 
           // Blindagem estrita: URLs blob: efêmeras NUNCA devem ser enviadas ao Postgres remoto
           let remoteEvidenciaUrl: string | null = isExplicitDelete ? null : (publicUrl || null);
@@ -815,10 +940,50 @@ class SyncEngine {
             }
           }
 
+          // Se erro 23503 (Foreign Key: auditoria_id ainda não existe na tabela remota auditorias), cria ou reconcilia a auditoria pai automaticamente!
+          if (pgErr && ((pgErr as any).code === '23503' || pgErr.message?.includes('auditoria_id') || pgErr.details?.includes('auditorias'))) {
+            console.warn('[SYNC ENGINE] Erro 23503 detectado (auditoria pai ausente no servidor). Reconciliando/criando auditoria pai automaticamente...');
+            try {
+              const cachedAud = await db.cached_auditorias.get(targetAuditoriaId);
+              let propId = cachedAud?.propriedade_id;
+              if (!propId || propId.startsWith('mock-')) {
+                const { data: anyProp } = await supabase.from('propriedades').select('id').limit(1).maybeSingle();
+                propId = anyProp?.id;
+              }
+              if (propId) {
+                const { error: createAudErr } = await supabase.from('auditorias').upsert([{
+                  id: targetAuditoriaId,
+                  propriedade_id: propId,
+                  tecnico_responsavel_id: cachedAud?.tecnico_responsavel_id || this._currentUser?.id || null,
+                  status: cachedAud?.status || 'Em Andamento',
+                  data_agendamento: cachedAud?.data_agendamento || nowIso,
+                  updated_at: nowIso
+                }], { onConflict: 'id' });
+
+                if (!createAudErr) {
+                  const retryFk = await supabase
+                    .from('respostas_auditoria')
+                    .upsert(payload, { onConflict: 'auditoria_id,pergunta_id' });
+                  pgErr = retryFk.error;
+                }
+              }
+            } catch (fkRecErr) {
+              console.warn('[SYNC ENGINE] Aviso ao auto-criar auditoria pai para 23503:', fkRecErr);
+            }
+          }
+
           if (pgErr) {
             console.error('[SYNC ENGINE] Erro no upsert Postgres do journal:', pgErr);
             throw pgErr;
           }
+
+          // Atualiza updated_at da auditoria pai no Supabase para refletir imediatamente nas listagens web/mobile
+          try {
+            await supabase
+              .from('auditorias')
+              .update({ updated_at: nowIso })
+              .eq('id', targetAuditoriaId);
+          } catch {}
 
           // PASSO C (Atualização do Cache Local): Salva registro confirmado com URL definitiva em db.cached_respostas
           if (item.pergunta_id !== canonicalPerguntaId) {
@@ -886,6 +1051,7 @@ class SyncEngine {
           const isNetwork = !navigator.onLine ||
             itemErr?.name === 'AbortError' ||
             errMsg.includes('Failed to fetch') ||
+            errMsg.includes('Load failed') ||
             errMsg.includes('NetworkError') ||
             errMsg.includes('network connection lost') ||
             itemErr?.code === 'PGRST000';
@@ -1101,21 +1267,31 @@ class SyncEngine {
                 const nowIso = new Date().toISOString();
 
                 try {
+                  const cached = await db.cached_respostas.get([audId, canonPergId]);
                   await supabase
                     .from('respostas_auditoria')
-                    .update({ evidencia_url: publicUrl, updated_at: nowIso })
-                    .match({ auditoria_id: audId, pergunta_id: canonPergId });
-
-                  const cached = await db.cached_respostas.get([audId, canonPergId]);
-                  if (cached) {
-                    await db.cached_respostas.put({
-                      ...cached,
+                    .upsert({
+                      auditoria_id: audId,
+                      pergunta_id: canonPergId,
+                      conforme: cached?.conforme ?? false,
+                      nao_se_aplica: cached?.nao_se_aplica ?? false,
+                      observacoes: cached?.observacoes || '',
                       evidencia_url: publicUrl,
-                      updated_at: nowIso,
-                      evidencia_uploaded_at: cached.evidencia_uploaded_at || nowIso,
-                      data_envio: cached.data_envio || nowIso
-                    });
-                  }
+                      updated_at: nowIso
+                    }, { onConflict: 'auditoria_id,pergunta_id' });
+
+                  await db.cached_respostas.put({
+                    auditoria_id: audId,
+                    pergunta_id: canonPergId,
+                    conforme: cached?.conforme ?? false,
+                    nao_se_aplica: cached?.nao_se_aplica ?? false,
+                    observacoes: cached?.observacoes || '',
+                    numero_criterio: cached?.numero_criterio,
+                    evidencia_url: publicUrl,
+                    updated_at: nowIso,
+                    evidencia_uploaded_at: cached?.evidencia_uploaded_at || nowIso,
+                    data_envio: cached?.data_envio || nowIso
+                  });
                   console.log(`[SYNC ENGINE] Reconciliação direta de evidência concluída para ${audId} / ${canonPergId}`);
                 } catch (reconErr) {
                   console.warn('[SYNC ENGINE] Aviso ao atualizar respostas_auditoria diretamente:', reconErr);
@@ -1609,6 +1785,22 @@ class SyncEngine {
         this.notify();
       } else {
         this.notify();
+      }
+
+      // Dispara evento global de conclusão de ciclo para atualizar telas abertas (Documentação, Auditorias, etc.)
+      if (typeof window !== 'undefined' && drainedCount > 0) {
+        window.dispatchEvent(new CustomEvent('ms:sync-complete', {
+          detail: { drainedCount, errorCount, counts }
+        }));
+        window.dispatchEvent(new CustomEvent('ms:outbox-changed'));
+      }
+
+      // Se novos itens entraram enquanto esta sincronização estava rodando, dispara novo ciclo imediatamente
+      if (this._hasPendingResync && (typeof navigator === 'undefined' || navigator.onLine)) {
+        this._hasPendingResync = false;
+        setTimeout(() => {
+          this.syncNow(true);
+        }, 150);
       }
     }
 

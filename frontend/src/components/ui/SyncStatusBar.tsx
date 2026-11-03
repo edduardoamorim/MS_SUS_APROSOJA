@@ -231,7 +231,7 @@ export default function SyncStatusBar() {
     }
 
     // 5. Fase de falha parcial ou erro de envio com Dead-Letter Queue
-    if (pendingCounts.total > 0 && (activeDisplayPhase === 'partial_failure' || activeDisplayPhase === 'error' || syncProgress.phase === 'partial_failure' || syncProgress.phase === 'error')) {
+    if ((pendingCounts.total > 0 || (pendingCounts.deadLetter || 0) > 0) && (activeDisplayPhase === 'partial_failure' || activeDisplayPhase === 'error' || syncProgress.phase === 'partial_failure' || syncProgress.phase === 'error' || (pendingCounts.deadLetter || 0) > 0)) {
       const deadLetterCount = syncProgress.deadLetterCount ?? pendingCounts.deadLetter ?? 0;
       const hasDeadLetter = deadLetterCount > 0;
 
@@ -248,6 +248,11 @@ export default function SyncStatusBar() {
         } finally {
           setPurging(false);
         }
+      };
+
+      const handleManualRetry = async () => {
+        setActiveDisplayPhase('syncing');
+        await syncNow(true);
       };
 
       return (
@@ -283,7 +288,7 @@ export default function SyncStatusBar() {
 
               <button
                 type="button"
-                onClick={() => syncNow(true)}
+                onClick={handleManualRetry}
                 disabled={isSyncing || purging}
                 className={`px-3 py-1 bg-white/20 hover:bg-white/30 text-white rounded-lg text-xs font-bold transition-all border border-white/20 flex items-center gap-1.5 shadow-xs ${
                   isSyncing || purging ? 'pointer-events-none opacity-60 cursor-not-allowed' : 'cursor-pointer active:scale-95'

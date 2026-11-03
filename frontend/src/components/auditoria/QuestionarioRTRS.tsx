@@ -7,7 +7,7 @@ import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
 import { useSync } from '../../context/SyncContext';
 import { syncEngine } from '../../services/syncEngine';
-import { recordAuditChange, enqueueMutation, enqueueFile, removeEvidenceLocally, db, updateCachedAuditoria, getCachedReadData, cacheReadData, getAllCachedPerguntas, bulkSavePerguntas, getCachedRespostasByAuditoria, bulkSaveRespostas, type CachedPergunta } from '../../lib/offlineDb';
+import { recordAuditChange, removeJournalItem, notifyOutboxChange, enqueueMutation, enqueueFile, removeEvidenceLocally, db, updateCachedAuditoria, getCachedReadData, cacheReadData, getAllCachedPerguntas, bulkSavePerguntas, getCachedRespostasByAuditoria, bulkSaveRespostas, type CachedPergunta } from '../../lib/offlineDb';
 import { seedDefaultRTRSQuestions } from '../../services/precacheService';
 import { cleanEvidenceUrl, resolveEvidenceUrlAsync, isPdfEvidence } from '../../lib/evidenceService';
 
@@ -898,6 +898,25 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     });
   };
 
+  const dataUrlToMemoryBlob = (dataUrl: string, defaultMime = 'image/jpeg'): Blob | null => {
+    try {
+      if (!dataUrl || !dataUrl.startsWith('data:')) return null;
+      const parts = dataUrl.split(',');
+      if (parts.length < 2) return null;
+      const mimeMatch = parts[0].match(/:(.*?);/);
+      const mime = mimeMatch ? mimeMatch[1] : defaultMime;
+      const bstr = atob(parts[1]);
+      let n = bstr.length;
+      const u8arr = new Uint8Array(n);
+      while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+      }
+      return new Blob([u8arr.buffer], { type: mime });
+    } catch (e) {
+      return null;
+    }
+  };
+
   const handleUploadEvidencia = async (id: string, file: File) => {
     setCameraLoadingId(id);
     try {
@@ -909,39 +928,78 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         return;
       }
 
+      // 0. BLINDAGEM iOS SAFARI / WEBKIT:
+      // Copia os bytes para um ArrayBuffer em memória IMEDIATAMENTE, antes de qualquer await externo ou limpeza de input,
+      // impedindo que o WebKit invalide o ponteiro temporário do arquivo da câmera/galeria.
+      let rawMemoryBlob: Blob | null = null;
+      try {
+        const buf = await file.arrayBuffer();
+        if (buf && buf.byteLength > 0) {
+          rawMemoryBlob = new Blob([buf], { type: file.type || 'image/jpeg' });
+        }
+      } catch (bufErr) {
+        console.warn('[QuestionarioRTRS] Aviso ao clonar ArrayBuffer imediato do arquivo:', bufErr);
+      }
+
       const canonicalId = normalizePerguntaId(id);
       const nowIso = new Date().toISOString();
       const rawExt = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const fileExt = rawExt === 'jpeg' ? 'jpg' : (rawExt || 'jpg');
-      const activeId = await getOrCreateRealAuditoriaId();
-      const fileName = `evidencia_${activeId || 'temp'}_${canonicalId}_${Date.now()}.${fileExt}`;
-      const filePath = `${fileName}`;
+      const isImageFile = file.type.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'].includes(rawExt);
 
-      const mimeType = file.type && file.type !== 'text/plain'
-        ? file.type
-        : (fileExt === 'png' ? 'image/png' : fileExt === 'pdf' ? 'application/pdf' : fileExt === 'webp' ? 'image/webp' : 'image/jpeg');
-
-      // 1. Gera preview instantâneo (comprimido se for foto para manter agilidade na UI)
+      // 1. Gera preview comprimido (DataURL) em memória para fotos ou DataURL para PDF
       let previewUrl = '';
-      if (file.type.startsWith('image/')) {
+      if (isImageFile || file.type === 'application/pdf' || rawExt === 'pdf') {
         previewUrl = await compressImageForFallback(file);
-      } else {
-        previewUrl = URL.createObjectURL(file);
+      }
+      if (!previewUrl) {
+        previewUrl = URL.createObjectURL(rawMemoryBlob || file);
       }
 
-      const currentAns = respostas[canonicalId] || respostas[id] || {};
-      const numCrit = perguntas.find(p => p.id === canonicalId || p.id === id)?.numero_criterio || '';
-      const auditIdToUse = activeId || currentAuditoriaId || auditoriaId;
+      // Para imagens (especialmente fotos pesadas de celular ou HEIC/HEIF do iPhone),
+      // converte o previewUrl (JPEG otimizado 1280px) em um Blob em memória leve e 100% compatível!
+      let safeUploadBlob: Blob = rawMemoryBlob || file;
+      let finalExt = rawExt === 'jpeg' || rawExt === 'heic' || rawExt === 'heif' ? 'jpg' : (rawExt || 'jpg');
+      let finalMime = file.type && file.type !== 'text/plain'
+        ? file.type
+        : (finalExt === 'png' ? 'image/png' : finalExt === 'pdf' ? 'application/pdf' : finalExt === 'webp' ? 'image/webp' : 'image/jpeg');
 
-      // 1. Atualização instantânea da UI e LocalStorage
+      if (isImageFile && previewUrl.startsWith('data:image/jpeg')) {
+        const compressedBlob = dataUrlToMemoryBlob(previewUrl, 'image/jpeg');
+        if (compressedBlob && compressedBlob.size > 0) {
+          safeUploadBlob = compressedBlob;
+          finalExt = 'jpg';
+          finalMime = 'image/jpeg';
+        }
+      } else if (previewUrl.startsWith('data:') && !rawMemoryBlob) {
+        const fallbackBlob = dataUrlToMemoryBlob(previewUrl, finalMime);
+        if (fallbackBlob && fallbackBlob.size > 0) {
+          safeUploadBlob = fallbackBlob;
+        }
+      }
+
+      const activeId = await getOrCreateRealAuditoriaId();
+      const auditIdToUse = activeId || currentAuditoriaId || auditoriaId;
+      const fileName = `evidencia_${auditIdToUse || 'temp'}_${canonicalId}_${Date.now()}.${finalExt}`;
+      const filePath = `${fileName}`;
+
+      const currentAns = respostas[canonicalId] || respostas[id] || {};
+      const safeConforme = currentAns.conforme ?? false;
+      const safeNaoSeAplica = currentAns.nao_se_aplica ?? false;
+      const safeObservacoes = currentAns.observacao || '';
+      const numCrit = perguntas.find(p => p.id === canonicalId || p.id === id)?.numero_criterio || '';
+
+      // 2. Atualização instantânea da UI e LocalStorage
       setRespostas(prev => {
         const next = {
           ...prev,
           [canonicalId]: {
             ...currentAns,
+            conforme: safeConforme,
+            nao_se_aplica: safeNaoSeAplica,
             evidenciaUrl: previewUrl,
             numero_criterio: numCrit,
-            evidencia_uploaded_at: nowIso
+            evidencia_uploaded_at: nowIso,
+            updated_at: nowIso
           }
         };
         if (canonicalId !== id) {
@@ -951,16 +1009,17 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         return next;
       });
 
-      // 2. Gravação Atômica no Unified WAL (recordAuditChange) com UUID canônico
+      // 3. Gravação Atômica no Unified WAL (recordAuditChange) com Blob 100% em memória + DataURL de segurança
       if (auditIdToUse) {
         await recordAuditChange({
           auditoria_id: auditIdToUse,
           pergunta_id: canonicalId,
-          conforme: currentAns.conforme ?? false, // NUNCA null!
-          observacoes: currentAns.observacao || '',
-          file_blob: file,
+          conforme: safeConforme,
+          nao_se_aplica: safeNaoSeAplica,
+          observacoes: safeObservacoes,
+          file_blob: safeUploadBlob,
           file_name: fileName,
-          mime_type: mimeType,
+          mime_type: finalMime,
           storage_path: filePath,
           evidencia_url: previewUrl,
           numero_criterio: numCrit,
@@ -972,18 +1031,147 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         touchAuditoriaTimestamp(auditIdToUse, nowIso);
       }
 
-      // 4. Dispara evento de evidência anexada para atualização instantânea da UI
+      // 4. Dispara evento de evidência anexada para atualização instantânea da aba Histórico de Documentação
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('ms:evidence-uploaded', {
-          detail: { perguntaId: canonicalId, auditoriaId: activeId, timestamp: nowIso }
+          detail: { perguntaId: canonicalId, auditoriaId: auditIdToUse, timestamp: nowIso }
         }));
         window.dispatchEvent(new CustomEvent('ms:outbox-changed'));
       }
 
-      const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
-      if (isDeviceOnline) {
+      const deviceOnlineNow = typeof navigator !== 'undefined' ? navigator.onLine : isOnline;
+      if (deviceOnlineNow && auditIdToUse && !auditIdToUse.startsWith('mock-') && !auditIdToUse.startsWith('assigned-pend-')) {
+        // 5. FAST-PATH ONLINE DIRETO E BLINDADO:
+        // Envia imediatamente ao Storage + faz upsert em respostas_auditoria no mesmo fluxo.
+        // Se houver oscilação de rede no meio do caminho, o item já está salvo no sync_journal e o SyncEngine assume!
+        let directSuccess = false;
+        try {
+          let finalRemoteUrl = '';
+          const upRes = await supabase.storage
+            .from('evidencias')
+            .upload(filePath, safeUploadBlob, {
+              cacheControl: '3600',
+              upsert: true,
+              contentType: finalMime
+            });
+
+          if (!upRes.error) {
+            const { data: pubData } = supabase.storage.from('evidencias').getPublicUrl(filePath);
+            finalRemoteUrl = pubData?.publicUrl || '';
+          } else {
+            const secRes = await supabase.storage
+              .from('documentos-e-midias')
+              .upload(filePath, safeUploadBlob, {
+                cacheControl: '3600',
+                upsert: true,
+                contentType: finalMime
+              });
+            if (!secRes.error) {
+              const { data: secPub } = supabase.storage.from('documentos-e-midias').getPublicUrl(filePath);
+              finalRemoteUrl = secPub?.publicUrl || '';
+            }
+          }
+
+          if (!finalRemoteUrl && previewUrl.startsWith('data:')) {
+            finalRemoteUrl = previewUrl;
+          }
+
+          if (finalRemoteUrl) {
+            const payload = {
+              auditoria_id: auditIdToUse,
+              pergunta_id: canonicalId,
+              conforme: safeConforme,
+              nao_se_aplica: safeNaoSeAplica,
+              observacoes: safeObservacoes,
+              evidencia_url: finalRemoteUrl,
+              updated_at: nowIso
+            };
+
+            let { error: dbErr } = await supabase
+              .from('respostas_auditoria')
+              .upsert(payload, { onConflict: 'auditoria_id,pergunta_id' });
+
+            // Se a auditoria pai ainda não existia no banco remoto (FK 23503), cria e repete o upsert!
+            if (dbErr && ((dbErr as any).code === '23503' || dbErr.message?.includes('auditoria_id'))) {
+              const cachedAud = await db.cached_auditorias.get(auditIdToUse);
+              const targetPropId = propriedadeId || cachedAud?.propriedade_id;
+              if (targetPropId && !targetPropId.startsWith('mock-')) {
+                await supabase.from('auditorias').upsert([{
+                  id: auditIdToUse,
+                  propriedade_id: targetPropId,
+                  tecnico_responsavel_id: user?.id || cachedAud?.tecnico_responsavel_id || null,
+                  status: modo === 'autoavaliacao' ? 'Autoavaliação' : 'Em Andamento',
+                  data_agendamento: cachedAud?.data_agendamento || nowIso,
+                  updated_at: nowIso
+                }], { onConflict: 'id' });
+                const retryUpsert = await supabase
+                  .from('respostas_auditoria')
+                  .upsert(payload, { onConflict: 'auditoria_id,pergunta_id' });
+                dbErr = retryUpsert.error;
+              }
+            }
+
+            if (!dbErr) {
+              directSuccess = true;
+              // Atualiza updated_at da auditoria remota
+              supabase.from('auditorias').update({ updated_at: nowIso }).eq('id', auditIdToUse).then(() => {});
+
+              // Atualiza cache local com a URL pública definitiva e remove do sync_journal para zerar a fila imediatamente!
+              await db.cached_respostas.put({
+                auditoria_id: auditIdToUse,
+                pergunta_id: canonicalId,
+                conforme: safeConforme,
+                nao_se_aplica: safeNaoSeAplica,
+                observacoes: safeObservacoes,
+                evidencia_url: finalRemoteUrl,
+                numero_criterio: numCrit,
+                updated_at: nowIso,
+                evidencia_uploaded_at: nowIso,
+                data_envio: nowIso
+              });
+              await removeJournalItem(auditIdToUse, canonicalId);
+              if (canonicalId !== id) {
+                await removeJournalItem(auditIdToUse, id);
+              }
+              notifyOutboxChange();
+
+              setRespostas(prev => {
+                const curr = prev[canonicalId] || currentAns;
+                const updated = {
+                  ...prev,
+                  [canonicalId]: {
+                    ...curr,
+                    evidenciaUrl: finalRemoteUrl,
+                    evidencia_uploaded_at: nowIso,
+                    updated_at: nowIso
+                  }
+                };
+                if (canonicalId !== id) updated[id] = updated[canonicalId];
+                try { localStorage.setItem(getCacheKey(), JSON.stringify(updated)); } catch (e) {}
+                return updated;
+              });
+
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('ms:evidence-uploaded', {
+                  detail: { perguntaId: canonicalId, auditoriaId: auditIdToUse, timestamp: nowIso, url: finalRemoteUrl }
+                }));
+                window.dispatchEvent(new CustomEvent('ms:sync-complete', {
+                  detail: { drainedCount: 1, errorCount: 0 }
+                }));
+              }
+            }
+          }
+        } catch (directErr) {
+          console.warn('[QuestionarioRTRS] Oscilação no upload direto; SyncEngine assumirá em background:', directErr);
+        }
+
+        // Dispara também syncNow(true) para drenar quaisquer outros itens pendentes na fila
         syncEngine.syncNow(true);
-        success('Evidência anexada e enviando para o servidor...');
+        if (directSuccess) {
+          success('Evidência sincronizada com sucesso na nuvem!');
+        } else {
+          success('Evidência anexada e sincronizando em segundo plano...');
+        }
       } else {
         success('Evidência salva no aparelho. O envio ocorrerá automaticamente assim que a conexão for restabelecida.');
       }
@@ -1735,10 +1923,13 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                                 id={`file-input-${pergunta.id}`} 
                                 accept="image/png,image/jpeg,image/jpg,image/webp,image/*,application/pdf" 
                                 className="hidden" 
-                                onChange={(e) => { 
-                                  const file = e.target.files?.[0]; 
-                                  if (file) handleUploadEvidencia(pergunta.id, file); 
-                                  e.target.value = '';
+                                onChange={async (e) => { 
+                                  const inputEl = e.currentTarget;
+                                  const file = inputEl.files?.[0]; 
+                                  if (file) {
+                                    await handleUploadEvidencia(pergunta.id, file); 
+                                  }
+                                  try { inputEl.value = ''; } catch {}
                                 }} 
                               />
                               <button type="button" onClick={() => document.getElementById(`file-input-${pergunta.id}`)?.click()} className="w-full flex items-center justify-center gap-1.5 py-2 border-2 border-dashed border-emerald-300 bg-emerald-50/50 text-emerald-700 rounded-xl hover:bg-emerald-100 hover:border-emerald-400 transition-all font-bold cursor-pointer text-xs">

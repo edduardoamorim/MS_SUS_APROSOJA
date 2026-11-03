@@ -705,8 +705,8 @@ export async function getPendingCounts(): Promise<{ total: number; mutations: nu
     const [rawJournalPending, rawJournalFailed, rawMutations, rawFiles, dlMutations, dlFiles] = await Promise.all([
       db.sync_journal.where('status').anyOf(['pending', 'syncing']).toArray(),
       db.sync_journal.where('status').equals('failed').toArray(),
-      db.outbox_mutations.filter(m => m.status === 'pending' || m.status === 'pending_retry').toArray(),
-      db.outbox_files.filter(f => f.status === 'pending' || f.status === 'uploading' || f.status === 'pending_retry').toArray(),
+      db.outbox_mutations.filter(m => m.status === 'pending' || m.status === 'pending_retry' || m.status === 'failed' || m.status === 'failed_permanently').toArray(),
+      db.outbox_files.filter(f => f.status === 'pending' || f.status === 'uploading' || f.status === 'pending_retry' || f.status === 'failed' || f.status === 'failed_permanently').toArray(),
       db.outbox_mutations.filter(m => m.status === 'failed_permanently').count(),
       db.outbox_files.filter(f => f.status === 'failed_permanently').count()
     ]);
@@ -858,18 +858,132 @@ export async function purgeOrphanAndSyncedItems(): Promise<void> {
 }
 
 export async function getEligibleMutations(forceAll = false): Promise<OutboxMutation[]> {
+  if (forceAll) {
+    const allMuts = await db.outbox_mutations
+      .filter(m => m.status === 'pending' || m.status === 'pending_retry' || m.status === 'failed' || m.status === 'failed_permanently' || m.status === 'syncing')
+      .toArray();
+    const tablePriority: Record<string, number> = {
+      perfis: 1,
+      propriedades: 2,
+      auditorias: 3,
+      respostas_auditoria: 4,
+      pendencias: 5
+    };
+    return allMuts.sort((a, b) => {
+      const prioA = tablePriority[a.table] || 99;
+      const prioB = tablePriority[b.table] || 99;
+      if (prioA !== prioB) return prioA - prioB;
+      return (a.id || 0) - (b.id || 0);
+    });
+  }
   const now = Date.now();
   const pending = await getPendingMutations();
-  if (forceAll) return pending;
   // Filtra estritamente itens que já atingiram o tempo do backoff
   return pending.filter(m => m.status === 'pending' || (m.next_retry_at && new Date(m.next_retry_at).getTime() <= now));
 }
 
 export async function getEligibleFiles(forceAll = false): Promise<OutboxFile[]> {
+  if (forceAll) {
+    return await db.outbox_files
+      .filter(f => f.status === 'pending' || f.status === 'uploaded_pending_db' || f.status === 'pending_retry' || f.status === 'failed' || f.status === 'failed_permanently' || f.status === 'uploading')
+      .toArray();
+  }
   const now = Date.now();
   const pending = await getPendingFiles();
-  if (forceAll) return pending;
   return pending.filter(f => f.status === 'pending' || (f.next_retry_at && new Date(f.next_retry_at).getTime() <= now));
+}
+
+export async function rehabilitateFailedQueueForRetry(): Promise<number> {
+  let rehabilitated = 0;
+  const nowIso = new Date().toISOString();
+
+  try {
+    const jItems = await db.sync_journal.toArray();
+    for (const item of jItems) {
+      if (!item.auditoria_id || !item.pergunta_id || item.auditoria_id === 'undefined' || item.pergunta_id === 'undefined') {
+        if (item.id) await db.sync_journal.delete(item.id);
+        continue;
+      }
+      if ((item.status === 'failed' || item.status === 'syncing') && item.id) {
+        await db.sync_journal.update(item.id, {
+          status: 'pending',
+          last_error: undefined,
+          updated_at: nowIso
+        });
+        rehabilitated++;
+      }
+    }
+  } catch (e) {
+    console.warn('[OfflineDB] Aviso ao reabilitar sync_journal:', e);
+  }
+
+  try {
+    const muts = await db.outbox_mutations.toArray();
+    for (const m of muts) {
+      if (!m.id) continue;
+      const isCorrupt = !m.payload || typeof m.payload !== 'object' || Object.keys(m.payload).length === 0;
+      const isOrphan = m.table === 'respostas_auditoria' && (!m.payload?.auditoria_id || !m.payload?.pergunta_id || m.payload?.pergunta_id === 'undefined');
+      if (isCorrupt || isOrphan) {
+        await db.outbox_mutations.delete(m.id);
+        continue;
+      }
+      if (m.status === 'failed' || m.status === 'failed_permanently' || m.status === 'pending_retry' || m.status === 'syncing') {
+        const fixedPayload = { ...m.payload };
+        if (m.table === 'respostas_auditoria') {
+          if (fixedPayload.conforme === null || fixedPayload.conforme === undefined) {
+            fixedPayload.conforme = false;
+          }
+          if (fixedPayload.pergunta_id) {
+            fixedPayload.pergunta_id = normalizePerguntaId(fixedPayload.pergunta_id);
+          }
+        }
+        await db.outbox_mutations.update(m.id, {
+          payload: fixedPayload,
+          status: 'pending',
+          attempts: 0,
+          retry_count: 0,
+          next_retry_at: undefined,
+          last_error: undefined,
+          error_message: undefined,
+          error_code: undefined,
+          error_type: undefined,
+          updated_at: nowIso
+        });
+        rehabilitated++;
+      }
+    }
+  } catch (e) {
+    console.warn('[OfflineDB] Aviso ao reabilitar outbox_mutations:', e);
+  }
+
+  try {
+    const files = await db.outbox_files.toArray();
+    for (const f of files) {
+      if (!f.file_blob || (f.file_blob as any).size === 0) {
+        await db.outbox_files.delete(f.id);
+        continue;
+      }
+      if (f.status === 'failed' || f.status === 'failed_permanently' || f.status === 'pending_retry' || f.status === 'uploading') {
+        await db.outbox_files.update(f.id, {
+          status: f.public_url ? 'uploaded_pending_db' : 'pending',
+          attempts: 0,
+          next_retry_at: undefined,
+          last_error: undefined,
+          error_message: undefined,
+          error_code: undefined,
+          error_type: undefined
+        });
+        rehabilitated++;
+      }
+    }
+  } catch (e) {
+    console.warn('[OfflineDB] Aviso ao reabilitar outbox_files:', e);
+  }
+
+  if (rehabilitated > 0) {
+    notifyOutboxChange();
+  }
+  return rehabilitated;
 }
 
 export async function markMutationRetry(
