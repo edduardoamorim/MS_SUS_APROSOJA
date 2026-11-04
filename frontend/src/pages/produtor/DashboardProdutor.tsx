@@ -799,7 +799,7 @@ export default function DashboardProdutor() {
   const activeEtapaName = selectedFarmObj ? resolveFarmEtapa(selectedFarmObj.id, selectedFarmObj.etapa, null) : 'Prospecção';
 
   return (
-    <div className="space-y-6 animate-fade-in-up max-w-7xl mx-auto pb-24 sm:pb-8">
+    <div className="space-y-6 animate-fade-in-up max-w-7xl mx-auto pb-8">
       {/* Header Executivo do Produtor com Motion e Tipografia Fluida */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 sm:p-6 rounded-2xl sm:rounded-3xl border border-slate-200/80 shadow-xs">
         <div>
@@ -2015,81 +2015,7 @@ export default function DashboardProdutor() {
         }}
       />
 
-      {/* Mobile Bottom Navigation Bar — Barra Fixa de Acesso Rápido para Polegar no Mobile */}
-      <div className="fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 py-2 px-3 sm:hidden shadow-[0_-4px_20px_rgba(0,0,0,0.06)]">
-        <div className="grid grid-cols-4 gap-1 max-w-md mx-auto">
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab('mapa');
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            }}
-            className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl text-[10px] font-bold transition-all cursor-pointer ${
-              activeTab === 'mapa'
-                ? 'text-[#1B7547] bg-emerald-50/80 font-black'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <MapPin className="w-4 h-4 mb-0.5" />
-            <span className="truncate">Mapa</span>
-          </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab('pendencias');
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            }}
-            className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl text-[10px] font-bold transition-all cursor-pointer relative ${
-              activeTab === 'pendencias'
-                ? 'text-[#1B7547] bg-emerald-50/80 font-black'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <div className="relative">
-              <ClipboardList className="w-4 h-4 mb-0.5" />
-              {pendencias.filter(p => p.status === 'Pendente').length > 0 && (
-                <span className="absolute -top-1 -right-2 bg-[#C59B27] text-white text-[9px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center">
-                  {pendencias.filter(p => p.status === 'Pendente').length}
-                </span>
-              )}
-            </div>
-            <span className="truncate">Pendências</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab('ia');
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            }}
-            className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl text-[10px] font-bold transition-all cursor-pointer ${
-              activeTab === 'ia'
-                ? 'text-indigo-600 bg-indigo-50/80 font-black'
-                : 'text-slate-500 hover:text-indigo-600'
-            }`}
-          >
-            <Sparkles className="w-4 h-4 mb-0.5" />
-            <span className="truncate">Assistente</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab('documentacao');
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            }}
-            className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl text-[10px] font-bold transition-all cursor-pointer ${
-              activeTab === 'documentacao'
-                ? 'text-[#1B7547] bg-emerald-50/80 font-black'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <FolderOpen className="w-4 h-4 mb-0.5" />
-            <span className="truncate">Evidências</span>
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

@@ -19,8 +19,11 @@ import {
   Image as ImageIcon,
   ExternalLink,
   MinusCircle,
-  AlertCircle
+  AlertCircle,
+  Award
 } from 'lucide-react';
+import PanoramaScoreRTRS from './PanoramaScoreRTRS';
+import { resolveFarmEtapa } from '../../lib/etapaUtils';
 import { supabase } from '../../lib/supabase';
 import { db } from '../../lib/offlineDb';
 import Modal from '../ui/Modal';
@@ -69,7 +72,7 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
   const [pendenciasCount, setPendenciasCount] = useState(0);
   const [producerInfo, setProducerInfo] = useState<any>(null);
   const [farmDetails, setFarmDetails] = useState<any>(null);
-  const [activeTab, setActiveTab] = useState<'geral' | 'criterios'>('geral');
+  const [activeTab, setActiveTab] = useState<'panorama' | 'geral' | 'criterios'>('panorama');
   const [criteriosList, setCriteriosList] = useState<any[]>([]);
   const [previewMedia, setPreviewMedia] = useState<string | null>(null);
 
@@ -336,7 +339,13 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
   const origemCadastro = prop?.origem_cadastro || farmDetails?.origem_cadastro || (sigefCode ? 'SIGEF' : carCode ? 'CAR' : 'Manual');
 
   const municipioName = resolveMunicipioFromCarOrName(carCode, farmName, prop?.municipio || farmDetails?.municipio);
-  const etapaName = auditoria.etapa || prop?.etapa || farmDetails?.etapa || 'Prospecção';
+  const effectivePropId = propId || farmDetails?.id || auditoria?.id;
+  const isCompletedOrReview = auditoria.status === 'Aguardando Aprovação' || auditoria.status === 'Certificada' || (criteriosList.length >= totalQuestions && totalQuestions > 0);
+  const etapaName = resolveFarmEtapa(
+    effectivePropId,
+    prop?.etapa || farmDetails?.etapa,
+    auditoria.etapa || (isCompletedOrReview ? 'Auditoria Oficial' : undefined)
+  );
   
   const formattedDate = auditoria.data_agendamento
     ? new Date(auditoria.data_agendamento).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' })
@@ -357,6 +366,7 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
   const naoConformesCount = displayCriterios.filter(c => !c.conforme && !c.nao_se_aplica).length;
   const naoSeAplicaCount = displayCriterios.filter(c => c.nao_se_aplica).length;
   const effectiveAnsweredCount = displayCriterios.length;
+  const effectivePendenciasCount = Math.max(pendenciasCount, naoConformesCount);
 
   const progressPercent = Math.min(100, Math.round((effectiveAnsweredCount / totalQuestions) * 100));
 
@@ -415,6 +425,26 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
           <div className="flex whitespace-nowrap overflow-x-auto no-scrollbar gap-2 pb-2">
             <button
               type="button"
+              onClick={() => setActiveTab('panorama')}
+              className={`px-3.5 sm:px-4 py-2 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'panorama'
+                  ? 'bg-[#1B7547] text-white shadow-xs'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              <Award className="w-3.5 h-3.5 text-[#C59B27]" />
+              <span>Panorama & Pontuação RTRS</span>
+              <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                activeTab === 'panorama' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'
+              }`}>
+                {displayCriterios.length > 0 && (conformesCount + naoConformesCount) > 0
+                  ? `${Math.round((conformesCount / (conformesCount + naoConformesCount)) * 100)}%`
+                  : `${progressPercent}%`}
+              </span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveTab('geral')}
               className={`px-3.5 sm:px-4 py-2 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer flex items-center gap-1.5 ${
                 activeTab === 'geral'
@@ -423,8 +453,9 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
               }`}
             >
               <Building2 className="w-3.5 h-3.5" />
-              <span>Visão Geral & Dados</span>
+              <span>Dados da Fazenda & Produtor</span>
             </button>
+
             <button
               type="button"
               onClick={() => setActiveTab('criterios')}
@@ -435,15 +466,29 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
               }`}
             >
               <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Critérios & Evidências</span>
-              <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono font-bold ${
-                activeTab === 'criterios' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
-              }`}>
-                {displayCriterios.length}
-              </span>
+              <span>Lista de Critérios ({displayCriterios.length})</span>
             </button>
           </div>
         </div>
+
+        {/* Conteúdo da Aba 0: Panorama & Pontuação RTRS com Motion Design */}
+        {activeTab === 'panorama' && (
+          <div className="space-y-4 animate-in fade-in duration-200">
+            <PanoramaScoreRTRS
+              propriedadeNome={farmName}
+              municipio={municipioName}
+              produtorNome={producerName}
+              criterios={displayCriterios}
+              readOnly={true}
+              embedded={true}
+              etapa={etapaName}
+              onBackToQuestions={() => {
+                onClose();
+                onStartVisita(auditoria);
+              }}
+            />
+          </div>
+        )}
 
         {/* Conteúdo da Aba 1: Visão Geral & Dados */}
         {activeTab === 'geral' && (
@@ -487,6 +532,15 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
                     <span>{naoSeAplicaCount} N/A</span>
                   </span>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('panorama')}
+                  className="mt-3 w-full py-1.5 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-extrabold flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-2xs"
+                >
+                  <Award className="w-3 h-3 text-[#C59B27]" />
+                  <span>Ver Panorama & Score Detalhado</span>
+                </button>
               </div>
 
               {/* Card 2: Agendamento */}
@@ -519,16 +573,16 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
                     Pendências
                   </span>
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                    pendenciasCount > 0 ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                    effectivePendenciasCount > 0 ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
                   }`}>
-                    {pendenciasCount} ativas
+                    {effectivePendenciasCount} ativas
                   </span>
                 </div>
                 <p className="text-sm font-extrabold text-slate-900 mt-1">
-                  {pendenciasCount === 0 ? 'Nenhuma pendência' : `${pendenciasCount} pendência(s)`}
+                  {effectivePendenciasCount === 0 ? 'Nenhuma pendência' : `${effectivePendenciasCount} pendência(s)`}
                 </p>
                 <p className="text-[11px] text-slate-600 mt-1">
-                  {pendenciasCount === 0 ? 'Imóvel em conformidade' : 'Requer atenção do produtor'}
+                  {effectivePendenciasCount === 0 ? 'Imóvel em conformidade' : 'Requer atenção técnica'}
                 </p>
               </div>
             </div>
@@ -725,7 +779,7 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
             className="group/btn w-full sm:w-auto min-h-[44px] px-4.5 py-2.5 bg-amber-100/80 hover:bg-amber-200/80 text-amber-950 border border-amber-300/80 rounded-2xl font-extrabold text-xs flex items-center justify-center gap-2 transition-all duration-300 hover:scale-102 active:scale-95 cursor-pointer shadow-2xs"
           >
             <ClipboardList className="w-4 h-4 text-[#C59B27] transition-transform group-hover/btn:scale-110 duration-300" />
-            <span>Gerenciar Pendências ({pendenciasCount})</span>
+            <span>Gerenciar Pendências ({effectivePendenciasCount})</span>
           </button>
 
           <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center gap-2.5 sm:gap-3 w-full sm:w-auto">
@@ -746,7 +800,13 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
             >
               <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
               <Sparkles className="w-4 h-4 transition-transform group-hover:rotate-12 duration-300" />
-              <span>{effectiveAnsweredCount > 0 ? 'Continuar Questionário RTRS' : 'Iniciar Vistoria RTRS'}</span>
+              <span>
+                {effectiveAnsweredCount >= totalQuestions && totalQuestions > 0
+                  ? 'Revisar Questionário RTRS'
+                  : effectiveAnsweredCount > 0
+                  ? 'Continuar Questionário RTRS'
+                  : 'Iniciar Vistoria RTRS'}
+              </span>
             </button>
           </div>
         </div>

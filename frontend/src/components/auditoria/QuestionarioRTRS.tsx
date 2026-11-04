@@ -1,7 +1,8 @@
 import { normalizePerguntaId } from '../../constants/rtrsMapping';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { CheckCircle2, Camera, AlertCircle, MinusCircle, X, Loader2, Image as ImageIcon, FileText, Save, ChevronLeft, ChevronRight, CloudCheck, Download, ExternalLink, WifiOff, UploadCloud } from 'lucide-react';
+import { CheckCircle2, Camera, AlertCircle, MinusCircle, X, Loader2, Image as ImageIcon, FileText, Save, ChevronLeft, ChevronRight, CloudCheck, Download, ExternalLink, WifiOff, UploadCloud, Award, Sparkles, ArrowRight, RotateCcw } from 'lucide-react';
+import PanoramaScoreRTRS, { type PanoramaCriterioItem } from './PanoramaScoreRTRS';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
@@ -1628,6 +1629,26 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     return r && (r.nao_se_aplica === true || (r.conforme !== null && r.conforme !== undefined));
   };
 
+  const handleGoToNextPending = () => {
+    const next = perguntas.find(p => !isPerguntaRespondida(p));
+    if (next) {
+      if (showPanoramaView) {
+        setShowPanoramaView(false);
+      }
+      if (next.secao && next.secao !== secaoAtiva) {
+        setSecaoAtiva(next.secao);
+      }
+      setTimeout(() => {
+        const el = document.getElementById(`pergunta-${next.id}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('ring-2', 'ring-emerald-400');
+          setTimeout(() => el.classList.remove('ring-2', 'ring-emerald-400'), 1500);
+        }
+      }, 150);
+    }
+  };
+
   const handleSavePartial = async () => {
     const answeredIds = Object.keys(respostas).filter(id => {
       const r = respostas[id];
@@ -1813,11 +1834,42 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const totalRespondidas = perguntas.filter(isPerguntaRespondida).length;
   const percentualConcluido = totalPerguntas > 0 ? Math.round((totalRespondidas / totalPerguntas) * 100) : 0;
 
+  const [showPanoramaView, setShowPanoramaView] = useState(false);
+  const [hasAutoOpenedPanorama, setHasAutoOpenedPanorama] = useState(false);
+
+  // Mapeia todas as perguntas e respostas ativas para a visão do Panorama RTRS
+  const panoramaCriterios: PanoramaCriterioItem[] = useMemo(() => {
+    return perguntas.map(p => {
+      const canonId = normalizePerguntaId(p.id);
+      const resp = respostas[canonId] || respostas[p.id];
+      return {
+        id: p.id,
+        secao: p.secao,
+        criterio: p.numero_criterio,
+        enunciado: p.enunciado || p.criterio,
+        conforme: resp?.conforme,
+        nao_se_aplica: resp?.nao_se_aplica,
+        observacao: resp?.observacao,
+        evidencia: resp?.evidenciaUrl,
+        ponderacao: p.ponderacao
+      };
+    });
+  }, [perguntas, respostas]);
+
+  // Transição automática para o Panorama assim que o técnico responde a última pergunta pendente
+  useEffect(() => {
+    if (totalPerguntas > 0 && totalRespondidas === totalPerguntas && !hasAutoOpenedPanorama) {
+      setHasAutoOpenedPanorama(true);
+      setShowPanoramaView(true);
+      success('Todas as perguntas foram respondidas! Confira o Panorama & Score de Conformidade da fazenda.');
+    }
+  }, [totalRespondidas, totalPerguntas, hasAutoOpenedPanorama]);
+
   return createPortal(
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex justify-center items-center p-0 sm:p-4 overflow-y-auto animate-fadeIn">
       <div className="bg-slate-50 w-full max-w-4xl h-full sm:h-auto sm:max-h-[92vh] rounded-none sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden border-0 sm:border sm:border-emerald-100">
         
-        {/* Cabeçalho do Modal */}
+        {/* Cabeçalho do Modal com Alternador de Panorama & Pontuação */}
         <div className="bg-emerald-800 text-white px-3 py-2 sm:px-6 sm:py-3.5 flex items-center justify-between shrink-0 shadow-sm">
           <div className="min-w-0 flex-1 pr-2">
             <span className="text-[9px] sm:text-[10px] font-extrabold tracking-wider text-emerald-200 uppercase bg-emerald-900/60 px-2 py-0.5 rounded border border-emerald-700/50">
@@ -1825,12 +1877,43 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
             </span>
             <h2 className="text-sm sm:text-xl font-black text-white mt-0.5 leading-tight truncate">{propriedadeNome}</h2>
           </div>
-          <button id="btn-fechar-x" onClick={onClose} aria-label="Fechar Questionario" title="Fechar Questionario" className="p-1.5 sm:p-2 hover:bg-emerald-700/60 rounded-xl transition-colors text-emerald-100 hover:text-white cursor-pointer shrink-0">
-            <X className="w-5 h-5 sm:w-6 sm:h-6" />
-          </button>
+          
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowPanoramaView(prev => !prev)}
+              className={`px-2.5 py-1.5 rounded-xl font-extrabold text-[11px] sm:text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs ${
+                showPanoramaView
+                  ? 'bg-white text-emerald-950 ring-2 ring-emerald-300'
+                  : 'bg-emerald-900/80 hover:bg-emerald-700/80 text-emerald-100 border border-emerald-600/50'
+              }`}
+              title="Alternar entre Perguntas e Panorama de Pontuação"
+            >
+              <Award className="w-3.5 h-3.5 text-[#C59B27]" />
+              <span className="hidden sm:inline">{showPanoramaView ? 'Voltar aos Critérios' : 'Panorama & Score'}</span>
+              <span className="sm:hidden">{showPanoramaView ? 'Critérios' : 'Score'}</span>
+            </button>
+            <button id="btn-fechar-x" onClick={onClose} aria-label="Fechar Questionario" title="Fechar Questionario" className="p-1.5 sm:p-2 hover:bg-emerald-700/60 rounded-xl transition-colors text-emerald-100 hover:text-white cursor-pointer shrink-0">
+              <X className="w-5 h-5 sm:w-6 sm:h-6" />
+            </button>
+          </div>
         </div>
 
-        {/* Banner em Destaque do Princípio Ativo (Compacto no Mobile) */}
+{showPanoramaView ? (
+          <div className="flex-1 overflow-y-auto p-3 sm:p-6">
+            <PanoramaScoreRTRS
+              propriedadeNome={propriedadeNome}
+              criterios={panoramaCriterios}
+              embedded={true}
+              onBackToQuestions={() => setShowPanoramaView(false)}
+              onSubmitAuditoria={handleSubmit}
+              isSubmitting={loading}
+              etapa={modo === 'autoavaliacao' ? 'Autoavaliação do Produtor' : 'Auditoria In Loco'}
+            />
+          </div>
+        ) : (
+          <>
+                    {/* Banner em Destaque do Princípio Ativo (Compacto no Mobile) */}
         {secaoAtiva && (
           <div className="bg-gradient-to-r from-emerald-900 via-emerald-800 to-teal-900 text-white p-2.5 sm:p-5 shrink-0 border-b border-emerald-700 shadow-md">
             <div className="flex flex-row items-center justify-between gap-2">
@@ -2051,7 +2134,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               const isNaoSeAplica = !!resposta?.nao_se_aplica;
 
               return (
-                <div key={pergunta.id} className={`bg-white rounded-xl sm:rounded-2xl border p-3.5 sm:p-5 transition-all shadow-sm ${
+                <div key={pergunta.id} id={`pergunta-${pergunta.id}`} className={`bg-white rounded-xl sm:rounded-2xl border p-3.5 sm:p-5 transition-all shadow-sm ${
                   isConforme 
                     ? 'border-emerald-300 ring-1 ring-emerald-100 bg-emerald-50/10' 
                     : isNaoConforme 
@@ -2299,62 +2382,75 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           )}
         </div>
 
-        {/* Rodapé Profissional com Salvamento Parcial / Rascunho e Submissão */}
-        <div className="px-3 py-2.5 sm:px-6 sm:py-4 bg-white border-t border-slate-200 shrink-0 flex flex-row items-center justify-between gap-2">
-          <div className="hidden sm:flex items-center gap-2 text-xs text-slate-500">
-            <Save className="w-4 h-4 text-emerald-600" />
-            <span>
-              {lastSavedTime ? `Rascunho salvo às ${lastSavedTime}` : 'Você pode salvar parcialmente e continuar depois'}
+
+          </>
+        )}
+                {/* Rodapé Único e Inteligente: Salvamento Automático & Submissão 100% */}
+        <div className="px-3 py-2.5 sm:px-6 sm:py-4 bg-white border-t border-slate-200 shrink-0 flex flex-row items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-xs text-slate-500 min-w-0">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+            <span className="font-semibold text-slate-600 truncate text-[11px] sm:text-xs">
+              {lastSavedTime ? `Salvo automaticamente às ${lastSavedTime}` : 'Salvo automaticamente em tempo real'}
             </span>
           </div>
 
-          <div className="flex items-center gap-3 w-full sm:w-auto">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <button
               type="button"
               id="btn-fechar-questionario"
               onClick={onClose}
-              className="flex-1 sm:flex-none px-4 py-3 bg-white hover:bg-slate-100 text-slate-700 rounded-2xl font-extrabold text-xs sm:text-sm border border-slate-300 transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs flex items-center justify-center gap-1.5"
+              className="px-3.5 sm:px-5 py-2 sm:py-2.5 bg-white hover:bg-slate-100 text-slate-700 rounded-xl sm:rounded-2xl font-extrabold text-xs border border-slate-300 transition-all duration-300 hover:scale-102 active:scale-95 cursor-pointer shadow-2xs flex items-center justify-center"
             >
               <span>Fechar</span>
             </button>
-            <button
-              type="button"
-              onClick={handleSavePartial}
-              disabled={savingPartial || loading}
-              className="flex-1 sm:flex-none px-5 py-3 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-2xl font-extrabold text-xs sm:text-sm border border-slate-200/80 transition-all duration-300 hover:scale-105 active:scale-95 disabled:opacity-50 cursor-pointer shadow-2xs flex items-center justify-center gap-2"
-            >
-              {savingPartial ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin text-[#1B7547]" />
-                  <span>Salvando...</span>
-                </>
-              ) : (
-                <>
-                  <Save className="w-4 h-4 text-[#1B7547] shrink-0" />
-                  <span>Salvar Rascunho</span>
-                </>
-              )}
-            </button>
 
-            <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={loading || savingPartial || loadingPerguntas || perguntas.length === 0}
-              className="group relative flex-1 sm:flex-none px-6 py-3 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-2xl font-extrabold text-xs sm:text-sm shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-300 flex justify-center items-center gap-2 disabled:opacity-60 cursor-pointer overflow-hidden"
-            >
-              <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
-              {loading ? (
-                <>
-                  <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
-                  <span>Submetendo Vistoria...</span>
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-300 shrink-0 transition-transform group-hover:scale-110 duration-300" />
-                  <span>Submeter Vistoria RTRS</span>
-                </>
-              )}
-            </button>
+            {showPanoramaView && (
+              <button
+                type="button"
+                onClick={() => setShowPanoramaView(false)}
+                className="px-3.5 sm:px-4 py-2 sm:py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl sm:rounded-2xl font-extrabold text-xs border border-slate-300/80 transition-all duration-300 hover:scale-102 active:scale-95 cursor-pointer shadow-2xs flex items-center justify-center gap-1.5"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                <span className="hidden sm:inline">Voltar aos Critérios</span>
+                <span className="sm:hidden">Critérios</span>
+              </button>
+            )}
+
+            {/* Enquanto houver critérios sem resposta, exibe 'Próximo Pendente' */}
+            {totalRespondidas < totalPerguntas ? (
+              <button
+                type="button"
+                onClick={handleGoToNextPending}
+                className="group relative px-4 sm:px-5 py-2 sm:py-2.5 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white rounded-xl sm:rounded-2xl font-extrabold text-xs shadow-md shadow-amber-600/20 hover:shadow-xl hover:scale-102 active:scale-95 transition-all duration-300 flex items-center justify-center gap-1.5 cursor-pointer overflow-hidden"
+              >
+                <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+                <ArrowRight className="w-3.5 h-3.5 shrink-0 transition-transform group-hover:translate-x-1 duration-300" />
+                <span>
+                  Próximo Pendente ({totalPerguntas - totalRespondidas})
+                </span>
+              </button>
+            ) : (
+              /* Liberado exclusivamente com 100% dos indicadores preenchidos */
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={loading || loadingPerguntas || perguntas.length === 0}
+                className="group relative px-5 sm:px-6 py-2 sm:py-2.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-xl sm:rounded-2xl font-extrabold text-xs shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-102 active:scale-95 transition-all duration-300 flex justify-center items-center gap-2 disabled:opacity-60 cursor-pointer overflow-hidden"
+              >
+                <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+                {loading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Submetendo...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0 transition-transform group-hover:scale-110 duration-300" />
+                    <span>Submeter Vistoria RTRS</span>
+                  </>
+                )}
+              </button>
+            )}
           </div>
         </div>
       </div>

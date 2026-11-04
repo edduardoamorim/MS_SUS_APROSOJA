@@ -3,7 +3,7 @@ import defaultAuditoriasJson from '../../data/default_auditorias.json';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { MapPin, ClipboardList, CheckCircle2, CalendarDays, Clock, Plus, Trash2, Loader2, Search, Map as MapIcon, AlertTriangle, Eye, FileText, ChevronRight, FolderOpen, Image as ImageIcon, Download, ExternalLink, X, WifiOff, Database, DownloadCloud, ClipboardCheck, LayoutGrid, Table2, RotateCw, RefreshCw } from 'lucide-react';
+import { MapPin, ClipboardList, CheckCircle2, CalendarDays, Clock, Plus, Trash2, Loader2, Search, Map as MapIcon, AlertTriangle, Eye, FileText, ChevronRight, FolderOpen, Image as ImageIcon, Download, ExternalLink, X, WifiOff, Database, DownloadCloud, ClipboardCheck, LayoutGrid, Table2, RotateCw, RefreshCw, ShieldCheck, Award } from 'lucide-react';
 import type { FeatureCollection } from 'geojson';
 import MapView from '../../components/map/MapView';
 import { supabase, createIsolatedAuthClient } from '../../lib/supabase';
@@ -1348,9 +1348,24 @@ export default function DashboardTecnico() {
         if (isMounted) setLoading(false);
       }
       fetchCollaborativeMapData();
-      getLastFieldPrepInfo().then(info => {
-        if (info?.summary) setLastPrepSummary(info.summary);
-      }).catch(() => {});
+      if (typeof navigator !== 'undefined' && navigator.onLine && user) {
+        prepareFieldModeData(user).then((res) => {
+          if (res?.summary) setLastPrepSummary(res.summary);
+          else if (res?.success) {
+            getLastFieldPrepInfo().then(info => {
+              if (info?.summary) setLastPrepSummary(info.summary);
+            }).catch(() => {});
+          }
+        }).catch(() => {
+          getLastFieldPrepInfo().then(info => {
+            if (info?.summary) setLastPrepSummary(info.summary);
+          }).catch(() => {});
+        });
+      } else {
+        getLastFieldPrepInfo().then(info => {
+          if (info?.summary) setLastPrepSummary(info.summary);
+        }).catch(() => {});
+      }
     };
     initLocalData();
     return () => { isMounted = false; };
@@ -3025,7 +3040,7 @@ export default function DashboardTecnico() {
   }, [documentos, docSearchQuery, selectedDocPropId, selectedDocCategoria]);
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto animate-fade-in-up pb-24 sm:pb-8">
+    <div className="space-y-6 max-w-7xl mx-auto animate-fade-in-up pb-8">
       {/* Header Executivo do Técnico com Motion */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 sm:p-6 rounded-3xl border border-slate-200/80 shadow-xs">
         <div>
@@ -3056,37 +3071,6 @@ export default function DashboardTecnico() {
             <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
             <CalendarDays className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
             <span>Iniciar Vistoria</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handlePrepareFieldMode}
-            disabled={isPreparingField}
-            className={`group relative flex items-center justify-center gap-2 px-3 sm:px-4 py-2.5 sm:py-3 rounded-2xl border transition-all duration-300 cursor-pointer disabled:opacity-60 overflow-hidden shadow-xs hover:shadow-md text-center ${
-              lastPrepSummary
-                ? 'bg-emerald-50/80 hover:bg-emerald-100/90 text-emerald-950 border-emerald-300'
-                : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300/80'
-            }`}
-            title={
-              lastPrepSummary
-                ? `Modo Campo Pronto! ${lastPrepSummary}. Clique para atualizar novamente.`
-                : 'Sincronizar e preparar dados de fazendas e 115 critérios RTRS para trabalhar offline'
-            }
-          >
-            {isPreparingField ? (
-              <RefreshCw className="w-4 h-4 text-[#1B7547] animate-spin" />
-            ) : lastPrepSummary ? (
-              <CheckCircle2 className="w-4 h-4 text-[#1B7547] shrink-0" />
-            ) : (
-              <DownloadCloud className="w-4 h-4 text-[#1B7547] transition-transform group-hover:scale-110 shrink-0" />
-            )}
-            <span className="font-extrabold text-xs">
-              {isPreparingField
-                ? 'Preparando...'
-                : lastPrepSummary
-                ? 'Modo Campo Pronto'
-                : 'Baixar Dados Offline'}
-            </span>
           </button>
 
           <div className="flex items-center justify-center gap-2 bg-slate-100 text-slate-700 px-3 sm:px-4 py-2.5 rounded-2xl text-xs font-extrabold border border-slate-200 shadow-2xs text-center">
@@ -3321,6 +3305,28 @@ export default function DashboardTecnico() {
                             </div>
                           )}
                         </div>
+
+                        {isSelected && (
+                          <div className="mt-3 pt-2.5 border-t border-emerald-100 flex items-center gap-2 animate-fade-in">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const targetAudit = auditorias.find(a => (a.propriedade_id === props.id || a.propriedades?.id === props.id));
+                                setSelectedAuditForDetail(targetAudit || {
+                                  id: `mock-view-${props.id}`,
+                                  propriedade_id: props.id,
+                                  status: props.status || 'Visita de Campo',
+                                  propriedades: { id: props.id, nome_fazenda: props.name, nome_produtor: props.produtor, municipio: props.municipio }
+                                });
+                              }}
+                              className="w-full py-2 px-3 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 shadow-sm cursor-pointer hover:scale-102 active:scale-95"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5 text-emerald-300" />
+                              <span>Ver Panorama & Score da Fazenda</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -4624,79 +4630,7 @@ export default function DashboardTecnico() {
         document.body
       )}
 
-      {/* Barra de Navegação Inferior Fixa (Mobile Bottom Navigation Bar) - Estilo App Nativo */}
-      {!showQuestionario && !selectedAuditForDetail && !showCreateFarmModal && !showScheduleAuditModal && !fotoAmpliada && !pdfAmpliado && (
-        <nav
-          aria-label="Navegação rápida de campo"
-          className="fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 shadow-[0_-4px_20px_rgba(0,0,0,0.08)] sm:hidden px-3 pt-1.5 pb-2"
-        >
-          <div className="grid grid-cols-3 gap-1 max-w-md mx-auto">
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('mapa');
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }}
-              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition-all duration-200 cursor-pointer ${
-                activeTab === 'mapa'
-                  ? 'text-[#1B7547] font-black'
-                  : 'text-slate-500 hover:text-slate-800 font-semibold'
-              }`}
-            >
-              <div className={`p-1 rounded-lg transition-all ${activeTab === 'mapa' ? 'bg-[#1B7547]/10' : ''}`}>
-                <MapIcon className="w-5 h-5 shrink-0" />
-              </div>
-              <span className="text-[10px] mt-0.5 leading-tight">Mapa</span>
-            </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('auditorias');
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }}
-              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition-all duration-200 cursor-pointer relative ${
-                activeTab === 'auditorias'
-                  ? 'text-[#1B7547] font-black'
-                  : 'text-slate-500 hover:text-slate-800 font-semibold'
-              }`}
-            >
-              <div className={`p-1 rounded-lg transition-all relative ${activeTab === 'auditorias' ? 'bg-[#1B7547]/10' : ''}`}>
-                <ClipboardList className="w-5 h-5 shrink-0" />
-                {auditorias.length > 0 && (
-                  <span className="absolute -top-1 -right-2 bg-[#1B7547] text-white text-[9px] font-black px-1.5 py-0.2 rounded-full min-w-[16px] text-center">
-                    {auditorias.length}
-                  </span>
-                )}
-              </div>
-              <span className="text-[10px] mt-0.5 leading-tight">Auditorias</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('documentacao');
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }}
-              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition-all duration-200 cursor-pointer relative ${
-                activeTab === 'documentacao'
-                  ? 'text-[#1B7547] font-black'
-                  : 'text-slate-500 hover:text-slate-800 font-semibold'
-              }`}
-            >
-              <div className={`p-1 rounded-lg transition-all relative ${activeTab === 'documentacao' ? 'bg-[#1B7547]/10' : ''}`}>
-                <FolderOpen className="w-5 h-5 shrink-0" />
-                {documentos.length > 0 && (
-                  <span className="absolute -top-1 -right-2 bg-emerald-600 text-white text-[9px] font-black px-1.5 py-0.2 rounded-full min-w-[16px] text-center">
-                    {documentos.length}
-                  </span>
-                )}
-              </div>
-              <span className="text-[10px] mt-0.5 leading-tight">Evidências</span>
-            </button>
-          </div>
-        </nav>
-      )}
     </div>
   );
 }
