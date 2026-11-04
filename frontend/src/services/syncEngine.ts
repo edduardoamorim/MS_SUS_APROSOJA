@@ -909,6 +909,7 @@ class SyncEngine {
           let currentConforme = item.conforme ?? false;
           let currentNaoSeAplica = item.nao_se_aplica ?? false;
           let currentObservacoes = item.observacoes || '';
+          let freshCachedEvidenciaUrl: string | null = null;
           try {
             const freshCached = await db.cached_respostas.get([item.auditoria_id, canonicalPerguntaId]);
             if (freshCached) {
@@ -921,18 +922,32 @@ class SyncEngine {
               if (freshCached.observacoes) {
                 currentObservacoes = freshCached.observacoes;
               }
+              if (freshCached.evidencia_url && typeof freshCached.evidencia_url === 'string' && !freshCached.evidencia_url.startsWith('blob:')) {
+                freshCachedEvidenciaUrl = freshCached.evidencia_url;
+              }
             }
           } catch {}
 
-          const payload = {
+          let finalEvidenciaUrl: string | null = isExplicitDelete
+            ? null
+            : (remoteEvidenciaUrl || freshCachedEvidenciaUrl || (item.evidencia_url && !item.evidencia_url.startsWith('blob:') ? item.evidencia_url : null));
+
+          const payload: any = {
             auditoria_id: targetAuditoriaId,
             pergunta_id: canonicalPerguntaId, // UUID canônico garantido!
-            conforme: item.conforme ?? false, // Impede violação de NOT NULL (Erro 23502)
-            nao_se_aplica: item.nao_se_aplica ?? false,
-            observacoes: item.observacoes || '',
-            evidencia_url: isExplicitDelete ? null : remoteEvidenciaUrl,
+            conforme: currentConforme ?? false, // Impede violação de NOT NULL (Erro 23502)
+            nao_se_aplica: currentNaoSeAplica ?? false,
+            observacoes: currentObservacoes || '',
             updated_at: nowIso
           };
+
+          // BLINDAGEM DE OURO: Só inclui evidencia_url se for exclusão explícita OU se tiver uma URL válida.
+          // NUNCA envia evidencia_url: null quando for apenas alteração de conformidade/observação!
+          if (isExplicitDelete) {
+            payload.evidencia_url = null;
+          } else if (finalEvidenciaUrl) {
+            payload.evidencia_url = finalEvidenciaUrl;
+          }
 
           console.log('[SYNC ENGINE] Passo B: Upsert Postgres em respostas_auditoria com payload sanitizado:', payload);
           let { error: pgErr } = await supabase
@@ -1015,13 +1030,14 @@ class SyncEngine {
           await db.cached_respostas.put({
             auditoria_id: targetAuditoriaId,
             pergunta_id: canonicalPerguntaId,
-            conforme: item.conforme ?? false,
-            observacoes: item.observacoes || '',
-            evidencia_url: isExplicitDelete ? null : (payload.evidencia_url || null),
+            conforme: currentConforme ?? false,
+            nao_se_aplica: currentNaoSeAplica ?? false,
+            observacoes: currentObservacoes || '',
+            evidencia_url: isExplicitDelete ? null : (payload.evidencia_url || freshCachedEvidenciaUrl || null),
             numero_criterio: item.numero_criterio,
             updated_at: nowIso,
-            evidencia_uploaded_at: (!isExplicitDelete && payload.evidencia_url) ? nowIso : null,
-            data_envio: (!isExplicitDelete && payload.evidencia_url) ? nowIso : null
+            evidencia_uploaded_at: (!isExplicitDelete && (payload.evidencia_url || freshCachedEvidenciaUrl)) ? nowIso : null,
+            data_envio: (!isExplicitDelete && (payload.evidencia_url || freshCachedEvidenciaUrl)) ? nowIso : null
           });
           console.log('[SYNC ENGINE] Passo C Concluído: Cache local atualizado com URL definitiva.');
 

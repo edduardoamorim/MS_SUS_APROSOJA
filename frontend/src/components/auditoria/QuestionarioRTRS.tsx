@@ -539,6 +539,24 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                     }
                   });
                   finalServerRespostas = Array.from(combinedMap.values());
+
+                  // Migra proativamente respostas de auditorias irmãs para a auditoria alvo no Supabase
+                  if (targetAuditId && !targetAuditId.startsWith('mock-')) {
+                    const existingPergsInTarget = new Set((data || []).map((d: any) => normalizePerguntaId(d.pergunta_id)));
+                    const toMigrate = sisterResps.filter((sr: any) => !existingPergsInTarget.has(normalizePerguntaId(sr.pergunta_id)));
+                    if (toMigrate.length > 0) {
+                      const migratePayloads = toMigrate.map((sr: any) => ({
+                        auditoria_id: targetAuditId,
+                        pergunta_id: normalizePerguntaId(sr.pergunta_id),
+                        conforme: sr.conforme ?? false,
+                        nao_se_aplica: !!sr.nao_se_aplica,
+                        observacoes: sr.observacoes || '',
+                        evidencia_url: sr.evidencia_url || null,
+                        updated_at: new Date().toISOString()
+                      }));
+                      supabase.from('respostas_auditoria').upsert(migratePayloads, { onConflict: 'auditoria_id,pergunta_id' }).then(() => {});
+                    }
+                  }
                 }
               } catch (sisterErr) {
                 console.warn('[QuestionarioRTRS] Erro ao consolidar respostas irmãs:', sisterErr);
@@ -642,6 +660,8 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                 }
               });
 
+              const healBatch: { pergunta_id: string; evidencia_url: string }[] = [];
+
               setRespostas(prev => {
                 const merged: Record<string, RespostaItem> = { ...loadedRespostas };
                 const allKeys = new Set([...Object.keys(loadedRespostas), ...Object.keys(prev)]);
@@ -681,6 +701,19 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                       evidenciaUrl: isExplicitlyDeleted ? null : localDraft.evidenciaUrl
                     };
                   }
+
+                  // SELF-HEALING: se o item possui URL válida mas no banco Supabase estava ausente ou null
+                  if (!isExplicitlyDeleted && merged[pid]?.evidenciaUrl && (String(merged[pid].evidenciaUrl).startsWith('http') || String(merged[pid].evidenciaUrl).startsWith('data:'))) {
+                    const canonPid = normalizePerguntaId(pid);
+                    const serverItem = finalServerRespostas.find((sr: any) => normalizePerguntaId(sr.pergunta_id) === canonPid);
+                    const serverHasValidUrl = serverItem?.evidencia_url && !String(serverItem.evidencia_url).startsWith('blob:');
+                    if (!serverHasValidUrl) {
+                      healBatch.push({
+                        pergunta_id: canonPid,
+                        evidencia_url: merged[pid].evidenciaUrl!
+                      });
+                    }
+                  }
                 });
 
                 // Salva o resultado sincronizado atualizado no localStorage para curar o rascunho antigo do PC!
@@ -690,6 +723,33 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
 
                 return merged;
               });
+
+              // Executa o Self-Healing proativo no Supabase e no Dexie
+              if (healBatch.length > 0 && targetAuditId && !targetAuditId.startsWith('mock-')) {
+                const uniqueHeal = new Map<string, string>();
+                healBatch.forEach(h => uniqueHeal.set(h.pergunta_id, h.evidencia_url));
+                const nowIsoHeal = new Date().toISOString();
+                Promise.all(Array.from(uniqueHeal.entries()).map(async ([pId, evUrl]) => {
+                  try {
+                    await supabase
+                      .from('respostas_auditoria')
+                      .update({ evidencia_url: evUrl, updated_at: nowIsoHeal })
+                      .eq('auditoria_id', targetAuditId)
+                      .eq('pergunta_id', pId);
+                    await db.cached_respostas
+                      .where('auditoria_id')
+                      .equals(targetAuditId)
+                      .and(r => normalizePerguntaId(r.pergunta_id) === pId)
+                      .modify({ evidencia_url: evUrl, evidencia_uploaded_at: nowIsoHeal, data_envio: nowIsoHeal });
+                  } catch (hErr) {
+                    console.warn('[QuestionarioRTRS] Erro no auto-heal Supabase:', pId, hErr);
+                  }
+                })).then(() => {
+                  if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('ms:evidence-uploaded', { detail: { auditoriaId: targetAuditId } }));
+                  }
+                });
+              }
 
               await bulkSaveRespostas(cacheBatch);
             }
@@ -918,15 +978,33 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         if (isDeviceOnline && !auditIdToUse.startsWith('mock-') && !auditIdToUse.startsWith('assigned-pend-')) {
           let directSuccess = false;
           try {
-            const payload = {
+            // Verifica se existe evidência prévia no cache local que deve ser preservada
+            let finalOnlineEvidenciaUrl = nextStateForId.evidenciaUrl || null;
+            if (!isRemovingEvidence && !finalOnlineEvidenciaUrl) {
+              try {
+                const existingCached = await db.cached_respostas.get([auditIdToUse, canonicalId]);
+                if (existingCached?.evidencia_url && !existingCached.evidencia_url.startsWith('blob:')) {
+                  finalOnlineEvidenciaUrl = existingCached.evidencia_url;
+                }
+              } catch {}
+            }
+
+            const payload: any = {
               auditoria_id: auditIdToUse,
               pergunta_id: canonicalId,
               conforme: safeConformeForDb,
               nao_se_aplica: nextStateForId.nao_se_aplica ?? false,
               observacoes: nextStateForId.observacao || '',
-              evidencia_url: nextStateForId.evidenciaUrl || null,
               updated_at: nowIso
             };
+
+            // BLINDAGEM DE OURO: Só inclui evidencia_url se for exclusão explícita OU se tiver uma URL válida.
+            // Se for apenas atualização de conformidade/observação e não houver URL nova, NUNCA envia evidencia_url: null!
+            if (isRemovingEvidence) {
+              payload.evidencia_url = null;
+            } else if (finalOnlineEvidenciaUrl) {
+              payload.evidencia_url = finalOnlineEvidenciaUrl;
+            }
 
             let { error: dbErr } = await supabase
               .from('respostas_auditoria')

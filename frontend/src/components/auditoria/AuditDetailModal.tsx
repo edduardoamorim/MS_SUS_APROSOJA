@@ -126,8 +126,8 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
           console.warn('Aviso de rede ao buscar respostas no Supabase:', supabaseErr);
         }
 
-        // Se retornar poucas ou nenhuma resposta, mas a propriedade possuir outras auditorias no Supabase
-        if (loadedCriterios.length === 0 && propId && typeof propId === 'string' && !propId.startsWith('mock-')) {
+        // Consolidação ampla com auditorias irmãs da mesma propriedade no Supabase
+        if (propId && typeof propId === 'string' && !propId.startsWith('mock-')) {
           try {
             const { data: propAuds } = await supabase
               .from('auditorias')
@@ -156,7 +156,7 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
                 .in('auditoria_id', otherAuditIds);
 
               if (propRespData && propRespData.length > 0) {
-                loadedCriterios = propRespData.map(r => ({
+                const sisterCriterios = propRespData.map(r => ({
                   id: r.id,
                   secao: (r.perguntas_rtrs as any)?.secao || 'Geral',
                   criterio: (r.perguntas_rtrs as any)?.numero_criterio || '1.1',
@@ -166,6 +166,7 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
                   observacao: (r as any).observacoes || (r as any).observacao || '',
                   evidencia: cleanEvidenceUrl(r.evidencia_url)
                 }));
+                loadedCriterios = [...loadedCriterios, ...sisterCriterios];
               }
             }
           } catch (propErr) {
@@ -173,78 +174,83 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
           }
         }
 
-        // Suporte Offline / Fallback local no Dexie (db.cached_respostas)
-        if (loadedCriterios.length === 0) {
-          try {
-            let localResps: any[] = [];
-            if (currentAuditId) {
-              localResps = await db.cached_respostas
-                .where('auditoria_id')
-                .equals(currentAuditId)
-                .toArray();
-            }
-
-            // Se local vazio para a auditoria atual, busca por outras auditorias da mesma propriedade no Dexie
-            if ((!localResps || localResps.length === 0) && propId) {
-              const localAuds = await db.cached_auditorias
-                .where('propriedade_id')
-                .equals(propId)
-                .toArray();
-
-              const otherLocalAudIds = localAuds
-                .map(a => a.id)
-                .filter(id => id && id !== currentAuditId);
-
-              for (const otherAudId of otherLocalAudIds) {
-                const audResps = await db.cached_respostas
-                  .where('auditoria_id')
-                  .equals(otherAudId)
-                  .toArray();
-                if (audResps && audResps.length > 0) {
-                  localResps = audResps;
-                  break;
-                }
-              }
-            }
-
-            if (localResps && localResps.length > 0) {
-              let perguntasMap = new Map();
-              try {
-                const allPergs = await db.cached_perguntas.toArray();
-                allPergs.forEach(p => perguntasMap.set(p.id, p));
-              } catch (dexErr) {
-                console.warn('Erro ao carregar perguntas do cache:', dexErr);
-              }
-
-              loadedCriterios = localResps.map(r => {
-                const p = perguntasMap.get(r.pergunta_id);
-                return {
-                  id: r.id || `${r.auditoria_id}_${r.pergunta_id}`,
-                  secao: p?.secao || 'Geral',
-                  criterio: p?.numero_criterio || r.numero_criterio || '1.1',
-                  enunciado: p?.enunciado || 'Critério de Conformidade RTRS',
-                  conforme: !!r.conforme,
-                  nao_se_aplica: !!r.nao_se_aplica,
-                  observacao: r.observacoes || (r as any).observacao || '',
-                  evidencia: cleanEvidenceUrl(r.evidencia_url)
-                };
-              });
-            }
-          } catch (dexieErr) {
-            console.warn('Aviso ao consultar respostas locais no Dexie:', dexieErr);
+        // Suporte Offline / Mesclagem com Dexie local (db.cached_respostas)
+        try {
+          let localResps: any[] = [];
+          if (currentAuditId) {
+            const curResps = await db.cached_respostas
+              .where('auditoria_id')
+              .equals(currentAuditId)
+              .toArray();
+            if (curResps) localResps.push(...curResps);
           }
+
+          if (propId) {
+            const localAuds = await db.cached_auditorias
+              .where('propriedade_id')
+              .equals(propId)
+              .toArray();
+
+            const otherLocalAudIds = localAuds
+              .map(a => a.id)
+              .filter(id => id && id !== currentAuditId);
+
+            for (const otherAudId of otherLocalAudIds) {
+              const audResps = await db.cached_respostas
+                .where('auditoria_id')
+                .equals(otherAudId)
+                .toArray();
+              if (audResps && audResps.length > 0) {
+                localResps.push(...audResps);
+              }
+            }
+          }
+
+          if (localResps.length > 0) {
+            let perguntasMap = new Map();
+            try {
+              const allPergs = await db.cached_perguntas.toArray();
+              allPergs.forEach(p => perguntasMap.set(p.id, p));
+            } catch (dexErr) {
+              console.warn('Erro ao carregar perguntas do cache:', dexErr);
+            }
+
+            const localCriterios = localResps.map(r => {
+              const p = perguntasMap.get(r.pergunta_id);
+              return {
+                id: r.id || `${r.auditoria_id}_${r.pergunta_id}`,
+                secao: p?.secao || 'Geral',
+                criterio: p?.numero_criterio || r.numero_criterio || '1.1',
+                enunciado: p?.enunciado || 'Critério de Conformidade RTRS',
+                conforme: !!r.conforme,
+                nao_se_aplica: !!r.nao_se_aplica,
+                observacao: r.observacoes || (r as any).observacao || '',
+                evidencia: cleanEvidenceUrl(r.evidencia_url)
+              };
+            });
+            loadedCriterios = [...loadedCriterios, ...localCriterios];
+          }
+        } catch (dexieErr) {
+          console.warn('Aviso ao consultar respostas locais no Dexie:', dexieErr);
         }
 
-        // Deduplicação por número de critério / id caso venha de múltiplas fontes
-        const seen = new Set<string>();
-        const uniqueList: any[] = [];
+        // Deduplicação inteligente por número de critério priorizando evidência e dados preenchidos
+        const uniqueMap = new Map<string, any>();
         for (const crit of loadedCriterios) {
           const key = crit.criterio || crit.id;
-          if (!seen.has(key)) {
-            seen.add(key);
-            uniqueList.push(crit);
+          if (!uniqueMap.has(key)) {
+            uniqueMap.set(key, crit);
+          } else {
+            const existing = uniqueMap.get(key);
+            const preferNew = (!existing.evidencia && !!crit.evidencia) || (!existing.observacao && !!crit.observacao);
+            if (preferNew) {
+              uniqueMap.set(key, { ...existing, ...crit });
+            } else if (crit.evidencia && !existing.evidencia) {
+              existing.evidencia = crit.evidencia;
+            }
           }
         }
+        const uniqueList: any[] = Array.from(uniqueMap.values());
 
         // Ordenação garantida por critério (ex: 1.1, 1.1.1, etc.)
         uniqueList.sort((a, b) => compareCriterios(a.criterio, b.criterio));

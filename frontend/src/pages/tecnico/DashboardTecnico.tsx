@@ -578,6 +578,34 @@ export default function DashboardTecnico() {
           }
         });
 
+        // Varredura de rascunhos locais de questionário (localStorage) para não perder anexos legítimos
+        if (typeof localStorage !== 'undefined') {
+          try {
+            for (let i = 0; i < localStorage.length; i++) {
+              const k = localStorage.key(i);
+              if (k && k.startsWith('rtrs_draft_')) {
+                const rawDraft = localStorage.getItem(k);
+                if (rawDraft) {
+                  const draftObj = JSON.parse(rawDraft);
+                  if (draftObj && typeof draftObj === 'object') {
+                    Object.entries(draftObj).forEach(([rawPergId, val]: [string, any]) => {
+                      if (val?.evidenciaUrl && typeof val.evidenciaUrl === 'string') {
+                        const canon = normalizePerguntaId(rawPergId);
+                        cachedAudsList.forEach(a => {
+                          const strictKey = `${a.id}_${canon}`;
+                          if (!strictFileMap.has(strictKey) && !deletedEvidenceKeys.has(strictKey)) {
+                            strictFileMap.set(strictKey, val.evidenciaUrl);
+                          }
+                        });
+                      }
+                    });
+                  }
+                }
+              }
+            }
+          } catch (e) {}
+        }
+
         // Inserção deduplicada no localChecklistMap
         const upsertLocalChecklist = (incoming: any) => {
           const canonCrit = getCanonicalCrit(incoming);
@@ -1175,9 +1203,9 @@ export default function DashboardTecnico() {
             const hasPendingQueue = pendingEvidenceKeys.has(strictKey);
             const isTrulyPending = hasPendingQueue || (doc.arquivo_url && !String(doc.arquivo_url).startsWith('http'));
 
-            // Se o documento NÃO veio na busca do Postgres remoto e NÃO está pendente na fila local,
-            // significa que ele foi excluído no banco remoto!
-            if (doc.categoria === 'CHECKLIST RTRS' && !hasPendingQueue && fetchedRemote !== null) {
+            // Se o documento foi explicitamente excluído no sync_journal, suprime e limpa cache local
+            const isExplicitlyDeleted = deletedEvidenceKeys.has(strictKey);
+            if (isExplicitlyDeleted) {
               if (auditId && canonPergId) {
                 db.cached_respostas
                   .where('auditoria_id')
@@ -1187,6 +1215,21 @@ export default function DashboardTecnico() {
                   .catch(() => {});
               }
               return; // Suprime a evidência excluída
+            }
+
+            // AUTO-CURA (Self-Healing): Se o documento local tem URL válida (http... ou data:),
+            // mas não veio na query remota do Supabase (por exemplo, após sobrescrita concorrente),
+            // NÃO apaga! Mantém na tela e cura o registro no Supabase em segundo plano!
+            if (doc.categoria === 'CHECKLIST RTRS' && doc.arquivo_url && auditId && !auditId.startsWith('mock-')) {
+              const urlToRestore = doc.arquivo_url;
+              if (String(urlToRestore).startsWith('http') && canonPergId) {
+                supabase
+                  .from('respostas_auditoria')
+                  .update({ evidencia_url: urlToRestore, updated_at: new Date().toISOString() })
+                  .eq('auditoria_id', auditId)
+                  .eq('pergunta_id', canonPergId)
+                  .then(() => {});
+              }
             }
 
             mergedMap.set(dedupKey, {
