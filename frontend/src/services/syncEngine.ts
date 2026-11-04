@@ -905,6 +905,25 @@ class SyncEngine {
             }
           }
 
+          // Leitura fresca de db.cached_respostas para pegar o valor mais recente caso o usuário tenha clicado em Conforme durante upload
+          let currentConforme = item.conforme ?? false;
+          let currentNaoSeAplica = item.nao_se_aplica ?? false;
+          let currentObservacoes = item.observacoes || '';
+          try {
+            const freshCached = await db.cached_respostas.get([item.auditoria_id, canonicalPerguntaId]);
+            if (freshCached) {
+              if (freshCached.conforme !== undefined && freshCached.conforme !== null) {
+                currentConforme = freshCached.conforme;
+              }
+              if (freshCached.nao_se_aplica !== undefined) {
+                currentNaoSeAplica = freshCached.nao_se_aplica;
+              }
+              if (freshCached.observacoes) {
+                currentObservacoes = freshCached.observacoes;
+              }
+            }
+          } catch {}
+
           const payload = {
             auditoria_id: targetAuditoriaId,
             pergunta_id: canonicalPerguntaId, // UUID canônico garantido!

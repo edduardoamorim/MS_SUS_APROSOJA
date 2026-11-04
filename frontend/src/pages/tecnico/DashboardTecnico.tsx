@@ -244,7 +244,7 @@ export default function DashboardTecnico() {
       fetchTechnicalDocuments();
       fetchAudits();
     } else if (activeTab === 'auditorias') {
-      fetchAudits();
+      fetchAudits(true);
     } else if (activeTab === 'mapa') {
       fetchCollaborativeMapData();
     }
@@ -254,7 +254,7 @@ export default function DashboardTecnico() {
     const onFocus = () => {
       const now = Date.now();
       if (now - lastAuditsFetchRef.current > 30000) {
-        if (activeTab === 'auditorias') fetchAudits();
+        if (activeTab === 'auditorias') fetchAudits(true);
         else if (activeTab === 'mapa') fetchCollaborativeMapData();
         else if (activeTab === 'documentacao') {
           fetchTechnicalDocuments();
@@ -272,15 +272,51 @@ export default function DashboardTecnico() {
     };
     const handleSyncComplete = () => {
       fetchTechnicalDocuments();
-      fetchAudits();
+      fetchAudits(true);
     };
+    const handleAuditUpdated = () => {
+      fetchAudits(true);
+      fetchTechnicalDocuments();
+    };
+
     window.addEventListener('ms:evidence-uploaded', handleEvidenceUploaded);
     window.addEventListener('ms:sync-complete', handleSyncComplete);
     window.addEventListener('ms:outbox-changed', handleSyncComplete);
+    window.addEventListener('ms:audit-updated', handleAuditUpdated);
+
+    // Inscrição Realtime leve do Supabase em auditorias e respostas_auditoria
+    let realtimeChannel: any = null;
+    if (supabase) {
+      try {
+        let timer: any = null;
+        const debouncedRefresh = () => {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => {
+            fetchAudits(true);
+            fetchTechnicalDocuments();
+          }, 400);
+        };
+
+        realtimeChannel = supabase
+          .channel('tecnico-dashboard-realtime')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'auditorias' }, debouncedRefresh)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'respostas_auditoria' }, debouncedRefresh)
+          .subscribe();
+      } catch (err) {
+        console.warn('[Realtime] Falha ao assinar mudanças:', err);
+      }
+    }
+
     return () => {
       window.removeEventListener('ms:evidence-uploaded', handleEvidenceUploaded);
       window.removeEventListener('ms:sync-complete', handleSyncComplete);
       window.removeEventListener('ms:outbox-changed', handleSyncComplete);
+      window.removeEventListener('ms:audit-updated', handleAuditUpdated);
+      if (realtimeChannel && supabase) {
+        try {
+          supabase.removeChannel(realtimeChannel);
+        } catch {}
+      }
     };
   }, []);
 
@@ -829,6 +865,9 @@ export default function DashboardTecnico() {
                 id,
                 auditoria_id,
                 pergunta_id,
+                conforme,
+                nao_se_aplica,
+                observacoes,
                 evidencia_url,
                 created_at,
                 updated_at,
@@ -891,23 +930,86 @@ export default function DashboardTecnico() {
         const respData = respDataRes?.data || null;
         const pendsData = pendsDataRes?.data || null;
 
-        // Hidratação silenciosa das respostas e evidências no Dexie local para garantir 0ms nas próximas vezes
+        // Hidratação silenciosa e protegida das respostas e evidências no Dexie local para garantir 0ms nas próximas vezes sem apagar status
         if (respData && respData.length > 0) {
-          const toCache: any[] = [];
-          respData.forEach((r: any) => {
-            if (r.auditoria_id && r.pergunta_id && r.evidencia_url) {
-              toCache.push({
-                id: r.id,
-                auditoria_id: r.auditoria_id,
-                pergunta_id: r.pergunta_id,
-                evidencia_url: r.evidencia_url,
-                created_at: r.created_at,
-                updated_at: r.updated_at
-              });
+          try {
+            const [localResps, localJournal] = await Promise.all([
+              db.cached_respostas.toArray().catch(() => []),
+              db.sync_journal.toArray().catch(() => [])
+            ]);
+
+            const localRespMap = new Map<string, any>();
+            localResps.forEach(lr => {
+              const canon = normalizePerguntaId(lr.pergunta_id);
+              localRespMap.set(`${lr.auditoria_id}_${canon}`, lr);
+              localRespMap.set(`${lr.auditoria_id}_${lr.pergunta_id}`, lr);
+            });
+
+            const pendingJournalKeys = new Set<string>();
+            localJournal.forEach(j => {
+              if (j.status === 'pending' || j.status === 'syncing') {
+                const canon = normalizePerguntaId(j.pergunta_id);
+                pendingJournalKeys.add(`${j.auditoria_id}_${canon}`);
+                pendingJournalKeys.add(`${j.auditoria_id}_${j.pergunta_id}`);
+              }
+            });
+
+            const toCacheMap = new Map<string, any>();
+            respData.forEach((r: any) => {
+              if (r.auditoria_id && r.pergunta_id && r.evidencia_url) {
+                const canonPergId = normalizePerguntaId(r.pergunta_id);
+                const dedupKey = `${r.auditoria_id}_${canonPergId}`;
+
+                // Se houver alteração pendente no sync_journal, não sobrescreve com dados do servidor
+                if (pendingJournalKeys.has(dedupKey) || pendingJournalKeys.has(`${r.auditoria_id}_${r.pergunta_id}`)) {
+                  return;
+                }
+
+                const existing = localRespMap.get(dedupKey) || localRespMap.get(`${r.auditoria_id}_${r.pergunta_id}`);
+
+                // Se o dado local tem updated_at mais recente que o servidor, preserva os dados locais
+                if (existing?.updated_at && r.updated_at) {
+                  const localTime = new Date(existing.updated_at).getTime();
+                  const remoteTime = new Date(r.updated_at).getTime();
+                  if (localTime > remoteTime) {
+                    return;
+                  }
+                }
+
+                const mergedItem = {
+                  id: r.id || existing?.id,
+                  auditoria_id: r.auditoria_id,
+                  pergunta_id: canonPergId || r.pergunta_id,
+                  conforme: r.conforme ?? (existing?.conforme ?? false),
+                  nao_se_aplica: !!(r.nao_se_aplica ?? existing?.nao_se_aplica),
+                  observacoes: (r.observacoes !== undefined && r.observacoes !== null) ? r.observacoes : (existing?.observacoes || ''),
+                  evidencia_url: r.evidencia_url || existing?.evidencia_url || null,
+                  numero_criterio: r.perguntas_rtrs?.numero_criterio || existing?.numero_criterio,
+                  created_at: r.created_at || existing?.created_at,
+                  updated_at: r.updated_at || existing?.updated_at || new Date().toISOString(),
+                  evidencia_uploaded_at: existing?.evidencia_uploaded_at || r.updated_at || r.created_at,
+                  data_envio: existing?.data_envio || r.updated_at || r.created_at
+                };
+
+                if (toCacheMap.has(dedupKey)) {
+                  const prev = toCacheMap.get(dedupKey);
+                  const prevTime = new Date(prev.updated_at || prev.created_at || 0).getTime();
+                  const currTime = new Date(mergedItem.updated_at || mergedItem.created_at || 0).getTime();
+                  if (currTime > prevTime) {
+                    toCacheMap.set(dedupKey, mergedItem);
+                  }
+                } else {
+                  toCacheMap.set(dedupKey, mergedItem);
+                }
+              }
+            });
+
+            const toCache = Array.from(toCacheMap.values());
+            if (toCache.length > 0) {
+              await db.cached_respostas.bulkPut(toCache);
             }
-          });
-          if (toCache.length > 0) {
-            db.cached_respostas.bulkPut(toCache).catch(() => {});
+          } catch (cacheErr) {
+            console.warn('[Docs] Falha ao hidratar cache de respostas no Dexie:', cacheErr);
           }
         }
 
@@ -2554,6 +2656,8 @@ export default function DashboardTecnico() {
 
     if (auditoriaId.startsWith('mock-') || auditoriaId.startsWith('prop-audit-')) {
       setShowQuestionario(false);
+      fetchAudits(true);
+      fetchTechnicalDocuments();
       return;
     }
 
@@ -2564,6 +2668,8 @@ export default function DashboardTecnico() {
         .eq('id', auditoriaId);
       if (err) throw err;
       setShowQuestionario(false);
+      fetchAudits(true);
+      fetchTechnicalDocuments();
       success('Relatório de auditoria salvo com sucesso!');
     } catch (err: any) {
       console.error('Erro ao atualizar auditoria:', err);
@@ -3827,13 +3933,13 @@ export default function DashboardTecnico() {
           propriedadeNome={activeAuditoria.propriedades?.nome_fazenda || "Fazenda Sol Nascente"}
           onClose={() => {
             setShowQuestionario(false);
-            fetchAudits();
+            fetchAudits(true);
             fetchCollaborativeMapData();
             fetchTechnicalDocuments();
           }}
           onComplete={() => {
             handleComplete(activeAuditoria.id);
-            fetchAudits();
+            fetchAudits(true);
             fetchCollaborativeMapData();
             fetchTechnicalDocuments();
           }}

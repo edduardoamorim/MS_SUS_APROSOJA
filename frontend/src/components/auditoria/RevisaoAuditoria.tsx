@@ -2,7 +2,35 @@ import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { CheckCircle2, AlertCircle, MinusCircle, X, ShieldCheck, Image as ImageIcon, Search, Loader2, FileText } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { db } from '../../lib/offlineDb';
 import { cleanEvidenceUrl, isPdfEvidence } from '../../lib/evidenceService';
+
+function compareCriterios(critA: string, critB: string): number {
+  const extractParts = (str: string) => {
+    if (!str) return [];
+    const match = String(str).match(/\d+(?:\.[\da-zA-Z]+)*/);
+    const target = match ? match[0] : String(str);
+    return target.split('.').map(p => {
+      const m = p.match(/^(\d*)([a-zA-Z]*)$/);
+      if (m) {
+        return { num: m[1] ? parseInt(m[1], 10) : 0, char: m[2] || '' };
+      }
+      return { num: 0, char: p };
+    });
+  };
+
+  const partsA = extractParts(critA);
+  const partsB = extractParts(critB);
+  for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+    if (partsA[i] === undefined) return -1;
+    if (partsB[i] === undefined) return 1;
+    const a = partsA[i];
+    const b = partsB[i];
+    if (a.num !== b.num) return a.num - b.num;
+    if (a.char !== b.char) return a.char.localeCompare(b.char);
+  }
+  return 0;
+}
 
 interface RevisaoAuditoriaProps {
   propriedadeNome: string;
@@ -31,72 +59,92 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
         return;
       }
       try {
-        const { data, error } = await supabase
-          .from('respostas_auditoria')
-          .select(`
-            id,
-            conforme,
-            nao_se_aplica,
-            observacao,
-            evidencia_url,
-            perguntas_rtrs (
-              secao,
-              numero_criterio,
-              enunciado
-            )
-          `)
-          .eq('auditoria_id', auditoriaId);
+        let loadedRespostas: any[] = [];
+        const isMock = auditoriaId.startsWith('mock-');
 
-        if (error) throw error;
+        if (!isMock) {
+          // Tentativa primária no Supabase
+          try {
+            const { data, error } = await supabase
+              .from('respostas_auditoria')
+              .select(`
+                id,
+                conforme,
+                nao_se_aplica,
+                observacoes,
+                evidencia_url,
+                perguntas_rtrs (
+                  secao,
+                  numero_criterio,
+                  enunciado
+                )
+              `)
+              .eq('auditoria_id', auditoriaId);
 
-        if (data && data.length > 0) {
-          const parseNum = (str: string) => {
-            return str.split('.').map(x => {
-              const match = x.match(/^(\d*)([a-zA-Z]*)$/);
-              if (match) {
-                const num = match[1] ? parseInt(match[1], 10) : 0;
-                const char = match[2] || '';
-                return [num, char];
-              }
-              return [0, x];
-            });
-          };
-
-          const mapped = data.map(r => ({
-            id: r.id,
-            secao: (r.perguntas_rtrs as any)?.secao || 'Geral',
-            criterio: (r.perguntas_rtrs as any)?.numero_criterio || 'N/A',
-            enunciado: (r.perguntas_rtrs as any)?.enunciado || '',
-            conforme: r.conforme,
-            nao_se_aplica: !!r.nao_se_aplica,
-            observacao: (r as any).observacoes || (r as any).observacao || 'Nenhum comentário.',
-            evidencia: cleanEvidenceUrl(r.evidencia_url)
-          })).sort((a, b) => {
-            const partsA = parseNum(a.criterio);
-            const partsB = parseNum(b.criterio);
-            for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
-              if (partsA[i] === undefined) return -1;
-              if (partsB[i] === undefined) return 1;
-              const itemA = partsA[i];
-              const itemB = partsB[i];
-              
-              const numA = typeof itemA[0] === 'number' ? itemA[0] : 0;
-              const numB = typeof itemB[0] === 'number' ? itemB[0] : 0;
-              const charA = typeof itemA[1] === 'string' ? itemA[1] : '';
-              const charB = typeof itemB[1] === 'string' ? itemB[1] : '';
-              
-              if (numA !== numB) return numA - numB;
-              if (charA !== charB) return charA < charB ? -1 : 1;
+            if (!error && data && data.length > 0) {
+              loadedRespostas = data.map(r => ({
+                id: r.id,
+                secao: (r.perguntas_rtrs as any)?.secao || 'Geral',
+                criterio: (r.perguntas_rtrs as any)?.numero_criterio || 'N/A',
+                enunciado: (r.perguntas_rtrs as any)?.enunciado || '',
+                conforme: r.conforme === true || r.conforme === 'true' || r.conforme === 1,
+                nao_se_aplica: r.nao_se_aplica === true || r.nao_se_aplica === 'true' || r.nao_se_aplica === 1,
+                observacao: (r as any).observacoes || (r as any).observacao || 'Nenhum comentário.',
+                evidencia: cleanEvidenceUrl(r.evidencia_url)
+              }));
             }
-            return 0;
-          });
-          setRespostas(mapped);
+          } catch (supabaseErr) {
+            console.warn('Falha de rede ao consultar respostas no Supabase:', supabaseErr);
+          }
+
+          // Fallback para Dexie local se Supabase estiver offline ou retornar vazio
+          if (loadedRespostas.length === 0) {
+            try {
+              const local = await db.cached_respostas
+                .where('auditoria_id')
+                .equals(auditoriaId)
+                .toArray();
+
+              if (local && local.length > 0) {
+                let perguntasMap = new Map();
+                try {
+                  const cachedPerguntas = await db.cached_perguntas.toArray();
+                  cachedPerguntas.forEach(p => perguntasMap.set(p.id, p));
+                } catch (dexErr) {
+                  console.warn('Erro ao carregar perguntas do Dexie:', dexErr);
+                }
+
+                loadedRespostas = local.map(r => {
+                  const p = perguntasMap.get(r.pergunta_id);
+                  return {
+                    id: r.id || `${r.auditoria_id}_${r.pergunta_id}`,
+                    secao: p?.secao || 'Geral',
+                    criterio: p?.numero_criterio || r.numero_criterio || 'N/A',
+                    enunciado: p?.enunciado || '',
+                    conforme: r.conforme === true || r.conforme === 'true' || r.conforme === 1,
+                    nao_se_aplica: r.nao_se_aplica === true || r.nao_se_aplica === 'true' || r.nao_se_aplica === 1,
+                    observacao: r.observacoes || (r as any).observacao || 'Nenhum comentário.',
+                    evidencia: cleanEvidenceUrl(r.evidencia_url)
+                  };
+                });
+              }
+            } catch (dexieErr) {
+              console.warn('Aviso ao consultar Dexie cached_respostas:', dexieErr);
+            }
+          }
+
+          if (loadedRespostas.length > 0) {
+            loadedRespostas.sort((a, b) => compareCriterios(a.criterio, b.criterio));
+            setRespostas(loadedRespostas);
+          } else {
+            setRespostas([]);
+          }
         } else {
           setRespostas(MOCK_RESPOSTAS);
         }
       } catch (err) {
         console.error('Erro ao carregar respostas:', err);
-        setRespostas(MOCK_RESPOSTAS);
+        setRespostas([]);
       } finally {
         setLoading(false);
       }
@@ -105,10 +153,11 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
   }, [auditoriaId]);
 
   const getScore = () => {
-    if (respostas.length === 0) return 0;
+    if (!respostas || respostas.length === 0) return 0;
+    // Critérios marcados como "Não se Aplica" são estritamente desconsiderados do denominador
     const aplicaveis = respostas.filter(r => !r.nao_se_aplica);
     if (aplicaveis.length === 0) return 100;
-    const conformes = aplicaveis.filter(r => r.conforme).length;
+    const conformes = aplicaveis.filter(r => !!r.conforme).length;
     return Math.round((conformes / aplicaveis.length) * 100);
   };
 
@@ -138,11 +187,24 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
 
         {/* Resumo Gerencial Responsivo */}
         <div className="bg-gray-50 border-b border-gray-200 p-4 sm:p-6 flex flex-col sm:flex-row gap-4 sm:gap-6 shrink-0">
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex-1 flex flex-col items-center justify-center">
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex-1 flex flex-col items-center justify-center text-center">
             <span className="text-xs sm:text-sm font-semibold text-gray-500 uppercase">Score de Conformidade</span>
-            <span className={`text-3xl sm:text-4xl font-black ${getScore() > 80 ? 'text-emerald-600' : 'text-amber-500'}`}>
+            <span className={`text-3xl sm:text-4xl font-black my-0.5 ${getScore() >= 80 ? 'text-emerald-600' : 'text-amber-500'}`}>
               {getScore()}%
             </span>
+            {respostas.length > 0 && (
+              <div className="flex flex-wrap items-center justify-center gap-1.5 mt-1 text-[10px] font-bold">
+                <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                  {respostas.filter(r => r.conforme && !r.nao_se_aplica).length} Conformes
+                </span>
+                <span className="text-red-700 bg-red-50 px-2 py-0.5 rounded border border-red-200">
+                  {respostas.filter(r => !r.conforme && !r.nao_se_aplica).length} Não Conf.
+                </span>
+                <span className="text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                  {respostas.filter(r => r.nao_se_aplica).length} N/A
+                </span>
+              </div>
+            )}
           </div>
           <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex-1">
              <h4 className="text-xs sm:text-sm font-bold text-gray-900 mb-1.5 sm:mb-2">Parecer Geral do Técnico</h4>

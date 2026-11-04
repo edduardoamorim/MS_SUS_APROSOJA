@@ -7,7 +7,7 @@ import { useToast } from '../../context/ToastContext';
 import { useAuth } from '../../context/AuthContext';
 import { useSync } from '../../context/SyncContext';
 import { syncEngine } from '../../services/syncEngine';
-import { recordAuditChange, removeJournalItem, notifyOutboxChange, enqueueMutation, enqueueFile, removeEvidenceLocally, db, updateCachedAuditoria, getCachedReadData, cacheReadData, getAllCachedPerguntas, bulkSavePerguntas, getCachedRespostasByAuditoria, bulkSaveRespostas, type CachedPergunta } from '../../lib/offlineDb';
+import { recordAuditChange, removeJournalItem, generateUUID, notifyOutboxChange, enqueueMutation, enqueueFile, removeEvidenceLocally, db, updateCachedAuditoria, getCachedReadData, cacheReadData, getAllCachedPerguntas, bulkSavePerguntas, getCachedRespostasByAuditoria, bulkSaveRespostas, type CachedPergunta } from '../../lib/offlineDb';
 import { seedDefaultRTRSQuestions } from '../../services/precacheService';
 import { cleanEvidenceUrl, resolveEvidenceUrlAsync, isPdfEvidence } from '../../lib/evidenceService';
 
@@ -322,20 +322,59 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           }
 
           if (Object.keys(loadedFromCache).length > 0) {
+            // Mapeia perguntas com alterações pendentes não enviadas neste aparelho
+            const pendingCacheQuestionsSet = new Set<string>();
+            if (journalItems && journalItems.length > 0) {
+              journalItems.forEach(j => {
+                pendingCacheQuestionsSet.add(j.pergunta_id);
+                pendingCacheQuestionsSet.add(normalizePerguntaId(j.pergunta_id));
+              });
+            }
+
             setRespostas(prev => {
-              const merged = { ...loadedFromCache };
-              Object.keys(prev).forEach(pid => {
-                if (prev[pid]) {
-                  const incomingUrl = merged[pid]?.evidenciaUrl;
-                  const prevUrl = prev[pid]?.evidenciaUrl;
+              const merged: Record<string, RespostaItem> = { ...loadedFromCache };
+              const allKeys = new Set([...Object.keys(loadedFromCache), ...Object.keys(prev)]);
+
+              allKeys.forEach(pid => {
+                const incoming = loadedFromCache[pid];
+                const localDraft = prev[pid];
+                const hasPendingChange = pendingCacheQuestionsSet.has(pid) || pendingCacheQuestionsSet.has(normalizePerguntaId(pid));
+
+                if (incoming && localDraft) {
+                  const incomingUrl = incoming.evidenciaUrl;
+                  const prevUrl = localDraft.evidenciaUrl;
                   const safePrevUrl = prevUrl && !String(prevUrl).startsWith('blob:') ? prevUrl : null;
-                  merged[pid] = {
-                    ...merged[pid],
-                    ...prev[pid],
-                    evidenciaUrl: incomingUrl || safePrevUrl || null
-                  };
+
+                  if (hasPendingChange) {
+                    // Mantém rascunho local caso haja alteração pendente de envio deste aparelho
+                    merged[pid] = {
+                      ...incoming,
+                      ...localDraft,
+                      evidenciaUrl: incomingUrl || safePrevUrl || null
+                    };
+                  } else {
+                    // Verdade do banco/cache prevalece sobre rascunho antigo do PC
+                    merged[pid] = {
+                      ...localDraft,
+                      ...incoming,
+                      conforme: incoming.conforme !== undefined && incoming.conforme !== null ? incoming.conforme : localDraft.conforme,
+                      nao_se_aplica: incoming.nao_se_aplica !== undefined ? incoming.nao_se_aplica : localDraft.nao_se_aplica,
+                      observacao: incoming.observacao !== undefined && incoming.observacao !== '' ? incoming.observacao : localDraft.observacao,
+                      evidenciaUrl: incomingUrl || safePrevUrl || null
+                    };
+                  }
+                } else if (incoming) {
+                  merged[pid] = incoming;
+                } else if (localDraft) {
+                  merged[pid] = localDraft;
                 }
               });
+
+              // Salva o resultado sincronizado atualizado no localStorage para curar o rascunho antigo
+              try {
+                localStorage.setItem(getCacheKey(), JSON.stringify(merged));
+              } catch (e) {}
+
               return merged;
             });
             setSyncingDb(false);
@@ -344,9 +383,19 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
 
         // 2. Se online, consultar Supabase e atualizar cache
         if (typeof navigator !== 'undefined' && navigator.onLine) {
-          if (!targetAuditId || targetAuditId.startsWith('mock-') || targetAuditId.startsWith('assigned-pend-')) {
-            let targetPropId = propriedadeId;
-            if (!targetPropId || targetPropId.startsWith('mock-')) {
+          let targetPropId = (propriedadeId && !propriedadeId.startsWith('mock-')) ? propriedadeId : null;
+          if (!targetPropId && targetAuditId && !targetAuditId.startsWith('mock-') && !targetAuditId.startsWith('assigned-pend-')) {
+            try {
+              const { data: audRow } = await supabase
+                .from('auditorias')
+                .select('propriedade_id')
+                .eq('id', targetAuditId)
+                .maybeSingle();
+              if (audRow?.propriedade_id) targetPropId = audRow.propriedade_id;
+            } catch (e) {}
+          }
+          if (!targetPropId && cleanName) {
+            try {
               const { data: foundProp } = await supabase
                 .from('propriedades')
                 .select('id')
@@ -354,60 +403,64 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                 .limit(1)
                 .maybeSingle();
               if (foundProp?.id) targetPropId = foundProp.id;
-            }
+            } catch (e) {}
+          }
 
-            if (targetPropId && !targetPropId.startsWith('mock-')) {
-              const { data: existingAudit } = await supabase
+          let sisterAuditIds: string[] = [];
+          if (targetPropId && !targetPropId.startsWith('mock-')) {
+            try {
+              const { data: allAuditsForProp } = await supabase
                 .from('auditorias')
-                .select('id')
+                .select('id, created_at, updated_at')
                 .eq('propriedade_id', targetPropId)
-                .order('created_at', { ascending: false })
-                .limit(1)
-                .maybeSingle();
+                .order('updated_at', { ascending: false });
 
-              if (existingAudit?.id) {
-                const previousId = currentAuditoriaId;
-                targetAuditId = existingAudit.id;
-                setCurrentAuditoriaId(existingAudit.id);
+              if (allAuditsForProp && allAuditsForProp.length > 0) {
+                if (!targetAuditId || targetAuditId.startsWith('mock-') || targetAuditId.startsWith('assigned-pend-')) {
+                  const previousId = currentAuditoriaId;
+                  targetAuditId = allAuditsForProp[0].id;
+                  setCurrentAuditoriaId(allAuditsForProp[0].id);
 
-                // Se tínhamos um ID sintético antes, atualiza mutações locais pendentes para o ID real
-                if (previousId && previousId !== existingAudit.id && (previousId.startsWith('mock-') || previousId.startsWith('assigned-pend-'))) {
-                  try {
-                    await db.outbox_mutations
-                      .where('table')
-                      .equals('respostas_auditoria')
-                      .and(m => m.payload?.auditoria_id === previousId)
-                      .modify(m => {
-                        m.payload.auditoria_id = existingAudit.id;
-                      });
-                  } catch (e) {
-                    console.warn('[QuestionarioRTRS] Aviso ao reconciliar mutações com novo ID:', e);
+                  // Se tínhamos um ID sintético antes, atualiza mutações locais pendentes para o ID real
+                  if (previousId && previousId !== allAuditsForProp[0].id && (previousId.startsWith('mock-') || previousId.startsWith('assigned-pend-'))) {
+                    try {
+                      await db.outbox_mutations
+                        .where('table')
+                        .equals('respostas_auditoria')
+                        .and(m => m.payload?.auditoria_id === previousId)
+                        .modify(m => {
+                          m.payload.auditoria_id = allAuditsForProp[0].id;
+                        });
+                    } catch (e) {
+                      console.warn('[QuestionarioRTRS] Aviso ao reconciliar mutações com novo ID:', e);
+                    }
                   }
                 }
+                sisterAuditIds = allAuditsForProp.map((a: any) => a.id).filter((id: string) => id !== targetAuditId);
               }
+            } catch (e) {
+              console.warn('[QuestionarioRTRS] Erro ao buscar auditorias da fazenda:', e);
             }
           }
 
           if (targetAuditId && !targetAuditId.startsWith('mock-') && !targetAuditId.startsWith('assigned-pend-')) {
-            // ETAPA 3: BLINDAGEM CONTRA CACHE CLOBBERING (FETCH LOCK)
-            // Se houver qualquer alteração local pendente no sync_journal, ABORTA a busca remota
-            // para nunca sobrescrever com valores nulos ou defasados vindos da nuvem.
-            const pendingJournalCount = await db.sync_journal
-              .where('auditoria_id')
-              .equals(targetAuditId)
-              .count();
+            // Consulta alterações locais pendentes neste aparelho para proteger apenas os itens não enviados
+            const [pendingJournalItems, pendingOutboxMutations] = await Promise.all([
+              db.sync_journal.where('auditoria_id').equals(targetAuditId).toArray().catch(() => []),
+              db.outbox_mutations.where('table').equals('respostas_auditoria').and(m => m.payload?.auditoria_id === targetAuditId).toArray().catch(() => [])
+            ]);
 
-            const pendingMutationsCount = await db.outbox_mutations
-              .where('table')
-              .equals('respostas_auditoria')
-              .and(m => m.payload?.auditoria_id === targetAuditId)
-              .count();
-
-            if (pendingJournalCount > 0 || pendingMutationsCount > 0) {
-              console.log(`[QuestionarioRTRS] FETCH LOCK ATIVO: ${pendingJournalCount + pendingMutationsCount} itens pendentes locais. Abortando sobrescrita remota.`);
-              setSyncingDb(false);
-              return;
-            }
+            const pendingQuestionsSet = new Set<string>();
+            pendingJournalItems.forEach(j => {
+              pendingQuestionsSet.add(j.pergunta_id);
+              pendingQuestionsSet.add(normalizePerguntaId(j.pergunta_id));
+            });
+            pendingOutboxMutations.forEach(m => {
+              if (m.payload?.pergunta_id) {
+                pendingQuestionsSet.add(m.payload.pergunta_id);
+                pendingQuestionsSet.add(normalizePerguntaId(m.payload.pergunta_id));
+              }
+            });
 
             const { data, error } = await supabase
               .from('respostas_auditoria')
@@ -424,21 +477,90 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               `)
               .eq('auditoria_id', targetAuditId);
 
-            if (!error && data && data.length > 0) {
-              // 1. Mapeia exclusões locais pendentes e evidências na outbox para blindar contra ressurreição e clobbering
-              const pendingMutations = await db.outbox_mutations
-                .where('table')
-                .equals('respostas_auditoria')
-                .and(m => m.payload?.auditoria_id === targetAuditId)
-                .toArray();
+            let finalServerRespostas = data || [];
 
+            // TAREFA 4: Consolidação de auditorias da mesma fazenda
+            if (sisterAuditIds.length > 0) {
+              try {
+                const { data: sisterResps } = await supabase
+                  .from('respostas_auditoria')
+                  .select(`
+                    pergunta_id,
+                    conforme,
+                    nao_se_aplica,
+                    observacoes,
+                    evidencia_url,
+                    auditoria_id,
+                    perguntas_rtrs (
+                      id,
+                      numero_criterio
+                    )
+                  `)
+                  .in('auditoria_id', sisterAuditIds);
+
+                if (sisterResps && sisterResps.length > 0) {
+                  const countsByAudit: Record<string, number> = {};
+                  sisterResps.forEach((sr: any) => {
+                    countsByAudit[sr.auditoria_id] = (countsByAudit[sr.auditoria_id] || 0) + 1;
+                  });
+
+                  let bestSisterId: string | null = null;
+                  let maxSisterCount = 0;
+                  Object.entries(countsByAudit).forEach(([sId, count]) => {
+                    if (count > maxSisterCount) {
+                      maxSisterCount = count;
+                      bestSisterId = sId;
+                    }
+                  });
+
+                  const currentCount = finalServerRespostas.length;
+                  if (bestSisterId && maxSisterCount > currentCount) {
+                    console.log(`[QuestionarioRTRS] Auditoria irmã ${bestSisterId} tem mais respostas (${maxSisterCount}) que a atual (${currentCount}). Adotando auditoria principal e consolidando.`);
+                    targetAuditId = bestSisterId;
+                    setCurrentAuditoriaId(bestSisterId);
+                  }
+
+                  // Mesclar respostas preservando todas as perguntas respondidas
+                  const combinedMap = new Map<string, any>();
+                  // 1. Respostas das irmãs
+                  sisterResps.forEach((sr: any) => {
+                    combinedMap.set(sr.pergunta_id, sr);
+                  });
+                  // 2. Sobrepõe com a atual
+                  finalServerRespostas.forEach((cr: any) => {
+                    const existing = combinedMap.get(cr.pergunta_id);
+                    if (!existing) {
+                      combinedMap.set(cr.pergunta_id, cr);
+                    } else {
+                      const hasVal = cr.conforme !== null || cr.nao_se_aplica || cr.observacoes || cr.evidencia_url;
+                      if (hasVal) {
+                        combinedMap.set(cr.pergunta_id, cr);
+                      }
+                    }
+                  });
+                  finalServerRespostas = Array.from(combinedMap.values());
+                }
+              } catch (sisterErr) {
+                console.warn('[QuestionarioRTRS] Erro ao consolidar respostas irmãs:', sisterErr);
+              }
+            }
+
+            if (!error && finalServerRespostas && finalServerRespostas.length > 0) {
+              // 1. Mapeia exclusões locais pendentes e evidências na outbox para blindar contra ressurreição e clobbering
               const locallyDeletedEvidencias = new Set<string>();
               const localPendingWithEvidence = new Map<string, any>();
-              pendingMutations.forEach(m => {
+              pendingOutboxMutations.forEach(m => {
                 if (m.payload?.pergunta_id && m.payload?.evidencia_url === null) {
                   locallyDeletedEvidencias.add(m.payload.pergunta_id);
                 } else if (m.payload?.pergunta_id && m.payload?.evidencia_url) {
                   localPendingWithEvidence.set(m.payload.pergunta_id, m.payload);
+                }
+              });
+              pendingJournalItems.forEach(j => {
+                if (j.is_explicit_delete || j.evidencia_url === null) {
+                  locallyDeletedEvidencias.add(j.pergunta_id);
+                } else if (j.evidencia_url) {
+                  localPendingWithEvidence.set(j.pergunta_id, j);
                 }
               });
 
@@ -450,7 +572,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               const loadedRespostas: Record<string, any> = {};
               const cacheBatch: any[] = [];
 
-              data.forEach(r => {
+              finalServerRespostas.forEach(r => {
                 const rawObs = (r as any).observacoes || '';
                 const numCrit = (r as any).perguntas_rtrs?.numero_criterio || '';
                 let evUrl = cleanEvidenceUrl(r.evidencia_url);
@@ -462,7 +584,6 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                 if (locallyDeletedEvidencias.has(r.pergunta_id)) {
                   evUrl = null;
                 } else {
-                  // CORREÇÃO 3: BLINDAGEM CONTRA CACHE CLOBBERING
                   // Se o Supabase não tem a evidência válida ou possui blob: efêmero,
                   // preserva a evidência local confirmada ou pendente!
                   const localExisting = localCachedMap.get(r.pergunta_id);
@@ -522,20 +643,51 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               });
 
               setRespostas(prev => {
-                const merged = { ...loadedRespostas };
-                Object.keys(prev).forEach(pid => {
-                  if (locallyDeletedEvidencias.has(pid)) {
-                    merged[pid] = { ...merged[pid], ...(prev[pid] || {}), evidenciaUrl: null };
-                  } else if (prev[pid]) {
-                    const incomingUrl = merged[pid]?.evidenciaUrl;
-                    const prevUrl = prev[pid]?.evidenciaUrl;
+                const merged: Record<string, RespostaItem> = { ...loadedRespostas };
+                const allKeys = new Set([...Object.keys(loadedRespostas), ...Object.keys(prev)]);
+
+                allKeys.forEach(pid => {
+                  const incoming = loadedRespostas[pid];
+                  const localDraft = prev[pid];
+                  const isExplicitlyDeleted = locallyDeletedEvidencias.has(pid);
+                  const hasPendingLocalChange = pendingQuestionsSet.has(pid) || pendingQuestionsSet.has(normalizePerguntaId(pid));
+
+                  if (incoming && localDraft) {
+                    if (hasPendingLocalChange) {
+                      merged[pid] = {
+                        ...incoming,
+                        ...localDraft,
+                        evidenciaUrl: isExplicitlyDeleted ? null : (incoming.evidenciaUrl || localDraft.evidenciaUrl || null)
+                      };
+                    } else {
+                      // Servidor/Cache PREVALECE sobre rascunho antigo do PC
+                      merged[pid] = {
+                        ...localDraft,
+                        ...incoming,
+                        conforme: incoming.conforme !== undefined && incoming.conforme !== null ? incoming.conforme : localDraft.conforme,
+                        nao_se_aplica: incoming.nao_se_aplica !== undefined ? incoming.nao_se_aplica : localDraft.nao_se_aplica,
+                        observacao: incoming.observacao !== undefined && incoming.observacao !== '' ? incoming.observacao : localDraft.observacao,
+                        evidenciaUrl: isExplicitlyDeleted ? null : (incoming.evidenciaUrl || localDraft.evidenciaUrl || null)
+                      };
+                    }
+                  } else if (incoming) {
                     merged[pid] = {
-                      ...merged[pid],
-                      ...prev[pid],
-                      evidenciaUrl: incomingUrl || prevUrl || null
+                      ...incoming,
+                      evidenciaUrl: isExplicitlyDeleted ? null : incoming.evidenciaUrl
+                    };
+                  } else if (localDraft) {
+                    merged[pid] = {
+                      ...localDraft,
+                      evidenciaUrl: isExplicitlyDeleted ? null : localDraft.evidenciaUrl
                     };
                   }
                 });
+
+                // Salva o resultado sincronizado atualizado no localStorage para curar o rascunho antigo do PC!
+                try {
+                  localStorage.setItem(getCacheKey(), JSON.stringify(merged));
+                } catch (e) {}
+
                 return merged;
               });
 
@@ -762,41 +914,91 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
 
       touchAuditoriaTimestamp(auditIdToUse, nowIso);
 
-        // 6. Se online e for remoção de evidência: atualiza diretamente no Supabase e remove arquivos do Storage
-        if (isDeviceOnline && updates.evidenciaUrl === null) {
+        // 5. Fast-path online: se conectado e auditoria não for sintética, grava imediatamente no Supabase
+        if (isDeviceOnline && !auditIdToUse.startsWith('mock-') && !auditIdToUse.startsWith('assigned-pend-')) {
+          let directSuccess = false;
           try {
-            await supabase
+            const payload = {
+              auditoria_id: auditIdToUse,
+              pergunta_id: canonicalId,
+              conforme: safeConformeForDb,
+              nao_se_aplica: nextStateForId.nao_se_aplica ?? false,
+              observacoes: nextStateForId.observacao || '',
+              evidencia_url: nextStateForId.evidenciaUrl || null,
+              updated_at: nowIso
+            };
+
+            let { error: dbErr } = await supabase
               .from('respostas_auditoria')
-              .update({ evidencia_url: null, updated_at: nowIso })
-              .eq('auditoria_id', auditIdToUse)
-              .in('pergunta_id', [canonicalId, perguntaId]);
+              .upsert(payload, { onConflict: 'auditoria_id,pergunta_id' });
 
-            // Expurgar arquivos correspondentes do Storage no bucket evidencias
-            const prefix1 = `evidencia_${auditIdToUse}_${canonicalId}`;
-            const prefix2 = `${auditIdToUse}_${canonicalId}`;
-            const [res1, res2, res3] = await Promise.all([
-              supabase.storage.from('evidencias').list('', { search: prefix1 }),
-              supabase.storage.from('evidencias').list('', { search: prefix2 }),
-              supabase.storage.from('evidencias').list('evidencias', { search: prefix2 })
-            ]);
-            const filesToDelete: string[] = [];
-            if (res1.data) res1.data.forEach(f => filesToDelete.push(f.name));
-            if (res2.data) res2.data.forEach(f => filesToDelete.push(f.name));
-            if (res3.data) res3.data.forEach(f => filesToDelete.push(`evidencias/${f.name}`));
-            if (currentAns.evidenciaUrl && typeof currentAns.evidenciaUrl === 'string' && currentAns.evidenciaUrl.includes('/evidencias/')) {
-              const splitted = currentAns.evidenciaUrl.split('/evidencias/');
-              if (splitted[1]) filesToDelete.push(decodeURIComponent(splitted[1].split('?')[0]));
+            // Auto-criar auditoria pai caso ainda não exista no servidor (FK 23503)
+            if (dbErr && ((dbErr as any).code === '23503' || dbErr.message?.includes('auditoria_id'))) {
+              const cachedAud = await db.cached_auditorias.get(auditIdToUse);
+              const targetPropId = propriedadeId || cachedAud?.propriedade_id;
+              if (targetPropId && !targetPropId.startsWith('mock-')) {
+                await supabase.from('auditorias').upsert([{
+                  id: auditIdToUse,
+                  propriedade_id: targetPropId,
+                  tecnico_responsavel_id: user?.id || cachedAud?.tecnico_responsavel_id || null,
+                  status: modo === 'autoavaliacao' ? 'Autoavaliação' : 'Em Andamento',
+                  data_agendamento: cachedAud?.data_agendamento || nowIso,
+                  updated_at: nowIso
+                }], { onConflict: 'id' });
+                const retryUpsert = await supabase
+                  .from('respostas_auditoria')
+                  .upsert(payload, { onConflict: 'auditoria_id,pergunta_id' });
+                dbErr = retryUpsert.error;
+              }
             }
-            if (filesToDelete.length > 0) {
-              await supabase.storage.from('evidencias').remove([...new Set(filesToDelete)]);
+
+            if (!dbErr) {
+              directSuccess = true;
+              // Atualizar auditorias updated_at
+              supabase.from('auditorias').update({ updated_at: nowIso }).eq('id', auditIdToUse).then(() => {});
+
+              // Se for remoção de evidência, expurga arquivos correspondentes do Storage no bucket evidencias
+              if (updates.evidenciaUrl === null) {
+                const prefix1 = `evidencia_${auditIdToUse}_${canonicalId}`;
+                const prefix2 = `${auditIdToUse}_${canonicalId}`;
+                const [res1, res2, res3] = await Promise.all([
+                  supabase.storage.from('evidencias').list('', { search: prefix1 }),
+                  supabase.storage.from('evidencias').list('', { search: prefix2 }),
+                  supabase.storage.from('evidencias').list('evidencias', { search: prefix2 })
+                ]);
+                const filesToDelete: string[] = [];
+                if (res1.data) res1.data.forEach(f => filesToDelete.push(f.name));
+                if (res2.data) res2.data.forEach(f => filesToDelete.push(f.name));
+                if (res3.data) res3.data.forEach(f => filesToDelete.push(`evidencias/${f.name}`));
+                if (currentAns.evidenciaUrl && typeof currentAns.evidenciaUrl === 'string' && currentAns.evidenciaUrl.includes('/evidencias/')) {
+                  const splitted = currentAns.evidenciaUrl.split('/evidencias/');
+                  if (splitted[1]) filesToDelete.push(decodeURIComponent(splitted[1].split('?')[0]));
+                }
+                if (filesToDelete.length > 0) {
+                  await supabase.storage.from('evidencias').remove([...new Set(filesToDelete)]);
+                }
+              }
+
+              // Remover o item do db.sync_journal
+              await removeJournalItem(auditIdToUse, canonicalId);
+              if (canonicalId !== perguntaId) {
+                await removeJournalItem(auditIdToUse, perguntaId);
+              }
+              // Disparar notifyOutboxChange()
+              notifyOutboxChange();
+
+              // Disparar evento customizado
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('ms:audit-updated', { detail: { auditoriaId: auditIdToUse } }));
+              }
+            } else {
+              console.warn('[QuestionarioRTRS] Falha no upsert direto de resposta, SyncEngine assumirá em background:', dbErr);
             }
-          } catch (supaErr) {
-            console.warn('[QuestionarioRTRS] Falha no update direto de remoção remota:', supaErr);
+          } catch (fastErr) {
+            console.warn('[QuestionarioRTRS] Erro no fast-path online de resposta:', fastErr);
           }
-        }
 
-        // 7. Se online: dispara dreno com forceAll = true
-        if (isDeviceOnline) {
+          // Se falhou por oscilação de rede ou se há outros itens pendentes, o syncNow assume em background
           syncEngine.syncNow(true);
         }
     }
@@ -1077,12 +1279,28 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           }
 
           if (finalRemoteUrl) {
+            // Consulta o estado fresco atualizado no momento exato do upsert para eliminar condição de corrida
+            const freshCached = await db.cached_respostas.get([auditIdToUse, canonicalId]);
+            const freshState = respostas[canonicalId] || respostas[id] || {};
+
+            const freshConforme = freshCached?.conforme !== undefined && freshCached?.conforme !== null
+              ? freshCached.conforme
+              : (freshState.conforme !== undefined && freshState.conforme !== null ? freshState.conforme : safeConforme);
+
+            const freshNaoSeAplica = freshCached?.nao_se_aplica !== undefined
+              ? freshCached.nao_se_aplica
+              : (freshState.nao_se_aplica !== undefined ? freshState.nao_se_aplica : safeNaoSeAplica);
+
+            const freshObservacoes = freshCached?.observacoes !== undefined && freshCached?.observacoes !== ''
+              ? freshCached.observacoes
+              : (freshState.observacao || safeObservacoes);
+
             const payload = {
               auditoria_id: auditIdToUse,
               pergunta_id: canonicalId,
-              conforme: safeConforme,
-              nao_se_aplica: safeNaoSeAplica,
-              observacoes: safeObservacoes,
+              conforme: freshConforme,
+              nao_se_aplica: freshNaoSeAplica,
+              observacoes: freshObservacoes,
               evidencia_url: finalRemoteUrl,
               updated_at: nowIso
             };
@@ -1120,9 +1338,9 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               await db.cached_respostas.put({
                 auditoria_id: auditIdToUse,
                 pergunta_id: canonicalId,
-                conforme: safeConforme,
-                nao_se_aplica: safeNaoSeAplica,
-                observacoes: safeObservacoes,
+                conforme: freshConforme,
+                nao_se_aplica: freshNaoSeAplica,
+                observacoes: freshObservacoes,
                 evidencia_url: finalRemoteUrl,
                 numero_criterio: numCrit,
                 updated_at: nowIso,
@@ -1136,11 +1354,14 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               notifyOutboxChange();
 
               setRespostas(prev => {
-                const curr = prev[canonicalId] || currentAns;
+                const curr = prev[canonicalId] || prev[id] || currentAns;
                 const updated = {
                   ...prev,
                   [canonicalId]: {
                     ...curr,
+                    conforme: freshConforme,
+                    nao_se_aplica: freshNaoSeAplica,
+                    observacao: freshObservacoes,
                     evidenciaUrl: finalRemoteUrl,
                     evidencia_uploaded_at: nowIso,
                     updated_at: nowIso
@@ -1154,6 +1375,9 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               if (typeof window !== 'undefined') {
                 window.dispatchEvent(new CustomEvent('ms:evidence-uploaded', {
                   detail: { perguntaId: canonicalId, auditoriaId: auditIdToUse, timestamp: nowIso, url: finalRemoteUrl }
+                }));
+                window.dispatchEvent(new CustomEvent('ms:audit-updated', {
+                  detail: { auditoriaId: auditIdToUse }
                 }));
                 window.dispatchEvent(new CustomEvent('ms:sync-complete', {
                   detail: { drainedCount: 1, errorCount: 0 }

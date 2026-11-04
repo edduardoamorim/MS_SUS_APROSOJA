@@ -22,10 +22,38 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { db } from '../../lib/offlineDb';
 import Modal from '../ui/Modal';
 import { resolveMunicipioFromCarOrName } from '../../lib/geoUtils';
 import { formatUltimaAlteracao } from '../../lib/dateUtils';
 import { cleanEvidenceUrl, isPdfEvidence } from '../../lib/evidenceService';
+
+function compareCriterios(critA: string, critB: string): number {
+  const extractParts = (str: string) => {
+    if (!str) return [];
+    const match = String(str).match(/\d+(?:\.[\da-zA-Z]+)*/);
+    const target = match ? match[0] : String(str);
+    return target.split('.').map(p => {
+      const m = p.match(/^(\d*)([a-zA-Z]*)$/);
+      if (m) {
+        return { num: m[1] ? parseInt(m[1], 10) : 0, char: m[2] || '' };
+      }
+      return { num: 0, char: p };
+    });
+  };
+
+  const partsA = extractParts(critA);
+  const partsB = extractParts(critB);
+  for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+    if (partsA[i] === undefined) return -1;
+    if (partsB[i] === undefined) return 1;
+    const a = partsA[i];
+    const b = partsB[i];
+    if (a.num !== b.num) return a.num - b.num;
+    if (a.char !== b.char) return a.char.localeCompare(b.char);
+  }
+  return 0;
+}
 
 interface Props {
   isOpen: boolean;
@@ -60,45 +88,174 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
     setLoading(true);
     try {
       // 1. Contar respostas e carregar critérios avaliados
-      if (auditoria?.id && !isMockAudit) {
-        const { count, data: respData, error: ansErr } = await supabase
-          .from('respostas_auditoria')
-          .select(`
-            id,
-            conforme,
-            nao_se_aplica,
-            observacao,
-            evidencia_url,
-            perguntas_rtrs (
-              secao,
-              numero_criterio,
-              enunciado
-            )
-          `, { count: 'exact' })
-          .eq('auditoria_id', auditoria.id);
-        
-        if (!ansErr) {
-          if (count !== null) {
-            setAnsweredCount(count);
-          }
-          if (respData && respData.length > 0) {
-            setCriteriosList(respData.map(r => ({
+      let loadedCriterios: any[] = [];
+      const currentAuditId = auditoria?.id;
+
+      if (currentAuditId && !isMockAudit) {
+        // Tentativa primária: buscar respostas desta auditoria no Supabase
+        try {
+          const { count, data: respData, error: ansErr } = await supabase
+            .from('respostas_auditoria')
+            .select(`
+              id,
+              conforme,
+              nao_se_aplica,
+              observacoes,
+              evidencia_url,
+              perguntas_rtrs (
+                secao,
+                numero_criterio,
+                enunciado
+              )
+            `, { count: 'exact' })
+            .eq('auditoria_id', currentAuditId);
+          
+          if (!ansErr && respData && respData.length > 0) {
+            loadedCriterios = respData.map(r => ({
               id: r.id,
               secao: (r.perguntas_rtrs as any)?.secao || 'Geral',
               criterio: (r.perguntas_rtrs as any)?.numero_criterio || '1.1',
               enunciado: (r.perguntas_rtrs as any)?.enunciado || 'Critério de Conformidade RTRS',
-              conforme: r.conforme,
+              conforme: !!r.conforme,
               nao_se_aplica: !!r.nao_se_aplica,
-              observacao: (r as any).observacoes || (r as any).observacao || 'Conformidade avaliada pelo auditor.',
+              observacao: (r as any).observacoes || (r as any).observacao || '',
               evidencia: cleanEvidenceUrl(r.evidencia_url)
-            })));
-          } else {
-            setCriteriosList([]);
+            }));
+          }
+        } catch (supabaseErr) {
+          console.warn('Aviso de rede ao buscar respostas no Supabase:', supabaseErr);
+        }
+
+        // Se retornar poucas ou nenhuma resposta, mas a propriedade possuir outras auditorias no Supabase
+        if (loadedCriterios.length === 0 && propId && typeof propId === 'string' && !propId.startsWith('mock-')) {
+          try {
+            const { data: propAuds } = await supabase
+              .from('auditorias')
+              .select('id')
+              .eq('propriedade_id', propId);
+
+            const otherAuditIds = (propAuds || [])
+              .map(a => a.id)
+              .filter(id => id && id !== currentAuditId);
+
+            if (otherAuditIds.length > 0) {
+              const { data: propRespData } = await supabase
+                .from('respostas_auditoria')
+                .select(`
+                  id,
+                  conforme,
+                  nao_se_aplica,
+                  observacoes,
+                  evidencia_url,
+                  perguntas_rtrs (
+                    secao,
+                    numero_criterio,
+                    enunciado
+                  )
+                `)
+                .in('auditoria_id', otherAuditIds);
+
+              if (propRespData && propRespData.length > 0) {
+                loadedCriterios = propRespData.map(r => ({
+                  id: r.id,
+                  secao: (r.perguntas_rtrs as any)?.secao || 'Geral',
+                  criterio: (r.perguntas_rtrs as any)?.numero_criterio || '1.1',
+                  enunciado: (r.perguntas_rtrs as any)?.enunciado || 'Critério de Conformidade RTRS',
+                  conforme: !!r.conforme,
+                  nao_se_aplica: !!r.nao_se_aplica,
+                  observacao: (r as any).observacoes || (r as any).observacao || '',
+                  evidencia: cleanEvidenceUrl(r.evidencia_url)
+                }));
+              }
+            }
+          } catch (propErr) {
+            console.warn('Aviso ao buscar auditorias vinculadas à propriedade no Supabase:', propErr);
           }
         }
+
+        // Suporte Offline / Fallback local no Dexie (db.cached_respostas)
+        if (loadedCriterios.length === 0) {
+          try {
+            let localResps: any[] = [];
+            if (currentAuditId) {
+              localResps = await db.cached_respostas
+                .where('auditoria_id')
+                .equals(currentAuditId)
+                .toArray();
+            }
+
+            // Se local vazio para a auditoria atual, busca por outras auditorias da mesma propriedade no Dexie
+            if ((!localResps || localResps.length === 0) && propId) {
+              const localAuds = await db.cached_auditorias
+                .where('propriedade_id')
+                .equals(propId)
+                .toArray();
+
+              const otherLocalAudIds = localAuds
+                .map(a => a.id)
+                .filter(id => id && id !== currentAuditId);
+
+              for (const otherAudId of otherLocalAudIds) {
+                const audResps = await db.cached_respostas
+                  .where('auditoria_id')
+                  .equals(otherAudId)
+                  .toArray();
+                if (audResps && audResps.length > 0) {
+                  localResps = audResps;
+                  break;
+                }
+              }
+            }
+
+            if (localResps && localResps.length > 0) {
+              let perguntasMap = new Map();
+              try {
+                const allPergs = await db.cached_perguntas.toArray();
+                allPergs.forEach(p => perguntasMap.set(p.id, p));
+              } catch (dexErr) {
+                console.warn('Erro ao carregar perguntas do cache:', dexErr);
+              }
+
+              loadedCriterios = localResps.map(r => {
+                const p = perguntasMap.get(r.pergunta_id);
+                return {
+                  id: r.id || `${r.auditoria_id}_${r.pergunta_id}`,
+                  secao: p?.secao || 'Geral',
+                  criterio: p?.numero_criterio || r.numero_criterio || '1.1',
+                  enunciado: p?.enunciado || 'Critério de Conformidade RTRS',
+                  conforme: !!r.conforme,
+                  nao_se_aplica: !!r.nao_se_aplica,
+                  observacao: r.observacoes || (r as any).observacao || '',
+                  evidencia: cleanEvidenceUrl(r.evidencia_url)
+                };
+              });
+            }
+          } catch (dexieErr) {
+            console.warn('Aviso ao consultar respostas locais no Dexie:', dexieErr);
+          }
+        }
+
+        // Deduplicação por número de critério / id caso venha de múltiplas fontes
+        const seen = new Set<string>();
+        const uniqueList: any[] = [];
+        for (const crit of loadedCriterios) {
+          const key = crit.criterio || crit.id;
+          if (!seen.has(key)) {
+            seen.add(key);
+            uniqueList.push(crit);
+          }
+        }
+
+        // Ordenação garantida por critério (ex: 1.1, 1.1.1, etc.)
+        uniqueList.sort((a, b) => compareCriterios(a.criterio, b.criterio));
+        setCriteriosList(uniqueList);
+        setAnsweredCount(uniqueList.length);
+      } else if (isMockAudit) {
+        setCriteriosList(mockCriteriosFallback);
+        setAnsweredCount(mockCriteriosFallback.length);
       } else {
-        setAnsweredCount(0);
         setCriteriosList([]);
+        setAnsweredCount(0);
       }
 
       // 2. Contar pendências ativas da propriedade
@@ -175,8 +332,6 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
   const municipioName = resolveMunicipioFromCarOrName(carCode, farmName, prop?.municipio || farmDetails?.municipio);
   const etapaName = auditoria.etapa || prop?.etapa || farmDetails?.etapa || 'Prospecção';
   
-  const progressPercent = Math.min(100, Math.round((answeredCount / totalQuestions) * 100));
-
   const formattedDate = auditoria.data_agendamento
     ? new Date(auditoria.data_agendamento).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' })
     : new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
@@ -187,7 +342,17 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
     { id: 'm3', secao: 'Princípio 4: Gestão Ambiental', criterio: '4.2', enunciado: 'Existe sistema de descarte correto para embalagens de defensivos?', conforme: false, nao_se_aplica: false, observacao: 'Necessita ampliação do depósito de descarte tríplice lavagem.', evidencia: null }
   ];
 
-  const displayCriterios = criteriosList.length > 0 ? criteriosList : (isMockAudit || answeredCount === 0 ? mockCriteriosFallback : []);
+  // Apenas auditorias mock usam fallback simulado; auditorias reais exibem estritamente as respostas encontradas
+  const displayCriterios = criteriosList.length > 0 
+    ? criteriosList 
+    : (isMockAudit ? mockCriteriosFallback : []);
+
+  const conformesCount = displayCriterios.filter(c => c.conforme && !c.nao_se_aplica).length;
+  const naoConformesCount = displayCriterios.filter(c => !c.conforme && !c.nao_se_aplica).length;
+  const naoSeAplicaCount = displayCriterios.filter(c => c.nao_se_aplica).length;
+  const effectiveAnsweredCount = displayCriterios.length;
+
+  const progressPercent = Math.min(100, Math.round((effectiveAnsweredCount / totalQuestions) * 100));
 
   return (
     <Modal
@@ -279,25 +444,43 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
           <div className="space-y-5 animate-in fade-in duration-200">
             {/* Grid de Métricas Principais */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 sm:gap-4">
-              {/* Card 1: Progresso RTRS */}
-              <div className="bg-gradient-to-br from-emerald-50/70 to-emerald-100/30 p-4 rounded-xl border border-emerald-200/60 shadow-xs">
-                <div className="flex items-center justify-between text-xs font-bold text-emerald-800 mb-2">
-                  <span className="flex items-center gap-1.5">
-                    <ShieldCheck className="w-4 h-4 text-[#1B7547]" />
-                    Questionário RTRS
+              {/* Card 1: Progresso RTRS com Contadores Detalhados */}
+              <div className="bg-gradient-to-br from-emerald-50/70 to-emerald-100/30 p-4 rounded-xl border border-emerald-200/60 shadow-xs flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between text-xs font-bold text-emerald-800 mb-2">
+                    <span className="flex items-center gap-1.5">
+                      <ShieldCheck className="w-4 h-4 text-[#1B7547]" />
+                      Questionário RTRS
+                    </span>
+                    <span className="font-mono text-sm text-[#1B7547]">{progressPercent}%</span>
+                  </div>
+                  <div className="w-full bg-emerald-200/60 h-2.5 rounded-full overflow-hidden mb-2">
+                    <div 
+                      className="bg-[#1B7547] h-full rounded-full transition-all duration-500" 
+                      style={{ width: `${Math.max(effectiveAnsweredCount > 0 ? 5 : 0, progressPercent)}%` }}
+                    />
+                  </div>
+                  <p className="text-[11px] text-emerald-700 font-medium flex justify-between mb-2">
+                    <span>Respondidos:</span>
+                    <strong className="font-mono">{effectiveAnsweredCount} / {totalQuestions} critérios</strong>
+                  </p>
+                </div>
+
+                {/* Badges de Contadores Conforme / Não Conforme / Não se Aplica */}
+                <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-emerald-200/60">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100/90 text-emerald-800 border border-emerald-300/80 shadow-2xs" title="Critérios Conformes">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
+                    <span>{conformesCount} Conformes</span>
                   </span>
-                  <span className="font-mono text-sm text-[#1B7547]">{progressPercent}%</span>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-red-100/90 text-red-800 border border-red-300/80 shadow-2xs" title="Critérios Não Conformes">
+                    <AlertCircle className="w-3 h-3 text-red-600 shrink-0" />
+                    <span>{naoConformesCount} Não Conf.</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-300/80 shadow-2xs" title="Não se Aplica">
+                    <MinusCircle className="w-3 h-3 text-slate-500 shrink-0" />
+                    <span>{naoSeAplicaCount} N/A</span>
+                  </span>
                 </div>
-                <div className="w-full bg-emerald-200/60 h-2.5 rounded-full overflow-hidden mb-2">
-                  <div 
-                    className="bg-[#1B7547] h-full rounded-full transition-all duration-500" 
-                    style={{ width: `${Math.max(5, progressPercent)}%` }}
-                  />
-                </div>
-                <p className="text-[11px] text-emerald-700 font-medium flex justify-between">
-                  <span>Respondidos:</span>
-                  <strong className="font-mono">{answeredCount} / {totalQuestions} critérios</strong>
-                </p>
               </div>
 
               {/* Card 2: Agendamento */}
@@ -446,8 +629,12 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
         {activeTab === 'criterios' && (
           <div className="space-y-3.5 max-h-[55vh] overflow-y-auto pr-1 animate-in fade-in duration-200">
             {displayCriterios.length === 0 ? (
-              <div className="text-center py-10 bg-slate-50 rounded-xl border border-dashed border-slate-200 text-slate-400 text-xs font-medium">
-                Nenhum critério com evidência anexada registrado para esta auditoria ainda.
+              <div className="text-center py-12 px-4 bg-slate-50 rounded-xl border border-dashed border-slate-200 text-slate-500 text-xs font-medium space-y-2">
+                <ClipboardList className="w-8 h-8 text-slate-400 mx-auto mb-1 opacity-60" />
+                <p className="font-bold text-slate-700 text-sm">Nenhum critério avaliado ainda</p>
+                <p className="text-slate-500 max-w-sm mx-auto">
+                  Inicie ou continue a vistoria RTRS desta fazenda para preencher as respostas do questionário e anexar as evidências técnicas.
+                </p>
               </div>
             ) : (
               displayCriterios.map((crit) => (
@@ -553,7 +740,7 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
             >
               <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
               <Sparkles className="w-4 h-4 transition-transform group-hover:rotate-12 duration-300" />
-              <span>{answeredCount > 0 ? 'Continuar Questionário RTRS' : 'Iniciar Vistoria RTRS'}</span>
+              <span>{effectiveAnsweredCount > 0 ? 'Continuar Questionário RTRS' : 'Iniciar Vistoria RTRS'}</span>
             </button>
           </div>
         </div>

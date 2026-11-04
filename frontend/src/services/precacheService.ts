@@ -323,7 +323,7 @@ export async function prepareFieldModeData(user?: any): Promise<PrecacheResult> 
     try {
       const { data: respData, error: rErr } = await supabase
         .from('respostas_auditoria')
-        .select('auditoria_id, pergunta_id, conforme, observacoes, evidencia_url, updated_at');
+        .select('auditoria_id, pergunta_id, conforme, nao_se_aplica, observacoes, evidencia_url, updated_at');
 
       if (!rErr && respData) {
         respostasCount = respData.length;
