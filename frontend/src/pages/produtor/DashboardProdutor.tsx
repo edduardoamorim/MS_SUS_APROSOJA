@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { MapPin, Plus, AlertTriangle, CheckCircle, Search, ShieldAlert, Loader2, Sparkles, ClipboardList, Clock, CheckCircle2, Image as ImageIcon, FolderOpen, FileText, Trash2, X, Eye, Download, ExternalLink, Compass } from 'lucide-react';
+import { MapPin, Plus, AlertTriangle, CheckCircle, Search, ShieldAlert, Loader2, Sparkles, ClipboardList, Clock, CheckCircle2, Image as ImageIcon, FolderOpen, FileText, Trash2, X, Eye, Download, ExternalLink, Compass, Building2, ShieldCheck } from 'lucide-react';
 import MapView from '../../components/map/MapView';
 import type { FeatureCollection, Feature, Polygon } from 'geojson';
 import QuestionarioRTRS from '../../components/auditoria/QuestionarioRTRS';
@@ -740,6 +740,12 @@ export default function DashboardProdutor() {
     }
   };
 
+  const handleOpenResolutionModal = (pend: any) => {
+    setSelectedPendency(pend);
+    setResolucaoTexto(pend.resolucao_descricao || '');
+    setEvidenciaUrl(pend.evidencia_url || '');
+  };
+
   const handleSubmitResolution = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPendency) return;
@@ -794,28 +800,29 @@ export default function DashboardProdutor() {
 
   return (
     <div className="space-y-6 animate-fade-in-up max-w-7xl mx-auto">
-      {/* Header Executivo do Produtor com Motion */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-3xl border border-slate-200/80 shadow-xs">
+      {/* Header Executivo do Produtor com Motion e Tipografia Fluida */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 sm:p-6 rounded-2xl sm:rounded-3xl border border-slate-200/80 shadow-xs">
         <div>
-          <div className="flex flex-wrap items-center gap-3 mb-2">
-            <div className="inline-flex items-center gap-2 bg-[#1B7547]/10 text-[#1B7547] px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-2">
+            <div className="inline-flex items-center gap-1.5 sm:gap-2 bg-[#1B7547]/10 text-[#1B7547] px-2.5 sm:px-3 py-1 rounded-full text-[11px] sm:text-xs font-extrabold uppercase tracking-wider">
               <MapPin className="w-3.5 h-3.5" />
               <span>Painel do Produtor Rural</span>
             </div>
-            <span className="px-3 py-1 bg-emerald-50 border border-emerald-200/80 text-emerald-800 rounded-full text-xs font-extrabold uppercase tracking-wider flex items-center gap-1.5 shadow-2xs">
+            <span className="px-2.5 sm:px-3 py-1 bg-emerald-50 border border-emerald-200/80 text-emerald-800 rounded-full text-[11px] sm:text-xs font-extrabold uppercase tracking-wider flex items-center gap-1.5 shadow-2xs">
               <span className="w-2 h-2 rounded-full bg-[#1B7547] animate-pulse"></span>
               Etapa Atual: {activeEtapaName}
             </span>
           </div>
-          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">{content.titulo}</h1>
-          <p className="text-slate-500 mt-1 text-sm font-medium">{content.subtitulo}</p>
+          <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">{content.titulo}</h1>
+          <p className="text-slate-500 mt-1 text-xs sm:text-sm font-medium">{content.subtitulo}</p>
         </div>
         
-        {/* Tab Navigation com Motion Design */}
-        <div className="bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 inline-flex flex-wrap gap-2 shadow-2xs shrink-0">
+        {/* Tab Navigation com Motion Design e Rolagem Suave no Mobile */}
+        <div className="w-full md:w-auto overflow-x-auto no-scrollbar bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 flex md:inline-flex gap-1.5 sm:gap-2 shadow-2xs shrink-0">
           <button
+            type="button"
             onClick={() => setActiveTab('mapa')}
-            className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
+            className={`whitespace-nowrap px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
               activeTab === 'mapa' 
                 ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
                 : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
@@ -825,8 +832,9 @@ export default function DashboardProdutor() {
           </button>
           
           <button
+            type="button"
             onClick={() => setActiveTab('pendencias')}
-            className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
+            className={`whitespace-nowrap px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
               activeTab === 'pendencias' 
                 ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
                 : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
@@ -842,8 +850,9 @@ export default function DashboardProdutor() {
           </button>
 
           <button
+            type="button"
             onClick={() => setActiveTab('ia')}
-            className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
+            className={`whitespace-nowrap px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
               activeTab === 'ia' 
                 ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-600/20 scale-102' 
                 : 'text-slate-600 hover:text-indigo-600 hover:bg-white/60'
@@ -854,8 +863,9 @@ export default function DashboardProdutor() {
           </button>
 
           <button
+            type="button"
             onClick={() => setActiveTab('documentacao')}
-            className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
+            className={`whitespace-nowrap px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
               activeTab === 'documentacao' 
                 ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
                 : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
@@ -864,6 +874,76 @@ export default function DashboardProdutor() {
             <FolderOpen className="w-4 h-4" />
             <span>Documentação & Evidências</span>
           </button>
+        </div>
+      </div>
+
+      {/* Grid de Estatísticas e Conformidade RTRS Responsivo */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Card 1: Fazendas */}
+        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs hover:shadow-sm transition-all flex items-center justify-between">
+          <div className="space-y-1">
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">Propriedades Ativas</span>
+            <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+              {properties.length || farmsData.features.length}
+            </p>
+            <span className="text-[11px] text-emerald-700 font-bold flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+              Cadastradas no Programa
+            </span>
+          </div>
+          <div className="p-3 bg-emerald-50 text-emerald-700 rounded-xl shrink-0">
+            <Building2 className="w-6 h-6" />
+          </div>
+        </div>
+
+        {/* Card 2: Score de Conformidade */}
+        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs hover:shadow-sm transition-all flex items-center justify-between">
+          <div className="space-y-1">
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">Conformidade RTRS</span>
+            <p className="text-2xl sm:text-3xl font-black text-[#1B7547] tracking-tight">
+              {(() => {
+                const total = pendencias.length;
+                if (total === 0) return '100%';
+                const res = pendencias.filter(p => p.status === 'Resolvido' || p.status === 'Em Análise').length;
+                return `${Math.round((res / total) * 100)}%`;
+              })()}
+            </p>
+            <span className="text-[11px] text-slate-500 font-medium">Adequação socioambiental</span>
+          </div>
+          <div className="p-3 bg-emerald-50 text-[#1B7547] rounded-xl shrink-0">
+            <ShieldCheck className="w-6 h-6" />
+          </div>
+        </div>
+
+        {/* Card 3: Pendências em Aberto */}
+        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs hover:shadow-sm transition-all flex items-center justify-between">
+          <div className="space-y-1">
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">Pendências Abertas</span>
+            <p className="text-2xl sm:text-3xl font-black text-amber-600 tracking-tight">
+              {pendencias.filter(p => p.status === 'Pendente').length}
+            </p>
+            <span className="text-[11px] text-amber-700 font-medium flex items-center gap-1">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+              Requerem ação do produtor
+            </span>
+          </div>
+          <div className="p-3 bg-amber-50 text-amber-700 rounded-xl shrink-0">
+            <ClipboardList className="w-6 h-6" />
+          </div>
+        </div>
+
+        {/* Card 4: Documentos & Evidências */}
+        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs hover:shadow-sm transition-all flex items-center justify-between">
+          <div className="space-y-1">
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">Documentação Vigente</span>
+            <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
+              {documentos.length}
+            </p>
+            <span className="text-[11px] text-slate-500 font-medium">Arquivos e evidências RTRS</span>
+          </div>
+          <div className="p-3 bg-slate-100 text-slate-700 rounded-xl shrink-0">
+            <FolderOpen className="w-6 h-6" />
+          </div>
         </div>
       </div>
 
@@ -1122,91 +1202,166 @@ export default function DashboardProdutor() {
                             Nenhuma pendência associada a esta fazenda! Sua propriedade está em conformidade. 🎉
                           </div>
                         ) : (
-                          propPends.map(pend => (
-                            <div key={pend.id} className="p-5 flex flex-col md:flex-row md:items-start justify-between gap-4 group">
-                              <div className="space-y-2 flex-1">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded uppercase tracking-wider border ${
-                                    pend.status === 'Pendente' ? 'bg-amber-100/50 text-amber-800 border-amber-200' :
-                                    pend.status === 'Em Análise' ? 'bg-indigo-100/50 text-indigo-800 border-indigo-200' :
-                                    'bg-emerald-100/50 text-emerald-800 border-emerald-200'
-                                  }`}>
-                                    {pend.status}
-                                  </span>
-                                  {pend.prazo && (
-                                    <span className="text-xs text-muted-foreground flex items-center gap-1 font-medium">
-                                      <Clock className="w-3.5 h-3.5" /> Prazo: {new Date(pend.prazo).toLocaleDateString('pt-BR')}
+                          <>
+                            {/* Padrão Adaptativo Mobile: Cards Empilhados com Botões Confortáveis */}
+                            <div className="block md:hidden divide-y divide-border">
+                              {propPends.map(pend => (
+                                <div key={`mob-${pend.id}`} className="p-4 space-y-3">
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded uppercase tracking-wider border ${
+                                      pend.status === 'Pendente' ? 'bg-amber-100/50 text-amber-800 border-amber-200' :
+                                      pend.status === 'Em Análise' ? 'bg-indigo-100/50 text-indigo-800 border-indigo-200' :
+                                      'bg-emerald-100/50 text-emerald-800 border-emerald-200'
+                                    }`}>
+                                      {pend.status}
                                     </span>
-                                  )}
-                                  {(() => {
-                                    const label = getRemainingTimeLabel(pend.prazo, pend.status);
-                                    if (!label) return null;
-                                    return (
-                                      <span className={`text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${label.className}`}>
-                                        {label.text}
+                                    {pend.prazo && (
+                                      <span className="text-xs text-muted-foreground flex items-center gap-1 font-medium">
+                                        <Clock className="w-3.5 h-3.5" /> Prazo: {new Date(pend.prazo).toLocaleDateString('pt-BR')}
                                       </span>
-                                    );
-                                  })()}
-                                </div>
-                                <h4 className="font-bold text-foreground text-base tracking-tight">{pend.titulo}</h4>
-                                <p className="text-sm text-muted-foreground leading-relaxed font-medium">{pend.descricao}</p>
-                                
-                                {pend.motivo_rejeicao && pend.status === 'Pendente' && (
-                                  <div className="mt-3 p-3.5 bg-amber-50/90 rounded-xl border border-amber-200 text-xs text-amber-950 space-y-1.5 shadow-sm">
-                                    <div className="font-bold text-amber-900 flex items-center gap-1.5 text-xs">
-                                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                                      Ajustes Solicitados pelo Técnico / Motivo da Rejeição:
-                                    </div>
-                                    <div className="italic text-amber-950 font-medium bg-amber-100/50 p-2 rounded-lg border border-amber-200/50">
-                                      "{pend.motivo_rejeicao}"
-                                    </div>
-                                    <p className="text-[11px] text-amber-800 font-medium">
-                                      Por favor, realize os ajustes acima e clique em "Resolver" para reenviar a comprovação.
-                                    </p>
+                                    )}
                                   </div>
-                                )}
 
-                                {pend.status === 'Em Análise' && (
-                                  <div className="mt-3 p-3 bg-indigo-50/50 rounded-lg border border-indigo-100 text-xs text-indigo-900 space-y-1">
-                                    <div className="font-semibold">Resolução Enviada:</div>
-                                    <div className="italic">"{pend.resolucao_descricao}"</div>
-                                    {pend.evidencia_url && (
-                                      <div className="mt-1">
+                                  <div>
+                                    <h4 className="font-bold text-foreground text-sm tracking-tight">{pend.titulo}</h4>
+                                    <p className="text-xs text-muted-foreground leading-relaxed mt-1">{pend.descricao}</p>
+                                  </div>
+
+                                  {pend.motivo_rejeicao && pend.status === 'Pendente' && (
+                                    <div className="p-3 bg-amber-50/90 rounded-xl border border-amber-200 text-xs text-amber-950 space-y-1">
+                                      <div className="font-bold text-amber-900 flex items-center gap-1.5 text-xs">
+                                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                                        Ajustes Solicitados pelo Técnico:
+                                      </div>
+                                      <div className="italic text-amber-950 font-medium bg-amber-100/50 p-2 rounded-lg border border-amber-200/50">
+                                        "{pend.motivo_rejeicao}"
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {pend.status === 'Em Análise' && (
+                                    <div className="p-3 bg-indigo-50/50 rounded-lg border border-indigo-100 text-xs text-indigo-900 space-y-1">
+                                      <div className="font-semibold">Resolução Enviada:</div>
+                                      <div className="italic">"{pend.resolucao_descricao}"</div>
+                                      {pend.evidencia_url && (
                                         <button
                                           type="button"
                                           onClick={() => handleOpenEvidencia(pend.evidencia_url)}
-                                          className="text-indigo-700 underline font-semibold hover:text-indigo-950 flex items-center gap-1.5 cursor-pointer"
+                                          className="text-indigo-700 underline font-semibold hover:text-indigo-950 flex items-center gap-1.5 cursor-pointer mt-1"
                                         >
                                           <Eye className="w-4 h-4 text-indigo-600 shrink-0" />
                                           <span>Ver Evidência Anexada</span>
                                         </button>
-                                      </div>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {/* Botões Mobile com Largura Total e Altura Confortável (min-h-[44px]) */}
+                                  <div className="flex flex-col gap-2 pt-2 border-t border-border/40">
+                                    {pend.status === 'Pendente' && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenResolutionModal(pend)}
+                                        className="w-full min-h-[44px] px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-all shadow-sm active:scale-[0.98] cursor-pointer flex items-center justify-center gap-1.5"
+                                      >
+                                        <CheckCircle2 className="w-4 h-4" />
+                                        <span>Resolver Pendência (Anexar Evidência)</span>
+                                      </button>
                                     )}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAIPlanForPendency(pend)}
+                                      className="w-full min-h-[44px] px-3.5 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs rounded-xl transition-all shadow-2xs active:scale-[0.98] cursor-pointer flex items-center justify-center gap-1.5"
+                                    >
+                                      <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                                      <span>Gerar Plano de Ação IA</span>
+                                    </button>
                                   </div>
-                                )}
-                              </div>
-
-                              <div className="flex md:flex-col items-center gap-2 shrink-0">
-                                {pend.status === 'Pendente' && (
-                                  <button
-                                    onClick={() => handleOpenResolutionModal(pend)}
-                                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-all shadow-sm active:scale-[0.98] cursor-pointer flex items-center gap-1.5"
-                                  >
-                                    <CheckCircle2 className="w-4 h-4" />
-                                    Resolver
-                                  </button>
-                                )}
-
-                                <button
-                                  onClick={() => handleAIPlanForPendency(pend)}
-                                  className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs rounded-xl transition-all shadow-2xs active:scale-[0.98] cursor-pointer flex items-center gap-1.5"
-                                >
-                                  <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                                  Plano IA
-                                </button>
-                              </div>
+                                </div>
+                              ))}
                             </div>
-                          ))
+
+                            {/* Padrão Adaptativo Desktop: Tabela Estruturada */}
+                            <div className="hidden md:block overflow-x-auto">
+                              <table className="w-full text-left text-xs border-collapse">
+                                <thead className="bg-slate-50 border-b border-border text-slate-600 font-extrabold uppercase tracking-wider text-[11px]">
+                                  <tr>
+                                    <th className="px-5 py-3.5">Status & Prazo</th>
+                                    <th className="px-5 py-3.5">Exigência / Descrição</th>
+                                    <th className="px-5 py-3.5 text-right">Ações de Resolução</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-border bg-white">
+                                  {propPends.map(pend => (
+                                    <tr key={`desk-${pend.id}`} className="hover:bg-slate-50/50 transition-colors">
+                                      <td className="px-5 py-4 align-top w-48">
+                                        <div className="space-y-1.5">
+                                          <span className={`inline-block text-[10px] font-bold px-2.5 py-0.5 rounded uppercase tracking-wider border ${
+                                            pend.status === 'Pendente' ? 'bg-amber-100/50 text-amber-800 border-amber-200' :
+                                            pend.status === 'Em Análise' ? 'bg-indigo-100/50 text-indigo-800 border-indigo-200' :
+                                            'bg-emerald-100/50 text-emerald-800 border-emerald-200'
+                                          }`}>
+                                            {pend.status}
+                                          </span>
+                                          {pend.prazo && (
+                                            <p className="text-[11px] text-muted-foreground flex items-center gap-1 font-medium">
+                                              <Clock className="w-3.5 h-3.5" /> {new Date(pend.prazo).toLocaleDateString('pt-BR')}
+                                            </p>
+                                          )}
+                                        </div>
+                                      </td>
+                                      <td className="px-5 py-4 align-top">
+                                        <h4 className="font-bold text-foreground text-sm tracking-tight">{pend.titulo}</h4>
+                                        <p className="text-xs text-muted-foreground leading-relaxed mt-1">{pend.descricao}</p>
+                                        {pend.motivo_rejeicao && pend.status === 'Pendente' && (
+                                          <div className="mt-2 p-2.5 bg-amber-50/90 rounded-lg border border-amber-200 text-xs text-amber-950">
+                                            <span className="font-bold">Ajustes Solicitados: </span>"{pend.motivo_rejeicao}"
+                                          </div>
+                                        )}
+                                        {pend.status === 'Em Análise' && (
+                                          <div className="mt-2 p-2.5 bg-indigo-50/50 rounded-lg border border-indigo-100 text-xs text-indigo-900">
+                                            <span className="font-semibold">Resolução: </span>"{pend.resolucao_descricao}"
+                                            {pend.evidencia_url && (
+                                              <button
+                                                type="button"
+                                                onClick={() => handleOpenEvidencia(pend.evidencia_url)}
+                                                className="text-indigo-700 underline font-semibold hover:text-indigo-950 flex items-center gap-1 cursor-pointer mt-1"
+                                              >
+                                                <Eye className="w-3.5 h-3.5 text-indigo-600" />
+                                                <span>Ver Evidência</span>
+                                              </button>
+                                            )}
+                                          </div>
+                                        )}
+                                      </td>
+                                      <td className="px-5 py-4 align-top text-right w-56">
+                                        <div className="flex flex-col items-end gap-2">
+                                          {pend.status === 'Pendente' && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleOpenResolutionModal(pend)}
+                                              className="w-full px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-all shadow-sm active:scale-[0.98] cursor-pointer flex items-center justify-center gap-1.5"
+                                            >
+                                              <CheckCircle2 className="w-4 h-4" />
+                                              <span>Resolver</span>
+                                            </button>
+                                          )}
+                                          <button
+                                            type="button"
+                                            onClick={() => handleAIPlanForPendency(pend)}
+                                            className="w-full px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs rounded-xl transition-all shadow-2xs active:scale-[0.98] cursor-pointer flex items-center justify-center gap-1.5"
+                                          >
+                                            <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                                            <span>Plano IA</span>
+                                          </button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </>
                         )}
                       </div>
                     </div>
@@ -1340,13 +1495,13 @@ export default function DashboardProdutor() {
       {activeTab === 'documentacao' && (
         <div className="space-y-6 animate-fade-in-up max-w-6xl mx-auto">
           {/* Cabeçalho */}
-          <div className="bg-card p-6 rounded-2xl border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+          <div className="bg-card p-4 sm:p-6 rounded-2xl border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
-              <h2 className="text-2xl font-bold text-foreground flex items-center gap-2">
-                <FolderOpen className="w-6 h-6 text-emerald-600" />
-                Documentação Vigente da Propriedade
+              <h2 className="text-xl sm:text-2xl font-bold text-foreground flex items-center gap-2">
+                <FolderOpen className="w-6 h-6 text-emerald-600 shrink-0" />
+                <span>Documentação Vigente da Propriedade</span>
               </h2>
-              <p className="text-muted-foreground text-sm mt-1">
+              <p className="text-muted-foreground text-xs sm:text-sm mt-1">
                 Documentos e comprovantes de conformidade organizados por Princípios RTRS e categoria. Exibindo apenas a última versão vigente de cada critério.
               </p>
             </div>
@@ -1360,7 +1515,7 @@ export default function DashboardProdutor() {
                 setDocFormData(prev => ({ ...prev, propriedade_id: properties[0].id }));
                 setShowUploadDocModal(true);
               }}
-              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl font-bold text-sm transition-all shadow-sm cursor-pointer shrink-0"
+              className="w-full md:w-auto min-h-[44px] flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all shadow-sm cursor-pointer shrink-0"
             >
               <Plus className="w-4 h-4" />
               <span>Anexar Novo Documento</span>
@@ -1373,14 +1528,14 @@ export default function DashboardProdutor() {
             </div>
           ) : (
             <div className="space-y-6">
-              {/* SEÇÃO 1: DOCUMENTOS GERAIS DA FAZENDA (ÚLTIMA VERSÃO) */}
-              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                  <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
-                    <FileText className="w-5 h-5 text-emerald-700" />
-                    Documentos Gerais da Fazenda (Últimas Versões)
+              {/* SEÇÃO 1: DOCUMENTOS GERAIS DA FAZENDA (PADRÃO ADAPTATIVO: CARDS NO MOBILE / TABELA NO DESKTOP) */}
+              <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-3 gap-2">
+                  <h3 className="text-sm sm:text-base font-extrabold text-slate-900 flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-emerald-700 shrink-0" />
+                    <span>Documentos Gerais da Fazenda (Últimas Versões)</span>
                   </h3>
-                  <span className="text-xs font-bold text-slate-500 bg-slate-100 px-3 py-1 rounded-full">
+                  <span className="text-xs font-bold text-slate-500 bg-slate-100 px-3 py-1 rounded-full w-fit">
                     CAR, LAU, EPI e Laudos
                   </span>
                 </div>
@@ -1407,10 +1562,11 @@ export default function DashboardProdutor() {
                   }
 
                   return (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {latestGenDocs.map((doc) => (
-                        <div key={doc.id} className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between space-y-3">
-                          <div>
+                    <>
+                      {/* Mobile: Cards Empilhados com Botões Confortáveis */}
+                      <div className="block md:hidden space-y-3">
+                        {latestGenDocs.map((doc) => (
+                          <div key={`mob-gen-${doc.id}`} className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
                             <div className="flex items-center justify-between gap-2">
                               <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
                                 {doc.categoria}
@@ -1419,44 +1575,102 @@ export default function DashboardProdutor() {
                                 {new Date(doc.data).toLocaleDateString('pt-BR')}
                               </span>
                             </div>
-                            <h4 className="text-xs font-bold text-slate-900 mt-2 line-clamp-1">{doc.nome}</h4>
-                            <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.5 rounded mt-1 inline-block">✓ Versão Vigente</span>
-                          </div>
 
-                          <div className="flex items-center justify-between pt-2 border-t border-slate-200/60">
-                            <button
-                              type="button"
-                              onClick={() => handleOpenEvidencia(doc.arquivo_url)}
-                              className="text-xs text-emerald-700 hover:text-emerald-900 font-extrabold underline flex items-center gap-1 cursor-pointer"
-                            >
-                              <Eye className="w-3.5 h-3.5 text-emerald-600" />
-                              <span>Ver Arquivo</span>
-                            </button>
+                            <div>
+                              <h4 className="text-xs font-bold text-slate-900">{doc.nome}</h4>
+                              <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.5 rounded mt-1 inline-block">✓ Versão Vigente</span>
+                            </div>
 
-                            {doc.podeDeletar && (
+                            <div className="flex flex-col gap-2 pt-2 border-t border-slate-200/60">
                               <button
                                 type="button"
-                                onClick={() => handleDeleteDoc(doc.id)}
-                                className="p-1 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
-                                title="Excluir"
+                                onClick={() => handleOpenEvidencia(doc.arquivo_url)}
+                                className="w-full min-h-[44px] text-xs text-emerald-700 bg-white border border-emerald-300 hover:bg-emerald-50 rounded-xl font-bold flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                <Eye className="w-4 h-4 text-emerald-600" />
+                                <span>Ver Arquivo / Documento</span>
                               </button>
-                            )}
+
+                              {doc.podeDeletar && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteDoc(doc.id)}
+                                  className="w-full min-h-[40px] text-xs text-red-600 bg-red-50/50 hover:bg-red-100 border border-red-200 rounded-xl font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>Excluir Documento</span>
+                                </button>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+
+                      {/* Desktop: Tabela Estruturada */}
+                      <div className="hidden md:block overflow-x-auto">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead className="bg-slate-50 border-b border-border text-slate-600 font-extrabold uppercase tracking-wider text-[11px]">
+                            <tr>
+                              <th className="px-4 py-3">Documento</th>
+                              <th className="px-4 py-3">Categoria</th>
+                              <th className="px-4 py-3">Data</th>
+                              <th className="px-4 py-3">Status</th>
+                              <th className="px-4 py-3 text-right">Ações</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border bg-white">
+                            {latestGenDocs.map((doc) => (
+                              <tr key={`desk-gen-${doc.id}`} className="hover:bg-slate-50/50 transition-colors">
+                                <td className="px-4 py-3 font-bold text-slate-900">{doc.nome}</td>
+                                <td className="px-4 py-3">
+                                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                    {doc.categoria}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-slate-500 font-medium">{new Date(doc.data).toLocaleDateString('pt-BR')}</td>
+                                <td className="px-4 py-3">
+                                  <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                                    ✓ Versão Vigente
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-right">
+                                  <div className="flex items-center justify-end gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenEvidencia(doc.arquivo_url)}
+                                      className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-bold transition-all shadow-2xs flex items-center gap-1 cursor-pointer"
+                                    >
+                                      <Eye className="w-3.5 h-3.5 text-emerald-600" />
+                                      <span>Ver Arquivo</span>
+                                    </button>
+                                    {doc.podeDeletar && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeleteDoc(doc.id)}
+                                        className="p-1.5 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                                        title="Excluir"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
                   );
                 })()}
               </div>
 
-              {/* SEÇÃO 2: EVIDÊNCIAS ORGANIZADAS PELOS 5 PRINCÍPIOS RTRS (APENAS O ÚLTIMO ANEXADO POR CRITÉRIO) */}
+              {/* SEÇÃO 2: EVIDÊNCIAS ORGANIZADAS PELOS 5 PRINCÍPIOS RTRS (PADRÃO ADAPTATIVO: CARDS NO MOBILE / TABELA NO DESKTOP) */}
               <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-extrabold text-slate-900 flex items-center gap-2">
-                    <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                    Evidências Organizadas por Princípios RTRS
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                  <h3 className="text-base sm:text-lg font-extrabold text-slate-900 flex items-center gap-2">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                    <span>Evidências Organizadas por Princípios RTRS</span>
                   </h3>
                   <span className="text-xs text-slate-500 font-bold">Apenas a última versão de cada critério</span>
                 </div>
@@ -1484,14 +1698,14 @@ export default function DashboardProdutor() {
 
                   return (
                     <div key={principio.num} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                      <div className="bg-slate-50 px-6 py-3.5 border-b border-slate-200 flex items-center justify-between">
+                      <div className="bg-slate-50 px-4 sm:px-6 py-3.5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                         <span className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-2">
-                          <span className="w-5 h-5 rounded-full bg-emerald-700 text-white flex items-center justify-center text-[10px]">
+                          <span className="w-5 h-5 rounded-full bg-emerald-700 text-white flex items-center justify-center text-[10px] shrink-0">
                             {principio.num}
                           </span>
-                          {principio.nome}
+                          <span className="truncate">{principio.nome}</span>
                         </span>
-                        <span className="text-xs font-bold text-slate-500 bg-white px-2.5 py-0.5 rounded-full border border-slate-200">
+                        <span className="text-xs font-bold text-slate-500 bg-white px-2.5 py-0.5 rounded-full border border-slate-200 w-fit shrink-0">
                           {principioDocs.length} critério(s) com evidência
                         </span>
                       </div>
@@ -1502,11 +1716,12 @@ export default function DashboardProdutor() {
                             Nenhuma evidência anexada para os critérios deste princípio ainda.
                           </div>
                         ) : (
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            {principioDocs.map((doc) => (
-                              <div key={doc.id} className="p-3.5 bg-slate-50/70 rounded-xl border border-slate-200 flex items-center justify-between gap-3 hover:bg-slate-100/60 transition-colors">
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-1.5 mb-1">
+                          <>
+                            {/* Mobile: Cards Empilhados com Botão Confortável min-h-[44px] */}
+                            <div className="block md:hidden space-y-3">
+                              {principioDocs.map((doc) => (
+                                <div key={`mob-p-${doc.id}`} className="p-3.5 bg-slate-50/70 rounded-xl border border-slate-200 space-y-2.5">
+                                  <div className="flex items-center justify-between gap-1.5">
                                     <span className="text-[9px] font-black uppercase bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded border border-emerald-200">
                                       Última Versão
                                     </span>
@@ -1514,21 +1729,61 @@ export default function DashboardProdutor() {
                                       {new Date(doc.data).toLocaleDateString('pt-BR')}
                                     </span>
                                   </div>
-                                  <h4 className="text-xs font-bold text-slate-900 truncate">{doc.nome}</h4>
-                                  <p className="text-[11px] text-slate-500 truncate">{doc.origem}</p>
+                                  <div>
+                                    <h4 className="text-xs font-bold text-slate-900">{doc.nome}</h4>
+                                    <p className="text-[11px] text-slate-500">{doc.origem}</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEvidencia(doc.arquivo_url)}
+                                    className="w-full min-h-[44px] bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-800 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                                  >
+                                    <Eye className="w-4 h-4 text-emerald-600" />
+                                    <span>Ver Evidência Anexada</span>
+                                  </button>
                                 </div>
+                              ))}
+                            </div>
 
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenEvidencia(doc.arquivo_url)}
-                                  className="px-3 py-1.5 bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-800 rounded-lg text-xs font-bold transition-all shadow-xs shrink-0 flex items-center gap-1 cursor-pointer"
-                                >
-                                  <Eye className="w-3.5 h-3.5 text-emerald-600" />
-                                  <span>Ver Evidência</span>
-                                </button>
-                              </div>
-                            ))}
-                          </div>
+                            {/* Desktop: Tabela de Evidências */}
+                            <div className="hidden md:block overflow-x-auto">
+                              <table className="w-full text-left text-xs border-collapse">
+                                <thead className="bg-slate-50 border-b border-border text-slate-600 font-extrabold uppercase tracking-wider text-[11px]">
+                                  <tr>
+                                    <th className="px-4 py-3">Critério RTRS</th>
+                                    <th className="px-4 py-3">Origem</th>
+                                    <th className="px-4 py-3">Data</th>
+                                    <th className="px-4 py-3">Status</th>
+                                    <th className="px-4 py-3 text-right">Ação</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-border bg-white">
+                                  {principioDocs.map((doc) => (
+                                    <tr key={`desk-p-${doc.id}`} className="hover:bg-slate-50/50 transition-colors">
+                                      <td className="px-4 py-3 font-bold text-slate-900">{doc.nome}</td>
+                                      <td className="px-4 py-3 text-slate-500 font-medium">{doc.origem}</td>
+                                      <td className="px-4 py-3 text-slate-500 font-medium">{new Date(doc.data).toLocaleDateString('pt-BR')}</td>
+                                      <td className="px-4 py-3">
+                                        <span className="text-[10px] font-black uppercase bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded border border-emerald-200">
+                                          Última Versão
+                                        </span>
+                                      </td>
+                                      <td className="px-4 py-3 text-right">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleOpenEvidencia(doc.arquivo_url)}
+                                          className="px-3.5 py-1.5 bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-800 rounded-lg text-xs font-bold transition-all shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+                                        >
+                                          <Eye className="w-3.5 h-3.5 text-emerald-600" />
+                                          <span>Ver Evidência</span>
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </>
                         )}
                       </div>
                     </div>

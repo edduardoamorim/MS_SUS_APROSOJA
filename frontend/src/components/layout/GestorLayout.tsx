@@ -87,7 +87,7 @@ export default function GestorLayout() {
 
       {/* Área de Conteúdo Principal com Animação de Entrada */}
       <main className="flex-1 min-w-0">
-        <div key={location.pathname} className="bg-white rounded-3xl p-6 sm:p-8 min-h-[calc(100vh-8rem)] border border-slate-200 shadow-sm animate-fade-in-up transition-all">
+        <div key={location.pathname} className="bg-white rounded-2xl sm:rounded-3xl p-3.5 sm:p-6 lg:p-8 min-h-[calc(100vh-8rem)] border border-slate-200 shadow-sm animate-fade-in-up transition-all pb-safe">
           <Outlet />
         </div>
       </main>

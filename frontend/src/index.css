@@ -199,6 +199,22 @@ input[type="password"]::-webkit-textfield-decoration-container {
   display: none !important;
 }
 
+/* Mobile Safe-Area and Scrollbar Utilities */
+.pb-safe {
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom, 1.5rem));
+}
+
+.no-scrollbar::-webkit-scrollbar,
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar,
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 /* Toast Animations */
 @keyframes slideIn {
   from {

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { 
   FolderOpen, Search, Filter, Plus, FileText, Image as ImageIcon, 
-  Trash2, Eye, Building2, CheckCircle2, ShieldCheck, Clock, X, Loader2, Download, ExternalLink 
+  Trash2, Eye, Building2, CheckCircle2, ShieldCheck, Clock, X, Loader2, Download, ExternalLink, LayoutGrid, Table 
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import Modal from '../../components/ui/Modal';
@@ -19,6 +19,7 @@ export default function GestorDocumentos() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPropId, setSelectedPropId] = useState('');
   const [selectedCategoria, setSelectedCategoria] = useState('');
+  const [viewMode, setViewMode] = useState<'auto' | 'cards' | 'table'>('auto');
 
   // Modais e Estados
   const [fotoAmpliada, setFotoAmpliada] = useState<string | null>(null);
@@ -414,7 +415,7 @@ export default function GestorDocumentos() {
           <select
             value={selectedPropId}
             onChange={(e) => setSelectedPropId(e.target.value)}
-            className="px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none cursor-pointer hover:bg-slate-100 transition-colors"
+            className="w-full sm:w-auto px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none cursor-pointer hover:bg-slate-100 transition-colors"
           >
             <option value="">Todas as Fazendas</option>
             {propriedades.map((p) => (
@@ -426,7 +427,7 @@ export default function GestorDocumentos() {
           <select
             value={selectedCategoria}
             onChange={(e) => setSelectedCategoria(e.target.value)}
-            className="px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none cursor-pointer hover:bg-slate-100 transition-colors"
+            className="w-full sm:w-auto px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none cursor-pointer hover:bg-slate-100 transition-colors"
           >
             <option value="">Todas as Categorias</option>
             <option value="CAR">CAR</option>
@@ -436,6 +437,36 @@ export default function GestorDocumentos() {
             <option value="Regularização">Regularização</option>
             <option value="Outros">Outros</option>
           </select>
+
+          {/* Seletor de Modo: Cards | Tabela */}
+          <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 w-full sm:w-auto justify-center">
+            <button
+              type="button"
+              onClick={() => setViewMode('cards')}
+              className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                viewMode === 'cards' || (viewMode === 'auto' && typeof window !== 'undefined' && window.innerWidth < 768)
+                  ? 'bg-white text-[#1B7547] shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="Exibir em Cards"
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              <span>Cards</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('table')}
+              className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                viewMode === 'table' || (viewMode === 'auto' && typeof window !== 'undefined' && window.innerWidth >= 768)
+                  ? 'bg-white text-[#1B7547] shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="Exibir em Tabela"
+            >
+              <Table className="w-3.5 h-3.5" />
+              <span>Tabela</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -453,26 +484,23 @@ export default function GestorDocumentos() {
             <p className="text-xs text-slate-400">Ajuste os filtros de busca para localizar arquivos.</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-black text-slate-500 uppercase tracking-wider">
-                  <th className="px-6 py-4">Documento / Critério</th>
-                  <th className="px-6 py-4">Propriedade</th>
-                  <th className="px-6 py-4">Categoria</th>
-                  <th className="px-6 py-4">Origem / Contexto</th>
-                  <th className="px-6 py-4">Data Envio</th>
-                  <th className="px-6 py-4 text-center">Arquivo</th>
-                  <th className="px-6 py-4 text-right">Ação</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-xs font-medium">
+          <>
+            {/* Modo Cards (Mobile por padrão, ou quando selecionado) */}
+            <div className={viewMode === 'cards' ? 'block' : viewMode === 'table' ? 'hidden' : 'block md:hidden'}>
+              <div className="divide-y divide-slate-100">
                 {docsFiltrados.map((doc) => (
-                  <tr key={doc.id} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="px-6 py-4 text-slate-900 font-bold">{doc.nome}</td>
-                    <td className="px-6 py-4 text-slate-700 font-semibold">{doc.fazendaNome}</td>
-                    <td className="px-6 py-4">
-                      <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                  <div key={doc.id} className="p-4 bg-white space-y-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="space-y-1 flex-1 min-w-0">
+                        <h3 className="font-bold text-slate-900 text-sm leading-snug break-words">
+                          {doc.nome}
+                        </h3>
+                        <p className="text-xs text-slate-600 font-medium flex items-center gap-1.5 truncate">
+                          <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span className="truncate">{doc.fazendaNome}</span>
+                        </p>
+                      </div>
+                      <span className={`shrink-0 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                         doc.categoria === 'CAR' ? 'bg-indigo-50 border border-indigo-200 text-indigo-700' :
                         doc.categoria === 'LAU' ? 'bg-blue-50 border border-blue-200 text-blue-700' :
                         doc.categoria === 'EPI' ? 'bg-amber-50 border border-amber-200 text-amber-700' :
@@ -482,51 +510,137 @@ export default function GestorDocumentos() {
                       }`}>
                         {doc.categoria}
                       </span>
-                    </td>
-                    <td className="px-6 py-4 text-slate-500 text-xs">{doc.origem}</td>
-                    <td className="px-6 py-4 text-slate-500 text-xs">
-                      {new Date(doc.data).toLocaleDateString('pt-BR')}
-                    </td>
-                    <td className="px-6 py-4 text-center">
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-[11px] bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                      <div>
+                        <span className="text-slate-400 block text-[10px] font-bold uppercase tracking-wider">Origem</span>
+                        <span className="text-slate-700 font-semibold truncate block">{doc.origem}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block text-[10px] font-bold uppercase tracking-wider">Data de Envio</span>
+                        <span className="text-slate-700 font-semibold flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-slate-400 shrink-0" />
+                          {new Date(doc.data).toLocaleDateString('pt-BR')}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
                       <button
                         type="button"
                         onClick={() => handleOpenEvidencia(doc.arquivo_url)}
-                        className="group/btn inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#1B7547]/10 hover:bg-[#1B7547]/20 text-[#1B7547] rounded-xl text-xs font-extrabold transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-[#1B7547]/10 hover:bg-[#1B7547]/20 text-[#1B7547] rounded-xl text-xs font-extrabold transition-all duration-200 active:scale-95 cursor-pointer"
                       >
                         {doc.arquivo_url?.toLowerCase().includes('.pdf') ? (
                           <>
-                            <FileText className="w-3.5 h-3.5 shrink-0 text-[#1B7547] transition-transform group-hover/btn:scale-110 duration-300" />
+                            <FileText className="w-3.5 h-3.5 shrink-0 text-[#1B7547]" />
                             <span>Abrir PDF</span>
                           </>
                         ) : (
                           <>
-                            <ImageIcon className="w-3.5 h-3.5 shrink-0 text-[#1B7547] transition-transform group-hover/btn:scale-110 duration-300" />
+                            <ImageIcon className="w-3.5 h-3.5 shrink-0 text-[#1B7547]" />
                             <span>Ver Imagem</span>
                           </>
                         )}
                       </button>
-                    </td>
-                    <td className="px-6 py-4 text-right">
+
                       {doc.podeDeletar ? (
                         <button
                           type="button"
                           onClick={() => setDeleteConfirmId(doc.id)}
-                          className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all duration-300 hover:scale-110 active:scale-90 cursor-pointer"
+                          className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all active:scale-90 cursor-pointer border border-slate-200"
                           title="Excluir documento"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
                       ) : (
-                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider bg-slate-100 px-2.5 py-1 rounded-lg">
+                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider bg-slate-100 px-2.5 py-1.5 rounded-lg border border-slate-200">
                           Vinculado
                         </span>
                       )}
-                    </td>
-                  </tr>
+                    </div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          </div>
+              </div>
+            </div>
+
+            {/* Modo Tabela (Desktop por padrão, ou quando selecionado) */}
+            <div className={viewMode === 'table' ? 'block overflow-x-auto' : viewMode === 'cards' ? 'hidden' : 'hidden md:block overflow-x-auto'}>
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-black text-slate-500 uppercase tracking-wider">
+                    <th className="px-6 py-4">Documento / Critério</th>
+                    <th className="px-6 py-4">Propriedade</th>
+                    <th className="px-6 py-4">Categoria</th>
+                    <th className="px-6 py-4">Origem / Contexto</th>
+                    <th className="px-6 py-4">Data Envio</th>
+                    <th className="px-6 py-4 text-center">Arquivo</th>
+                    <th className="px-6 py-4 text-right">Ação</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-xs font-medium">
+                  {docsFiltrados.map((doc) => (
+                    <tr key={doc.id} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="px-6 py-4 text-slate-900 font-bold">{doc.nome}</td>
+                      <td className="px-6 py-4 text-slate-700 font-semibold">{doc.fazendaNome}</td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                          doc.categoria === 'CAR' ? 'bg-indigo-50 border border-indigo-200 text-indigo-700' :
+                          doc.categoria === 'LAU' ? 'bg-blue-50 border border-blue-200 text-blue-700' :
+                          doc.categoria === 'EPI' ? 'bg-amber-50 border border-amber-200 text-amber-700' :
+                          doc.categoria === 'Checklist RTRS' ? 'bg-emerald-50 border border-emerald-200 text-emerald-700' :
+                          doc.categoria === 'Regularização' ? 'bg-purple-50 border border-purple-200 text-purple-700' :
+                          'bg-slate-100 text-slate-700'
+                        }`}>
+                          {doc.categoria}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-slate-500 text-xs">{doc.origem}</td>
+                      <td className="px-6 py-4 text-slate-500 text-xs">
+                        {new Date(doc.data).toLocaleDateString('pt-BR')}
+                      </td>
+                      <td className="px-6 py-4 text-center">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEvidencia(doc.arquivo_url)}
+                          className="group/btn inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#1B7547]/10 hover:bg-[#1B7547]/20 text-[#1B7547] rounded-xl text-xs font-extrabold transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
+                        >
+                          {doc.arquivo_url?.toLowerCase().includes('.pdf') ? (
+                            <>
+                              <FileText className="w-3.5 h-3.5 shrink-0 text-[#1B7547] transition-transform group-hover/btn:scale-110 duration-300" />
+                              <span>Abrir PDF</span>
+                            </>
+                          ) : (
+                            <>
+                              <ImageIcon className="w-3.5 h-3.5 shrink-0 text-[#1B7547] transition-transform group-hover/btn:scale-110 duration-300" />
+                              <span>Ver Imagem</span>
+                            </>
+                          )}
+                        </button>
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        {doc.podeDeletar ? (
+                          <button
+                            type="button"
+                            onClick={() => setDeleteConfirmId(doc.id)}
+                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all duration-300 hover:scale-110 active:scale-90 cursor-pointer"
+                            title="Excluir documento"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider bg-slate-100 px-2.5 py-1 rounded-lg">
+                            Vinculado
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </div>
 

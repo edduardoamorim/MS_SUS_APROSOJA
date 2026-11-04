@@ -1,5 +1,20 @@
+import { useState } from 'react';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
-import { Menu, LogOut, User as UserIcon, Settings, ArrowLeft } from 'lucide-react';
+import { 
+  Menu, 
+  X, 
+  LogOut, 
+  User as UserIcon, 
+  Settings, 
+  ArrowLeft,
+  LayoutDashboard,
+  Building2,
+  FileCheck2,
+  FolderOpen,
+  Map as MapIcon,
+  Users,
+  ClipboardList
+} from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { supabase } from '../../lib/supabase';
 import siteContent from '../../config/site_content.json';
@@ -11,6 +26,7 @@ export default function BaseLayout() {
   const { user, role, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const handleLogout = async () => {
     await logout();
@@ -50,7 +66,14 @@ export default function BaseLayout() {
           
           {/* Esquerda: Logo e Controle de Navegação */}
           <div className="flex items-center gap-3">
-            <Menu className="w-5 h-5 text-muted-foreground md:hidden cursor-pointer hover:text-foreground transition-colors" />
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              className="p-1.5 -ml-1 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg md:hidden transition-colors cursor-pointer"
+              aria-label="Abrir menu de navegação"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
             
             <Link to={getHomePath()} className="text-xl font-bold tracking-tight text-foreground flex items-center gap-2 hover:opacity-90 transition-opacity">
               <div className="w-2 h-6 bg-primary rounded-sm"></div>
@@ -111,10 +134,196 @@ export default function BaseLayout() {
           </div>
         </div>
       </header>
+
+      {/* Drawer Mobile Navigation */}
+      {mobileMenuOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          {/* Backdrop */}
+          <div 
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity animate-fade-in cursor-pointer"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+
+          {/* Drawer Content */}
+          <div className="fixed inset-y-0 left-0 w-[84%] max-w-xs bg-white shadow-2xl flex flex-col justify-between z-10 border-r border-border animate-slide-in-right">
+            <div className="overflow-y-auto">
+              {/* Header Drawer */}
+              <div className="p-4 border-b border-border flex items-center justify-between">
+                <Link 
+                  to={getHomePath()} 
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="text-lg font-extrabold tracking-tight text-foreground flex items-center gap-2"
+                >
+                  <div className="w-2 h-5 bg-primary rounded-sm"></div>
+                  {content.nome_plataforma}
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg cursor-pointer"
+                  aria-label="Fechar menu"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Informações do Usuário no Mobile */}
+              {user && (
+                <div className="p-4 bg-muted/40 border-b border-border">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-primary font-bold">
+                      <UserIcon className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-bold text-foreground truncate">{user.email}</p>
+                      <span className="inline-block mt-0.5 text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full uppercase tracking-wider font-extrabold border border-emerald-300">
+                        {role || content.usuario_anonimo}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Links Rápidos por Perfil */}
+              <nav className="p-3 space-y-1">
+                {role === 'gestor' && (
+                  <>
+                    <p className="px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">Navegação Gestor</p>
+                    <Link
+                      to="/app/gestor"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                    >
+                      <LayoutDashboard className="w-4 h-4 text-emerald-600" />
+                      Visão Geral
+                    </Link>
+                    <Link
+                      to="/app/gestor/propriedades"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                    >
+                      <Building2 className="w-4 h-4 text-emerald-600" />
+                      Propriedades
+                    </Link>
+                    <Link
+                      to="/app/gestor/auditorias"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                    >
+                      <FileCheck2 className="w-4 h-4 text-emerald-600" />
+                      Auditorias
+                    </Link>
+                    <Link
+                      to="/app/gestor/documentos"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                    >
+                      <FolderOpen className="w-4 h-4 text-emerald-600" />
+                      Documentação & Evidências
+                    </Link>
+                    <Link
+                      to="/app/gestor/mapa"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                    >
+                      <MapIcon className="w-4 h-4 text-emerald-600" />
+                      Mapa e Cruzamento
+                    </Link>
+                    <Link
+                      to="/app/gestor/usuarios"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                    >
+                      <Users className="w-4 h-4 text-emerald-600" />
+                      Usuários
+                    </Link>
+                    <Link
+                      to="/app/gestor/questionario"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                    >
+                      <ClipboardList className="w-4 h-4 text-emerald-600" />
+                      Questionário RTRS
+                    </Link>
+                  </>
+                )}
+
+                {role === 'tecnico' && (
+                  <>
+                    <p className="px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">Portal do Técnico</p>
+                    <Link
+                      to="/app/tecnico?tab=mapa"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                    >
+                      <MapIcon className="w-4 h-4 text-emerald-600" />
+                      Mapa & Propriedades
+                    </Link>
+                    <Link
+                      to="/app/tecnico?tab=auditorias"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                    >
+                      <FileCheck2 className="w-4 h-4 text-emerald-600" />
+                      Auditorias & Visitas
+                    </Link>
+                    <Link
+                      to="/app/tecnico?tab=documentacao"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                    >
+                      <FolderOpen className="w-4 h-4 text-emerald-600" />
+                      Histórico de Documentação
+                    </Link>
+                  </>
+                )}
+
+                {role === 'produtor' && (
+                  <>
+                    <p className="px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">Portal do Produtor</p>
+                    <Link
+                      to="/app/produtor"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                    >
+                      <LayoutDashboard className="w-4 h-4 text-emerald-600" />
+                      Painel do Produtor
+                    </Link>
+                  </>
+                )}
+              </nav>
+            </div>
+
+            {/* Rodapé Drawer */}
+            <div className="p-4 border-t border-border space-y-2 bg-slate-50">
+              <Link
+                to="/app/perfil"
+                onClick={() => setMobileMenuOpen(false)}
+                className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-600 hover:bg-white hover:shadow-xs transition-all"
+              >
+                <Settings className="w-4 h-4 text-slate-500" />
+                Meu Perfil & Configurações
+              </Link>
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  handleLogout();
+                }}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+              >
+                <LogOut className="w-4 h-4" />
+                Sair da Plataforma
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <OfflineBanner />
 
       {/* Conteúdo Principal com Animação Fluida */}
-      <main key={location.pathname} className="flex-1 w-full max-w-[1920px] mx-auto p-4 sm:p-6 lg:p-8 animate-fade-in-up duration-300">
+      <main key={location.pathname} className="flex-1 w-full max-w-[1920px] mx-auto p-4 sm:p-6 lg:p-8 pb-safe animate-fade-in-up duration-300">
         <Outlet />
       </main>
     </div>

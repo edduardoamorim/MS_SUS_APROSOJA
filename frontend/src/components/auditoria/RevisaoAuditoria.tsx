@@ -113,41 +113,46 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
   };
 
   return createPortal(
-    <div className="fixed inset-0 z-50 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4">
       {/* Modal Principal */}
-      <div className="bg-white w-full max-w-4xl max-h-[90vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95">
+      <div className="bg-white w-full max-w-4xl max-h-[92vh] sm:max-h-[90vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95">
         
         {/* Header */}
-        <div className="px-6 py-4 bg-gray-900 text-white flex justify-between items-center shrink-0">
-          <div className="flex items-center gap-3">
-            <ShieldCheck className="w-8 h-8 text-emerald-400" />
-            <div>
-              <h2 className="text-xl font-bold uppercase tracking-wide">Revisão de Auditoria RTRS</h2>
-              <p className="text-gray-400 text-sm">{propriedadeNome} - Relatório do Técnico</p>
+        <div className="px-4 sm:px-6 py-3 sm:py-4 bg-gray-900 text-white flex justify-between items-center shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+            <ShieldCheck className="w-7 h-7 sm:w-8 h-8 text-emerald-400 shrink-0" />
+            <div className="min-w-0">
+              <h2 className="text-base sm:text-xl font-bold uppercase tracking-wide truncate">Revisão de Auditoria RTRS</h2>
+              <p className="text-gray-400 text-xs sm:text-sm truncate">{propriedadeNome} - Relatório do Técnico</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-gray-800 rounded-full transition-colors text-gray-300">
-            <X className="w-6 h-6" />
+          <button 
+            type="button" 
+            onClick={onClose} 
+            className="p-2 hover:bg-gray-800 rounded-full transition-colors text-gray-300 shrink-0 cursor-pointer"
+            aria-label="Fechar"
+          >
+            <X className="w-5 h-5 sm:w-6 h-6" />
           </button>
         </div>
 
-        {/* Resumo Gerencial */}
-        <div className="bg-gray-50 border-b border-gray-200 p-6 flex gap-6 shrink-0">
+        {/* Resumo Gerencial Responsivo */}
+        <div className="bg-gray-50 border-b border-gray-200 p-4 sm:p-6 flex flex-col sm:flex-row gap-4 sm:gap-6 shrink-0">
           <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex-1 flex flex-col items-center justify-center">
-            <span className="text-sm font-semibold text-gray-500 uppercase">Score de Conformidade</span>
-            <span className={`text-4xl font-black ${getScore() > 80 ? 'text-emerald-600' : 'text-amber-500'}`}>
+            <span className="text-xs sm:text-sm font-semibold text-gray-500 uppercase">Score de Conformidade</span>
+            <span className={`text-3xl sm:text-4xl font-black ${getScore() > 80 ? 'text-emerald-600' : 'text-amber-500'}`}>
               {getScore()}%
             </span>
           </div>
           <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex-1">
-             <h4 className="text-sm font-bold text-gray-900 mb-2">Parecer Geral do Técnico</h4>
-             <p className="text-sm text-gray-600 italic">"Propriedade com boas práticas, mas necessita adequação urgente no galpão de insumos do setor Norte."</p>
+             <h4 className="text-xs sm:text-sm font-bold text-gray-900 mb-1.5 sm:mb-2">Parecer Geral do Técnico</h4>
+             <p className="text-xs sm:text-sm text-gray-600 italic">"Propriedade com boas práticas, mas necessita adequação urgente no galpão de insumos do setor Norte."</p>
           </div>
         </div>
 
         {/* Lista de Evidências (Scrollable) */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-white">
-          <h3 className="text-lg font-bold text-gray-900 border-b pb-2">Detalhes por Critério</h3>
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-6 bg-white">
+          <h3 className="text-base sm:text-lg font-bold text-gray-900 border-b pb-2">Detalhes por Critério</h3>
           
           {loading ? (
             <div className="flex flex-col items-center justify-center py-12 text-primary">
@@ -162,12 +167,12 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
             respostas.map((resp) => (
               <div key={resp.id} className="border border-gray-200 rounded-xl overflow-hidden flex flex-col md:flex-row shadow-sm hover:shadow transition-shadow">
                 {/* Esquerda: Pergunta e Status */}
-                <div className="flex-1 p-5 bg-gray-50/50">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="bg-gray-200 text-gray-700 px-2 py-1 rounded text-xs font-bold uppercase">{resp.secao}</span>
-                    <span className="font-bold text-gray-500 text-sm">Critério {resp.criterio}</span>
+                <div className="flex-1 p-4 sm:p-5 bg-gray-50/50">
+                  <div className="flex flex-wrap items-center gap-2 mb-2">
+                    <span className="bg-gray-200 text-gray-700 px-2 py-0.5 sm:py-1 rounded text-[10px] sm:text-xs font-bold uppercase">{resp.secao}</span>
+                    <span className="font-bold text-gray-500 text-xs sm:text-sm">Critério {resp.criterio}</span>
                   </div>
-                  <p className="font-bold text-gray-900 mb-3">{resp.enunciado}</p>
+                  <p className="font-bold text-gray-900 text-sm sm:text-base mb-3 leading-snug">{resp.enunciado}</p>
                   
                   <div className="flex items-start gap-2 mb-2">
                     {resp.nao_se_aplica ? (
@@ -177,32 +182,32 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
                     ) : (
                       <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
                     )}
-                    <div>
-                      <span className={`font-bold ${resp.nao_se_aplica ? 'text-slate-600' : resp.conforme ? 'text-emerald-700' : 'text-red-700'}`}>
+                    <div className="min-w-0">
+                      <span className={`text-xs sm:text-sm font-bold ${resp.nao_se_aplica ? 'text-slate-600' : resp.conforme ? 'text-emerald-700' : 'text-red-700'}`}>
                         {resp.nao_se_aplica ? 'Não se Aplica' : resp.conforme ? 'Conforme' : 'Não Conforme'}
                       </span>
-                      <p className="text-sm text-gray-600 mt-1"><span className="font-semibold text-gray-800">Obs do Auditor:</span> {resp.observacao}</p>
+                      <p className="text-xs sm:text-sm text-gray-600 mt-1"><span className="font-semibold text-gray-800">Obs do Auditor:</span> {resp.observacao}</p>
                     </div>
                   </div>
                 </div>
 
                 {/* Direita: Foto/Evidência */}
-                <div className="w-full md:w-64 bg-gray-100 border-t md:border-t-0 md:border-l border-gray-200 flex flex-col items-center justify-center p-4">
-                  <span className="text-xs font-bold text-gray-500 uppercase mb-2">Evidência Fotográfica / PDF</span>
+                <div className="w-full md:w-64 bg-gray-100 border-t md:border-t-0 md:border-l border-gray-200 flex flex-col items-center justify-center p-3 sm:p-4">
+                  <span className="text-[10px] sm:text-xs font-bold text-gray-500 uppercase mb-2">Evidência Fotográfica / PDF</span>
                   {resp.evidencia ? (
                     isPdfEvidence(resp.evidencia) ? (
                       <a
                         href={resp.evidencia}
                         target="_blank"
                         rel="noreferrer"
-                        className="w-full h-32 border border-gray-200 rounded-lg flex flex-col items-center justify-center bg-white text-emerald-700 hover:bg-slate-50 transition-colors shadow-sm"
+                        className="w-full h-28 sm:h-32 border border-gray-200 rounded-lg flex flex-col items-center justify-center bg-white text-emerald-700 hover:bg-slate-50 transition-colors shadow-sm"
                       >
-                        <FileText className="w-8 h-8 mb-1" />
+                        <FileText className="w-7 h-7 sm:w-8 h-8 mb-1" />
                         <span className="text-xs font-bold text-center px-2 truncate w-full">Ver PDF Anexado</span>
                       </a>
                     ) : (
                       <div 
-                        className="relative w-full h-32 rounded-lg overflow-hidden cursor-pointer group"
+                        className="relative w-full h-28 sm:h-32 rounded-lg overflow-hidden cursor-pointer group"
                         onClick={() => setFotoAmpliada(resp.evidencia)}
                       >
                         <img src={resp.evidencia} alt="Evidência" className="w-full h-full object-cover transition-transform group-hover:scale-105" />
@@ -212,7 +217,7 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
                       </div>
                     )
                   ) : (
-                    <div className="w-full h-32 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center text-gray-400">
+                    <div className="w-full h-28 sm:h-32 border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center text-gray-400">
                       <ImageIcon className="w-6 h-6 mb-1" />
                       <span className="text-xs">Sem Arquivo</span>
                     </div>
@@ -223,21 +228,30 @@ export default function RevisaoAuditoria({ propriedadeNome, onClose, onApprove, 
           )}
         </div>
 
-        {/* Footer: Botões de Decisão Padronizados com Motion */}
-        <div className="px-6 py-4 bg-slate-50 border-t border-slate-200/80 shrink-0 flex justify-end gap-3">
+        {/* Footer: Botões de Decisão com pb-20 no mobile e min-h-[44px] */}
+        <div className="px-4 sm:px-6 pt-4 pb-20 sm:pb-6 bg-slate-50 border-t border-slate-200/80 shrink-0 flex flex-col-reverse sm:flex-row justify-end items-stretch sm:items-center gap-3">
           <button
-            onClick={onReject}
-            className="group relative flex items-center gap-2 px-6 py-3 bg-white border border-red-200 text-red-700 hover:bg-red-50 hover:border-red-300 rounded-2xl font-extrabold text-xs transition-all duration-300 hover:scale-105 active:scale-95 shadow-2xs cursor-pointer overflow-hidden"
+            type="button"
+            onClick={onClose}
+            className="w-full sm:w-auto min-h-[44px] px-5 py-2.5 bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 rounded-2xl font-extrabold text-xs transition-all duration-300 active:scale-95 cursor-pointer flex items-center justify-center"
           >
-            <span>Recusar (Exigir Adequações)</span>
+            <span>Cancelar</span>
           </button>
           <button
+            type="button"
+            onClick={onReject}
+            className="group relative w-full sm:w-auto min-h-[44px] flex items-center justify-center gap-2 px-6 py-2.5 bg-white border border-red-200 text-red-700 hover:bg-red-50 hover:border-red-300 rounded-2xl font-extrabold text-xs transition-all duration-300 active:scale-95 shadow-2xs cursor-pointer overflow-hidden"
+          >
+            <span>Solicitar Ajustes</span>
+          </button>
+          <button
+            type="button"
             onClick={onApprove}
-            className="group relative flex items-center gap-2 px-7 py-3 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white shadow-md shadow-[#1B7547]/20 hover:shadow-xl rounded-2xl font-extrabold text-xs transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
+            className="group relative w-full sm:w-auto min-h-[44px] flex items-center justify-center gap-2 px-7 py-2.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white shadow-md shadow-[#1B7547]/20 hover:shadow-xl rounded-2xl font-extrabold text-xs transition-all duration-300 active:scale-95 cursor-pointer overflow-hidden"
           >
             <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
             <ShieldCheck className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
-            <span>Aprovar Certificação Oficial</span>
+            <span>Aprovar Auditoria</span>
           </button>
         </div>
       </div>

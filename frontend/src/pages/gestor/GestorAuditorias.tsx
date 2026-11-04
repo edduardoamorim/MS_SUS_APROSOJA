@@ -13,7 +13,9 @@ import {
   Filter,
   Sparkles,
   ClipboardList,
-  Building2
+  Building2,
+  LayoutGrid,
+  Table
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { resolveFarmEtapa, persistFarmEtapa } from '../../lib/etapaUtils';
@@ -33,6 +35,7 @@ export default function GestorAuditorias() {
   
   // Abas de Etapa: Prospecção | Auditoria Prévia | Auditoria Oficial
   const [activeEtapaTab, setActiveEtapaTab] = useState<'Prospecção' | 'Auditoria Prévia' | 'Auditoria Oficial'>('Prospecção');
+  const [viewMode, setViewMode] = useState<'auto' | 'cards' | 'table'>('auto');
 
   const [revisaoAuditoria, setRevisaoAuditoria] = useState<{ id: string, nome: string } | null>(null);
 
@@ -439,8 +442,8 @@ export default function GestorAuditorias() {
         </button>
       </div>
 
-      {/* Barra de Filtro Textual */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between gap-4">
+      {/* Barra de Filtro Textual e Seletor de Modo */}
+      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
         <div className="relative w-full sm:w-96">
           <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
           <input 
@@ -452,9 +455,40 @@ export default function GestorAuditorias() {
           />
         </div>
 
-        <span className="text-xs font-bold text-slate-500 hidden sm:inline">
-          Exibindo registros da etapa <strong className="text-slate-800">{activeEtapaTab}</strong>
-        </span>
+        <div className="flex items-center justify-between sm:justify-end gap-3 w-full sm:w-auto">
+          <span className="text-xs font-bold text-slate-500 hidden md:inline">
+            Etapa: <strong className="text-slate-800">{activeEtapaTab}</strong>
+          </span>
+
+          <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 ml-auto sm:ml-0">
+            <button
+              type="button"
+              onClick={() => setViewMode('cards')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                viewMode === 'cards' || (viewMode === 'auto' && typeof window !== 'undefined' && window.innerWidth < 768)
+                  ? 'bg-white text-[#1B7547] shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="Exibir em Cards"
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              <span>Cards</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('table')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                viewMode === 'table' || (viewMode === 'auto' && typeof window !== 'undefined' && window.innerWidth >= 768)
+                  ? 'bg-white text-[#1B7547] shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="Exibir em Tabela"
+            >
+              <Table className="w-3.5 h-3.5" />
+              <span>Tabela</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Tabela de Auditorias */}
@@ -465,7 +499,133 @@ export default function GestorAuditorias() {
         </div>
       ) : (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-          <div className="overflow-x-auto">
+          {filteredAudits.length === 0 ? (
+            <div className="px-6 py-12 text-center text-slate-400 font-medium">
+              Nenhuma auditoria ou fazenda cadastrada nesta etapa ({activeEtapaTab}).
+            </div>
+          ) : (
+            <>
+              {/* Modo Cards (Mobile por padrão, ou quando selecionado) */}
+              <div className={viewMode === 'cards' ? 'block' : viewMode === 'table' ? 'hidden' : 'block md:hidden'}>
+                <div className="divide-y divide-slate-100">
+                  {filteredAudits.map((auditoria: any) => {
+                    const farmName = getFazendaName(auditoria);
+                    const techName = getTecnicoName(auditoria.tecnico_responsavel_id || auditoria.propriedades?.tecnico_id, auditoria.propriedades);
+                    const displayId = auditoria.id?.startsWith('v-audit-') ? 'Cadastro Inicial' : `#${auditoria.id?.substring(0, 8)}`;
+                    const dataFormatada = auditoria.data_agendamento ? new Date(auditoria.data_agendamento).toLocaleDateString('pt-BR') : 'A definir';
+
+                    return (
+                      <div key={auditoria.id} className="p-4 bg-white space-y-3">
+                        {/* Topo: ID, Fazenda e Status */}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="space-y-0.5 flex-1 min-w-0">
+                            <span className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider block">{displayId}</span>
+                            <h3 className="font-extrabold text-slate-900 text-sm leading-snug truncate">
+                              {farmName}
+                            </h3>
+                            <p className="text-xs text-slate-600 font-medium truncate flex items-center gap-1">
+                              <span className="text-slate-400">Técnico:</span> {techName}
+                            </p>
+                          </div>
+
+                          <span className={`shrink-0 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                            auditoria.status === 'Certificada' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
+                            auditoria.status === 'Em Análise' ? 'bg-purple-100 text-purple-800 border border-purple-300' :
+                            auditoria.status === 'Visita de Campo' ? 'bg-blue-100 text-blue-800 border border-blue-300' :
+                            'bg-slate-100 text-slate-700'
+                          }`}>
+                            {auditoria.status}
+                          </span>
+                        </div>
+
+                        {/* Detalhes: Data e Seletor de Etapa */}
+                        <div className="grid grid-cols-2 gap-2 text-xs bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                          <div>
+                            <span className="text-slate-400 block text-[10px] font-bold uppercase tracking-wider">Data Alvo/Visita</span>
+                            <span className="text-slate-700 font-semibold flex items-center gap-1 mt-0.5">
+                              <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                              {dataFormatada}
+                            </span>
+                          </div>
+
+                          <div>
+                            <span className="text-slate-400 block text-[10px] font-bold uppercase tracking-wider">Etapa Atual</span>
+                            <select
+                              value={auditoria.etapa}
+                              onChange={(e) => handleUpdateEtapa(auditoria.id, e.target.value as any)}
+                              className="mt-0.5 w-full px-2 py-1 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 outline-none cursor-pointer"
+                            >
+                              <option value="Prospecção">1. Prospecção</option>
+                              <option value="Auditoria Prévia">2. Auditoria Prévia</option>
+                              <option value="Auditoria Oficial">3. Auditoria Oficial</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* Botões de Ação */}
+                        <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-100">
+                          {auditoria.etapa === 'Prospecção' && (
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateEtapa(auditoria.id, 'Auditoria Prévia')}
+                              className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-xl font-extrabold text-xs border border-blue-200 transition-all active:scale-95 cursor-pointer shadow-2xs"
+                              title="Promover para Auditoria Prévia"
+                            >
+                              <span>Avançar para Prévia</span>
+                              <ArrowRight className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
+                          {auditoria.etapa === 'Auditoria Prévia' && (
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateEtapa(auditoria.id, 'Auditoria Oficial')}
+                              className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-xl font-extrabold text-xs border border-emerald-200 transition-all active:scale-95 cursor-pointer shadow-2xs"
+                              title="Promover para Auditoria Oficial"
+                            >
+                              <span>Promover p/ Oficial</span>
+                              <ArrowRight className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
+                          {auditoria.status === 'Em Análise' && (
+                            <button 
+                              type="button"
+                              onClick={() => setRevisaoAuditoria({ id: auditoria.id, nome: farmName })}
+                              className="flex-1 inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-xl font-extrabold text-xs shadow-md transition-all active:scale-95 cursor-pointer"
+                            >
+                              <FileSearch className="w-3.5 h-3.5" />
+                              <span>Avaliar Certificação</span>
+                            </button>
+                          )}
+
+                          <div className="flex items-center gap-1 ml-auto">
+                            <button 
+                              type="button"
+                              onClick={() => handleOpenEdit(auditoria)}
+                              className="p-2 text-slate-500 hover:text-[#1B7547] hover:bg-slate-100 rounded-xl border border-slate-200 transition-all active:scale-90 cursor-pointer"
+                              title="Editar"
+                            >
+                              <Edit3 className="w-4 h-4" />
+                            </button>
+                            <button 
+                              type="button"
+                              onClick={() => handleOpenDelete(auditoria)}
+                              className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl border border-slate-200 transition-all active:scale-90 cursor-pointer"
+                              title="Excluir"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Modo Tabela (Desktop por padrão, ou quando selecionado) */}
+              <div className={viewMode === 'table' ? 'block overflow-x-auto' : viewMode === 'cards' ? 'hidden' : 'hidden md:block overflow-x-auto'}>
             <table className="w-full text-left text-xs font-medium border-collapse">
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[11px]">
                 <tr>
@@ -581,6 +741,8 @@ export default function GestorAuditorias() {
               </tbody>
             </table>
           </div>
+            </>
+          )}
         </div>
       )}
 

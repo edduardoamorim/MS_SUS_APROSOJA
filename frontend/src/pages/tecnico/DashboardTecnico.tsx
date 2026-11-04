@@ -3,7 +3,7 @@ import defaultAuditoriasJson from '../../data/default_auditorias.json';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { MapPin, ClipboardList, CheckCircle2, CalendarDays, Clock, Plus, Trash2, Loader2, Search, Map as MapIcon, AlertTriangle, Eye, FileText, ChevronRight, FolderOpen, Image as ImageIcon, Download, ExternalLink, X, WifiOff, Database, DownloadCloud, ClipboardCheck } from 'lucide-react';
+import { MapPin, ClipboardList, CheckCircle2, CalendarDays, Clock, Plus, Trash2, Loader2, Search, Map as MapIcon, AlertTriangle, Eye, FileText, ChevronRight, FolderOpen, Image as ImageIcon, Download, ExternalLink, X, WifiOff, Database, DownloadCloud, ClipboardCheck, LayoutGrid, Table2, RotateCw, RefreshCw } from 'lucide-react';
 import type { FeatureCollection } from 'geojson';
 import MapView from '../../components/map/MapView';
 import { supabase, createIsolatedAuthClient } from '../../lib/supabase';
@@ -227,6 +227,8 @@ export default function DashboardTecnico() {
   const [selectedDocPropId, setSelectedDocPropId] = useState('');
   const [selectedDocCategoria, setSelectedDocCategoria] = useState('');
   const [docSearchQuery, setDocSearchQuery] = useState('');
+  const [docViewMode, setDocViewMode] = useState<'auto' | 'cards' | 'table'>('auto');
+  const [isRetryingSync, setIsRetryingSync] = useState(false);
   const [deleteDocConfirmId, setDeleteDocConfirmId] = useState<string | null>(null);
   const [showUploadDocModal, setShowUploadDocModal] = useState(false);
   const [uploadingDocFile, setUploadingDocFile] = useState(false);
@@ -1154,7 +1156,7 @@ export default function DashboardTecnico() {
     }
   };
 
-  const { isOnline, connectionState } = useSync();
+  const { isOnline, connectionState, syncNow, isSyncing } = useSync();
   const isOfflineMode = (typeof navigator !== 'undefined' && !navigator.onLine) || !isOnline || connectionState === 'OFFLINE';
 
   const [loading, setLoading] = useState(false);
@@ -2737,6 +2739,23 @@ export default function DashboardTecnico() {
     }
   };
 
+  const handleRetrySync = async () => {
+    if (isRetryingSync || isSyncing) return;
+    setIsRetryingSync(true);
+    try {
+      if (syncNow) {
+        await syncNow(true);
+      }
+      await fetchTechnicalDocuments();
+      success('Sincronização iniciada com sucesso!');
+    } catch (err: any) {
+      console.warn('[DashboardTecnico] Erro ao sincronizar novamente:', err);
+      error('Falha ao sincronizar: ' + (err?.message || 'erro de conexão'));
+    } finally {
+      setIsRetryingSync(false);
+    }
+  };
+
   const handleConfirmReject = async (id: string) => {
     if (!motivoRejeicaoText.trim()) {
       warning('Por favor, informe o motivo da rejeição ou os ajustes necessários.');
@@ -2845,22 +2864,33 @@ export default function DashboardTecnico() {
 
   const filteredFarmsGeoJSON: FeatureCollection = { type: 'FeatureCollection', features: filteredFarms };
 
+  const filteredDocs = useMemo(() => {
+    return documentos.filter(doc => {
+      const matchSearch = docSearchQuery === '' || 
+        doc.nome.toLowerCase().includes(docSearchQuery.toLowerCase()) ||
+        doc.fazendaNome.toLowerCase().includes(docSearchQuery.toLowerCase());
+      const matchProp = selectedDocPropId === '' || doc.propriedade_id === selectedDocPropId;
+      const matchCat = selectedDocCategoria === '' || doc.categoria === selectedDocCategoria;
+      return matchSearch && matchProp && matchCat;
+    });
+  }, [documentos, docSearchQuery, selectedDocPropId, selectedDocCategoria]);
+
   return (
-    <div className="space-y-6 max-w-7xl mx-auto animate-fade-in-up">
+    <div className="space-y-6 max-w-7xl mx-auto animate-fade-in-up pb-24 sm:pb-8">
       {/* Header Executivo do Técnico com Motion */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-3xl border border-slate-200/80 shadow-xs">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 sm:p-6 rounded-3xl border border-slate-200/80 shadow-xs">
         <div>
           <div className="inline-flex items-center gap-2 bg-[#1B7547]/10 text-[#1B7547] px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider mb-2">
             <ClipboardList className="w-3.5 h-3.5" />
             <span>Módulo Técnico de Vistorias In-Loco</span>
           </div>
-          <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Portal do Técnico de Campo</h1>
-          <p className="text-slate-500 mt-1 text-sm font-medium">Gestão de vistorias, auditorias RTRS e acompanhamento geoespacial de fazendas.</p>
+          <h1 className="text-xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">Portal do Técnico de Campo</h1>
+          <p className="text-slate-500 mt-1 text-xs sm:text-sm font-medium">Gestão de vistorias, auditorias RTRS e acompanhamento geoespacial de fazendas.</p>
         </div>
-        <div className="flex flex-wrap items-center gap-3 shrink-0">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-stretch sm:items-center gap-2 w-full md:w-auto shrink-0">
           <button
             onClick={handleOpenCreateFarmModal}
-            className="group relative flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white font-extrabold text-xs rounded-2xl shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-300 cursor-pointer overflow-hidden"
+            className="group relative flex items-center justify-center gap-2 px-3 sm:px-5 py-2.5 sm:py-3 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white font-extrabold text-xs rounded-2xl shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-300 cursor-pointer overflow-hidden text-center"
           >
             <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
             <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
@@ -2872,7 +2902,7 @@ export default function DashboardTecnico() {
               setAuditFormData({ propriedade_id: properties[0]?.id || '', data_agendamento: new Date().toISOString().split('T')[0] });
               setShowScheduleAuditModal(true);
             }}
-            className="group relative flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white font-extrabold text-xs rounded-2xl shadow-md shadow-indigo-600/20 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-300 cursor-pointer overflow-hidden"
+            className="group relative flex items-center justify-center gap-2 px-3 sm:px-5 py-2.5 sm:py-3 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white font-extrabold text-xs rounded-2xl shadow-md shadow-indigo-600/20 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-300 cursor-pointer overflow-hidden text-center"
           >
             <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
             <CalendarDays className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
@@ -2883,7 +2913,7 @@ export default function DashboardTecnico() {
             type="button"
             onClick={handlePrepareFieldMode}
             disabled={isPreparingField}
-            className={`group relative flex items-center gap-2 px-4 py-3 rounded-2xl border transition-all duration-300 cursor-pointer disabled:opacity-60 overflow-hidden shadow-xs hover:shadow-md ${
+            className={`group relative flex items-center justify-center gap-2 px-3 sm:px-4 py-2.5 sm:py-3 rounded-2xl border transition-all duration-300 cursor-pointer disabled:opacity-60 overflow-hidden shadow-xs hover:shadow-md text-center ${
               lastPrepSummary
                 ? 'bg-emerald-50/80 hover:bg-emerald-100/90 text-emerald-950 border-emerald-300'
                 : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300/80'
@@ -2910,7 +2940,7 @@ export default function DashboardTecnico() {
             </span>
           </button>
 
-          <div className="flex items-center gap-2 bg-slate-100 text-slate-700 px-4 py-2.5 rounded-2xl text-xs font-extrabold border border-slate-200 shadow-2xs">
+          <div className="flex items-center justify-center gap-2 bg-slate-100 text-slate-700 px-3 sm:px-4 py-2.5 rounded-2xl text-xs font-extrabold border border-slate-200 shadow-2xs text-center">
             <CalendarDays className="w-4 h-4 text-[#1B7547]" />
             <span>Hoje, {new Date().toLocaleDateString('pt-BR')}</span>
           </div>
@@ -2946,38 +2976,38 @@ export default function DashboardTecnico() {
       )}
 
       {/* Tabs Principais com Motion Design Padronizado */}
-      <div className="bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 inline-flex flex-wrap gap-2 shadow-2xs">
+      <div className="bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 flex overflow-x-auto scrollbar-none sm:inline-flex sm:flex-wrap gap-2 shadow-2xs max-w-full">
         <button
           onClick={() => setActiveTab('mapa')}
-          className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
+          className={`px-4 sm:px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 whitespace-nowrap ${
             activeTab === 'mapa'
               ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 '
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          <MapIcon className="w-4 h-4" />
+          <MapIcon className="w-4 h-4 shrink-0" />
           <span>Mapa & Propriedades</span>
         </button>
         <button
           onClick={() => setActiveTab('auditorias')}
-          className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
+          className={`px-4 sm:px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 whitespace-nowrap ${
             activeTab === 'auditorias'
               ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 '
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          <ClipboardList className="w-4 h-4" />
+          <ClipboardList className="w-4 h-4 shrink-0" />
           <span>Auditorias & Visitas</span>
         </button>
         <button
           onClick={() => setActiveTab('documentacao')}
-          className={`px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer ${
+          className={`px-4 sm:px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 whitespace-nowrap ${
             activeTab === 'documentacao'
               ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 '
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          <FolderOpen className="w-4 h-4" />
+          <FolderOpen className="w-4 h-4 shrink-0" />
           <span>Histórico de Documentação & Evidências</span>
         </button>
       </div>
@@ -3417,15 +3447,15 @@ export default function DashboardTecnico() {
         )}
       </div>
 
-      {/* ====== TAB: DOCUMENTAÇÃO & EVIDÊNCIAS COM MOTION FLUIDO ====== */}
+            {/* ====== TAB: DOCUMENTAÇÃO & EVIDÊNCIAS COM MOTION FLUIDO ====== */}
       <div className={activeTab === 'documentacao' ? 'block space-y-6 animate-fade-in-up duration-300' : 'hidden'}>
-        <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div className="bg-white p-4 sm:p-6 rounded-3xl border border-slate-200/80 shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div>
             <div className="inline-flex items-center gap-2 bg-[#1B7547]/10 text-[#1B7547] px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider mb-2">
               <FolderOpen className="w-3.5 h-3.5" />
               <span>Repositório Técnico de Arquivos</span>
             </div>
-            <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
+            <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
               Histórico de Documentação & Evidências
             </h2>
             <p className="text-slate-500 text-xs mt-1 font-medium">
@@ -3434,24 +3464,24 @@ export default function DashboardTecnico() {
           </div>
         </div>
 
-        {/* Filtros da Tabela com Motion */}
-        <div className="bg-white p-4 rounded-3xl border border-slate-200/80 flex flex-col md:flex-row items-center justify-between gap-3 shadow-xs">
-          <div className="relative w-full md:w-80">
+        {/* Filtros Responsivos da Documentação & Seletor de Modo de Visualização */}
+        <div className="bg-white p-4 rounded-3xl border border-slate-200/80 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 shadow-xs">
+          <div className="relative w-full lg:w-72">
             <Search className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
             <input
               type="text"
-              placeholder="Buscar por documento, critério ou fazenda..."
+              placeholder="Buscar documento, critério ou fazenda..."
               value={docSearchQuery}
               onChange={(e) => setDocSearchQuery(e.target.value)}
               className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-xs font-medium focus:outline-none focus:ring-4 focus:ring-[#1B7547]/15 focus:border-[#1B7547] shadow-xs transition-all"
             />
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+          <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center w-full lg:w-auto">
             <select
               value={selectedDocPropId}
               onChange={(e) => setSelectedDocPropId(e.target.value)}
-              className="px-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-xs font-extrabold text-slate-800 outline-none cursor-pointer focus:ring-4 focus:ring-[#1B7547]/15 focus:border-[#1B7547] transition-all shadow-2xs"
+              className="w-full sm:w-auto px-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-xs font-extrabold text-slate-800 outline-none cursor-pointer focus:ring-4 focus:ring-[#1B7547]/15 focus:border-[#1B7547] transition-all shadow-2xs"
             >
               <option value="">Todas as Minhas Fazendas</option>
               {(() => {
@@ -3479,7 +3509,7 @@ export default function DashboardTecnico() {
             <select
               value={selectedDocCategoria}
               onChange={(e) => setSelectedDocCategoria(e.target.value)}
-              className="px-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-xs font-extrabold text-slate-800 outline-none cursor-pointer focus:ring-4 focus:ring-[#1B7547]/15 focus:border-[#1B7547] transition-all shadow-2xs"
+              className="w-full sm:w-auto px-4 py-2.5 bg-white border border-slate-200 rounded-2xl text-xs font-extrabold text-slate-800 outline-none cursor-pointer focus:ring-4 focus:ring-[#1B7547]/15 focus:border-[#1B7547] transition-all shadow-2xs"
             >
               <option value="">Todas as Categorias</option>
               <option value="CAR">CAR</option>
@@ -3489,101 +3519,304 @@ export default function DashboardTecnico() {
               <option value="Regularização">Regularização</option>
               <option value="Outros">Outros</option>
             </select>
+
+            {/* Seletor Segmentado de Modo de Visualização */}
+            <div className="flex items-center justify-center bg-slate-100 p-1 rounded-2xl border border-slate-200/80 shadow-2xs shrink-0 self-stretch sm:self-auto">
+              <button
+                type="button"
+                onClick={() => setDocViewMode('auto')}
+                title="Modo Automático (Cards no Celular, Tabela no Desktop)"
+                className={`flex-1 sm:flex-initial px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center justify-center gap-1.5 cursor-pointer ${
+                  docViewMode === 'auto'
+                    ? 'bg-[#1B7547] text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <span>Auto</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDocViewMode('cards')}
+                title="Visualização em Cards"
+                className={`flex-1 sm:flex-initial px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center justify-center gap-1.5 cursor-pointer ${
+                  docViewMode === 'cards'
+                    ? 'bg-[#1B7547] text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                <span>Cards</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDocViewMode('table')}
+                title="Visualização em Tabela"
+                className={`flex-1 sm:flex-initial px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all duration-200 flex items-center justify-center gap-1.5 cursor-pointer ${
+                  docViewMode === 'table'
+                    ? 'bg-[#1B7547] text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Table2 className="w-3.5 h-3.5" />
+                <span>Tabela</span>
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Tabela de Arquivos com Motion */}
+        {/* Container Principal de Arquivos (Cards Mobile / Tabela Desktop) */}
         <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
           {loadingDocs && documentos.length === 0 ? (
             <div className="py-12 text-center text-slate-500 flex flex-col items-center gap-2">
               <Loader2 className="w-6 h-6 animate-spin text-[#1B7547]" />
               <span className="text-xs font-extrabold">Carregando histórico de arquivos...</span>
             </div>
-          ) : documentos.length === 0 ? (
+          ) : filteredDocs.length === 0 ? (
             <div className="py-12 text-center text-slate-400 font-medium">
               <FolderOpen className="w-8 h-8 mx-auto mb-2 text-slate-300" />
               <p className="font-extrabold text-sm text-slate-700">Nenhum documento encontrado</p>
-              <p className="text-xs text-slate-400 mt-1">Anexe comprovantes, fotos ou evidências no questionário RTRS para visualizá-los aqui.</p>
+              <p className="text-xs text-slate-400 mt-1">
+                {documentos.length === 0
+                  ? 'Anexe comprovantes, fotos ou evidências no questionário RTRS para visualizá-los aqui.'
+                  : 'Nenhum resultado corresponde aos filtros selecionados.'}
+              </p>
             </div>
           ) : (
-            <div className="overflow-x-auto p-2">
-              <table className="w-full text-left text-xs font-medium">
-                <thead className="bg-slate-50 border-b border-slate-100 text-slate-500 font-extrabold text-[10px] uppercase tracking-wider">
-                  <tr>
-                    <th className="px-6 py-4">Documento / Critério</th>
-                    <th className="px-6 py-4">Propriedade</th>
-                    <th className="px-6 py-4">Categoria</th>
-                    <th className="px-6 py-4">Origem</th>
-                    <th className="px-6 py-4">Data Envio</th>
-                    <th className="px-6 py-4 text-center">Arquivo</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {documentos
-                    .filter(doc => {
-                      const matchSearch = docSearchQuery === '' || 
-                        doc.nome.toLowerCase().includes(docSearchQuery.toLowerCase()) ||
-                        doc.fazendaNome.toLowerCase().includes(docSearchQuery.toLowerCase());
-                      const matchProp = selectedDocPropId === '' || doc.propriedade_id === selectedDocPropId;
-                      const matchCat = selectedDocCategoria === '' || doc.categoria === selectedDocCategoria;
-                      return matchSearch && matchProp && matchCat;
-                    })
-                    .map((doc) => (
-                      <tr key={doc.id} className="hover:bg-slate-50/80 transition-colors duration-200 group">
-                        <td className="px-6 py-4 text-slate-900 font-extrabold">
-                          <div className="flex flex-col gap-1">
-                            <span className="text-slate-900 font-extrabold leading-snug">{doc.nome}</span>
-                            <div className="flex items-center gap-2">
-                              {doc.isLocalPending ? (
-                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs shrink-0" title="Evidência salva no aparelho. Aguardando sincronização com a nuvem.">
-                                  <Clock className="w-3 h-3 text-amber-700 animate-pulse" />
-                                  <span>Pendente de Envio</span>
-                                </span>
+            <>
+              {/* MODO BENTO CARDS (Mobile / Forçado por seletor) */}
+              {(docViewMode === 'cards' || docViewMode === 'auto') && (
+                <div className={docViewMode === 'cards' ? 'block' : 'block md:hidden'}>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 p-3 sm:p-4">
+                    {filteredDocs.map((doc) => {
+                      const isPdf = !!doc.arquivo_url?.toLowerCase().includes('.pdf');
+                      const isPending = !!doc.isLocalPending;
+                      const isFailed = !!doc.hasError || (isPending && connectionState === 'FAILED');
+
+                      return (
+                        <div
+                          key={`card-${doc.id || doc.nome}-${doc.propriedade_id}`}
+                          className="rounded-xl p-4 shadow-sm border border-slate-200 bg-white flex flex-col justify-between gap-3 hover:border-slate-300 transition-colors"
+                        >
+                          <div className="space-y-3">
+                            {/* Topo: Badges de Status de Sincronização e Categoria */}
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              {isFailed ? (
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-rose-50 text-rose-800 border border-rose-300 shadow-2xs">
+                                    <AlertTriangle className="w-3 h-3 text-rose-600 shrink-0" />
+                                    <span>Falha no envio</span>
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={handleRetrySync}
+                                    disabled={isRetryingSync || isSyncing}
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-extrabold bg-rose-100 hover:bg-rose-200 active:bg-rose-300 text-rose-900 transition-colors disabled:opacity-50 cursor-pointer"
+                                    title="Tentar sincronizar novamente"
+                                  >
+                                    <RotateCw className={`w-3 h-3 ${(isRetryingSync || isSyncing) ? 'animate-spin' : ''}`} />
+                                    <span>Tentar novamente</span>
+                                  </button>
+                                </div>
+                              ) : isPending ? (
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs shrink-0" title="Evidência salva no aparelho. Aguardando sincronização com a nuvem.">
+                                    <Clock className="w-3 h-3 text-amber-700 animate-pulse shrink-0" />
+                                    <span>Pendente no Celular</span>
+                                  </span>
+                                  {isOnline && (
+                                    <button
+                                      type="button"
+                                      onClick={handleRetrySync}
+                                      disabled={isRetryingSync || isSyncing}
+                                      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-extrabold bg-amber-200/80 hover:bg-amber-300 text-amber-950 transition-colors disabled:opacity-50 cursor-pointer"
+                                      title="Enviar agora para a nuvem"
+                                    >
+                                      <RotateCw className={`w-2.5 h-2.5 ${(isRetryingSync || isSyncing) ? 'animate-spin' : ''}`} />
+                                      <span>Enviar</span>
+                                    </button>
+                                  )}
+                                </div>
                               ) : (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-50 text-emerald-800 border border-emerald-200/80 shadow-2xs shrink-0" title="Arquivo sincronizado na nuvem">
-                                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-emerald-50 text-emerald-800 border border-emerald-200/80 shadow-2xs" title="Arquivo sincronizado na nuvem">
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                                   <span>Sincronizado</span>
                                 </span>
                               )}
+
+                              <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-slate-100 text-slate-700 border border-slate-200/80 shadow-2xs shrink-0">
+                                {doc.categoria}
+                              </span>
+                            </div>
+
+                            {/* Título: Nome do Documento / Critério com leitura ampla */}
+                            <h3 className="text-sm font-extrabold text-slate-900 leading-snug break-words">
+                              {doc.nome}
+                            </h3>
+
+                            {/* Propriedade: Nome da fazenda com ícone MapPin */}
+                            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                              <MapPin className="w-3.5 h-3.5 text-[#1B7547] shrink-0" />
+                              <span className="break-words">{doc.fazendaNome}</span>
+                            </div>
+
+                            {/* Linha de Detalhes: Origem e Data de Envio */}
+                            <div className="flex flex-wrap items-center justify-between text-[11px] text-slate-500 font-medium gap-2 pt-2 border-t border-slate-100">
+                              <span className="inline-flex items-center gap-1">
+                                <span className="text-slate-400">Origem:</span>
+                                <span className="font-semibold text-slate-700">{doc.origem || 'Auditoria In Loco'}</span>
+                              </span>
+                              <span className="inline-flex items-center gap-1">
+                                <span className="text-slate-400">Envio:</span>
+                                <span className="font-semibold text-slate-700 whitespace-nowrap">
+                                  {formatUltimaAlteracao(doc.data).fullDate} às {formatUltimaAlteracao(doc.data).timeStr}
+                                </span>
+                              </span>
                             </div>
                           </div>
-                        </td>
-                        <td className="px-6 py-4 text-slate-700 font-bold">{doc.fazendaNome}</td>
-                        <td className="px-6 py-4">
-                          <span className="px-3 py-1 rounded-full text-[10px] font-extrabold uppercase bg-slate-100 text-slate-700 border border-slate-200/80 shadow-2xs">
-                            {doc.categoria}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-slate-500 text-xs font-medium">{doc.origem}</td>
-                        <td className="px-6 py-4 text-slate-700 font-bold whitespace-nowrap">
-                          <span className="text-xs text-slate-800 font-extrabold">
-                            {formatUltimaAlteracao(doc.data).fullDate} às {formatUltimaAlteracao(doc.data).timeStr}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-center">
+
+                          {/* Ação: Botão Ver Imagem ou Abrir PDF com min 44px de toque */}
                           <button
                             type="button"
                             onClick={() => handleOpenEvidencia(doc.arquivo_url)}
-                            className="group/btn inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-[#1B7547]/10 hover:bg-[#1B7547]/20 text-[#1B7547] rounded-xl text-xs font-extrabold transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
+                            className="w-full min-h-[44px] py-2.5 px-4 bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 text-[#1B7547] border border-emerald-200/70 rounded-xl font-extrabold text-xs transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer shadow-2xs mt-1"
                           >
-                            {doc.arquivo_url?.toLowerCase().includes('.pdf') ? (
+                            {isPdf ? (
                               <>
-                                <FileText className="w-3.5 h-3.5 text-[#1B7547] shrink-0 transition-transform group-hover/btn:scale-110 duration-300" />
+                                <FileText className="w-4 h-4 text-[#1B7547] shrink-0" />
                                 <span>Abrir PDF</span>
                               </>
                             ) : (
                               <>
-                                <ImageIcon className="w-3.5 h-3.5 text-[#1B7547] shrink-0 transition-transform group-hover/btn:scale-110 duration-300" />
+                                <ImageIcon className="w-4 h-4 text-[#1B7547] shrink-0" />
                                 <span>Ver Imagem</span>
                               </>
                             )}
                           </button>
-                        </td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* MODO TABELA (Desktop / Forçado por seletor) */}
+              {(docViewMode === 'table' || docViewMode === 'auto') && (
+                <div className={docViewMode === 'table' ? 'block' : 'hidden md:block'}>
+                  {docViewMode === 'table' && (
+                    <div className="md:hidden px-4 py-2 bg-slate-50 border-b border-slate-100 text-[11px] text-slate-500 flex items-center justify-between">
+                      <span>Deslize horizontalmente para ver todas as colunas</span>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-400 animate-pulse" />
+                    </div>
+                  )}
+                  <div className="overflow-x-auto p-2 scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent">
+                    <table className="w-full text-left text-xs font-medium">
+                      <thead className="bg-slate-50 border-b border-slate-100 text-slate-500 font-extrabold text-[10px] uppercase tracking-wider">
+                        <tr>
+                          <th className="px-6 py-4">Documento / Critério</th>
+                          <th className="px-6 py-4">Propriedade</th>
+                          <th className="px-6 py-4">Categoria</th>
+                          <th className="px-6 py-4">Origem</th>
+                          <th className="px-6 py-4">Data Envio</th>
+                          <th className="px-6 py-4 text-center">Arquivo</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {filteredDocs.map((doc) => {
+                          const isPdf = !!doc.arquivo_url?.toLowerCase().includes('.pdf');
+                          const isPending = !!doc.isLocalPending;
+                          const isFailed = !!doc.hasError || (isPending && connectionState === 'FAILED');
+
+                          return (
+                            <tr key={doc.id} className="hover:bg-slate-50/80 transition-colors duration-200 group">
+                              <td className="px-6 py-4 text-slate-900 font-extrabold">
+                                <div className="flex flex-col gap-1">
+                                  <span className="text-slate-900 font-extrabold leading-snug">{doc.nome}</span>
+                                  <div className="flex items-center gap-2">
+                                    {isFailed ? (
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-50 text-rose-800 border border-rose-300 shadow-2xs">
+                                          <AlertTriangle className="w-3 h-3 text-rose-600 shrink-0" />
+                                          <span>Falha no envio</span>
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={handleRetrySync}
+                                          disabled={isRetryingSync || isSyncing}
+                                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-extrabold bg-rose-100 hover:bg-rose-200 text-rose-900 transition-colors disabled:opacity-50 cursor-pointer"
+                                          title="Tentar sincronizar novamente"
+                                        >
+                                          <RotateCw className={`w-2.5 h-2.5 ${(isRetryingSync || isSyncing) ? 'animate-spin' : ''}`} />
+                                          <span>Tentar novamente</span>
+                                        </button>
+                                      </div>
+                                    ) : isPending ? (
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs shrink-0" title="Evidência salva no aparelho. Aguardando sincronização com a nuvem.">
+                                          <Clock className="w-3 h-3 text-amber-700 animate-pulse" />
+                                          <span>Pendente no Celular</span>
+                                        </span>
+                                        {isOnline && (
+                                          <button
+                                            type="button"
+                                            onClick={handleRetrySync}
+                                            disabled={isRetryingSync || isSyncing}
+                                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-extrabold bg-amber-200/80 hover:bg-amber-300 text-amber-950 transition-colors disabled:opacity-50 cursor-pointer"
+                                            title="Enviar agora para a nuvem"
+                                          >
+                                            <RotateCw className={`w-2.5 h-2.5 ${(isRetryingSync || isSyncing) ? 'animate-spin' : ''}`} />
+                                            <span>Enviar</span>
+                                          </button>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-50 text-emerald-800 border border-emerald-200/80 shadow-2xs shrink-0" title="Arquivo sincronizado na nuvem">
+                                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                        <span>Sincronizado</span>
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-6 py-4 text-slate-700 font-bold">{doc.fazendaNome}</td>
+                              <td className="px-6 py-4">
+                                <span className="px-3 py-1 rounded-full text-[10px] font-extrabold uppercase bg-slate-100 text-slate-700 border border-slate-200/80 shadow-2xs">
+                                  {doc.categoria}
+                                </span>
+                              </td>
+                              <td className="px-6 py-4 text-slate-500 text-xs font-medium">{doc.origem}</td>
+                              <td className="px-6 py-4 text-slate-700 font-bold whitespace-nowrap">
+                                <span className="text-xs text-slate-800 font-extrabold">
+                                  {formatUltimaAlteracao(doc.data).fullDate} às {formatUltimaAlteracao(doc.data).timeStr}
+                                </span>
+                              </td>
+                              <td className="px-6 py-4 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEvidencia(doc.arquivo_url)}
+                                  className="group/btn inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-[#1B7547]/10 hover:bg-[#1B7547]/20 text-[#1B7547] rounded-xl text-xs font-extrabold transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer"
+                                >
+                                  {isPdf ? (
+                                    <>
+                                      <FileText className="w-3.5 h-3.5 text-[#1B7547] shrink-0 transition-transform group-hover/btn:scale-110 duration-300" />
+                                      <span>Abrir PDF</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <ImageIcon className="w-3.5 h-3.5 text-[#1B7547] shrink-0 transition-transform group-hover/btn:scale-110 duration-300" />
+                                      <span>Ver Imagem</span>
+                                    </>
+                                  )}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

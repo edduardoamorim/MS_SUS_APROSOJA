@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { 
   Building2, FileCheck2, AlertTriangle, 
   Map as MapIcon, Search, CheckCircle2, FileSearch, ShieldAlert,
-  Clock, MapPin, Sparkles, ArrowRight, ShieldCheck
+  Clock, MapPin, Sparkles, ArrowRight, ShieldCheck, LayoutGrid, Table
 } from 'lucide-react';
 import RevisaoAuditoria from '../../components/auditoria/RevisaoAuditoria';
 import { supabase } from '../../lib/supabase';
@@ -25,6 +25,8 @@ export default function DashboardGestor() {
   
   // Lista de Auditorias vinda do Banco
   const [auditorias, setAuditorias] = useState<any[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [viewMode, setViewMode] = useState<'auto' | 'cards' | 'table'>('auto');
 
   useEffect(() => {
     async function fetchDashboardData() {
@@ -122,6 +124,12 @@ export default function DashboardGestor() {
     }
     setRevisaoAuditoria(null);
   };
+
+  const filteredAudits = auditorias.filter(a => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (a.fazenda || '').toLowerCase().includes(q) || (a.status || '').toLowerCase().includes(q);
+  });
 
   return (
     <div className="space-y-8 animate-fade-in-up">
@@ -270,79 +278,186 @@ export default function DashboardGestor() {
             <p className="text-xs text-slate-500 mt-0.5">{content.tabela_subtitulo}</p>
           </div>
 
-          <div className="relative w-full sm:w-80">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
-            <input 
-              type="text" 
-              placeholder={content.busca_placeholder}
-              className="w-full pl-10 pr-4 py-2.5 border border-slate-200 bg-white rounded-2xl text-xs font-medium focus:outline-none focus:ring-4 focus:ring-[#1B7547]/15 focus:border-[#1B7547] transition-all shadow-xs"
-            />
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
+            <div className="relative w-full sm:w-72">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
+              <input 
+                type="text" 
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder={content.busca_placeholder}
+                className="w-full pl-10 pr-4 py-2.5 border border-slate-200 bg-white rounded-2xl text-xs font-medium focus:outline-none focus:ring-4 focus:ring-[#1B7547]/15 focus:border-[#1B7547] transition-all shadow-xs"
+              />
+            </div>
+
+            {/* Seletor de Modo: Cards | Tabela */}
+            <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 self-end sm:self-auto">
+              <button
+                type="button"
+                onClick={() => setViewMode('cards')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  viewMode === 'cards' || (viewMode === 'auto' && typeof window !== 'undefined' && window.innerWidth < 768)
+                    ? 'bg-white text-[#1B7547] shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="Exibir em Cards"
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                <span>Cards</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('table')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  viewMode === 'table' || (viewMode === 'auto' && typeof window !== 'undefined' && window.innerWidth >= 768)
+                    ? 'bg-white text-[#1B7547] shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="Exibir em Tabela"
+              >
+                <Table className="w-3.5 h-3.5" />
+                <span>Tabela</span>
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Tabela de Registros */}
-        <div className="overflow-x-auto p-2">
-          <table className="w-full text-left text-xs">
-            <thead className="text-slate-500 uppercase text-[10px] font-extrabold tracking-wider border-b border-slate-100">
-              <tr>
-                <th className="px-5 py-4 whitespace-nowrap">Propriedade</th>
-                <th className="px-5 py-4 whitespace-nowrap">Data Visita</th>
-                <th className="px-5 py-4 whitespace-nowrap font-extrabold">Índice Conformidade</th>
-                <th className="px-5 py-4 whitespace-nowrap">Status Atual</th>
-                <th className="px-5 py-4 text-right min-w-[150px] whitespace-nowrap">Ação Estratégica</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {auditorias.map((auditoria) => (
-                <tr key={auditoria.id} className="hover:bg-slate-50/80 transition-colors duration-200 group">
-                  <td className="px-5 py-4.5 font-bold text-slate-900 whitespace-nowrap flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-[#1B7547] opacity-0 group-hover:opacity-100 transition-opacity" />
-                    <span>{auditoria.fazenda}</span>
-                  </td>
-                  <td className="px-5 py-4.5 text-slate-500 font-medium whitespace-nowrap">
-                    {new Date(auditoria.data).toLocaleDateString('pt-BR')}
-                  </td>
-                  <td className="px-5 py-4.5 font-extrabold text-[#1B7547] whitespace-nowrap text-sm">
-                    {auditoria.score}%
-                  </td>
-                  <td className="px-5 py-4.5 whitespace-nowrap">
-                    {auditoria.status === 'Certificada' && (
-                      <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-emerald-800 bg-emerald-100/80 border border-emerald-200 px-3 py-1 rounded-xl shadow-2xs">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> Aprovada
-                      </span>
-                    )}
-                    {auditoria.status === 'Em Análise' && (
-                      <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-amber-800 bg-amber-100/80 border border-amber-200 px-3 py-1 rounded-xl shadow-2xs">
-                        <Clock className="w-3.5 h-3.5 text-amber-600 animate-pulse" /> Em Análise
-                      </span>
-                    )}
-                    {auditoria.status === 'Visita de Campo' && (
-                      <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-blue-800 bg-blue-100/80 border border-blue-200 px-3 py-1 rounded-xl shadow-2xs">
-                        <MapPin className="w-3.5 h-3.5 text-blue-600" /> Agendada
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-5 py-4.5 text-right min-w-[150px] whitespace-nowrap">
-                    {auditoria.status === 'Em Análise' ? (
-                      <button 
-                        onClick={() => setRevisaoAuditoria({ id: auditoria.id, nome: auditoria.fazenda })}
-                        className="group/btn relative inline-flex items-center justify-center gap-2 text-xs font-extrabold text-white bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] px-4 py-2 rounded-2xl transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
-                      >
-                        <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover/btn:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
-                        <ShieldAlert className="w-4 h-4 transition-transform group-hover/btn:scale-110 duration-300" />
-                        <span>Deliberar</span>
-                      </button>
-                    ) : (
-                      <span className="text-slate-400 text-xs font-semibold flex items-center justify-end gap-1.5 opacity-80">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Processado
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {filteredAudits.length === 0 ? (
+          <div className="p-8 text-center text-slate-400 text-xs font-medium">
+            Nenhuma auditoria encontrada para a busca realizada.
+          </div>
+        ) : (
+          <>
+            {/* Modo Cards (Mobile por padrão, ou quando selecionado) */}
+            <div className={viewMode === 'cards' ? 'block' : viewMode === 'table' ? 'hidden' : 'block md:hidden'}>
+              <div className="divide-y divide-slate-100">
+                {filteredAudits.map((auditoria) => (
+                  <div key={auditoria.id} className="p-4 bg-white space-y-3">
+                    {/* Topo: Fazenda e Status */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="space-y-0.5 flex-1 min-w-0">
+                        <h3 className="font-extrabold text-slate-900 text-sm truncate flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-[#1B7547] shrink-0" />
+                          <span className="truncate">{auditoria.fazenda}</span>
+                        </h3>
+                        <p className="text-xs text-slate-500 font-medium flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-slate-400" />
+                          <span>Visita: {new Date(auditoria.data).toLocaleDateString('pt-BR')}</span>
+                        </p>
+                      </div>
+
+                      <div className="shrink-0">
+                        {auditoria.status === 'Certificada' && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-emerald-800 bg-emerald-100/80 border border-emerald-200 px-2.5 py-1 rounded-xl shadow-2xs">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Aprovada
+                          </span>
+                        )}
+                        {auditoria.status === 'Em Análise' && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-amber-800 bg-amber-100/80 border border-amber-200 px-2.5 py-1 rounded-xl shadow-2xs">
+                            <Clock className="w-3 h-3 text-amber-600 animate-pulse" /> Em Análise
+                          </span>
+                        )}
+                        {auditoria.status === 'Visita de Campo' && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-blue-800 bg-blue-100/80 border border-blue-200 px-2.5 py-1 rounded-xl shadow-2xs">
+                            <MapPin className="w-3 h-3 text-blue-600" /> Agendada
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Conformidade e Ação */}
+                    <div className="flex items-center justify-between gap-3 bg-slate-50 p-3 rounded-2xl border border-slate-100">
+                      <div>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Índice Conformidade</span>
+                        <span className="text-base font-extrabold text-[#1B7547]">{auditoria.score}%</span>
+                      </div>
+
+                      <div>
+                        {auditoria.status === 'Em Análise' ? (
+                          <button 
+                            onClick={() => setRevisaoAuditoria({ id: auditoria.id, nome: auditoria.fazenda })}
+                            className="inline-flex items-center justify-center gap-1.5 text-xs font-extrabold text-white bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] px-4 py-2 rounded-xl transition-all shadow-md active:scale-95 cursor-pointer"
+                          >
+                            <ShieldAlert className="w-3.5 h-3.5" />
+                            <span>Deliberar</span>
+                          </button>
+                        ) : (
+                          <span className="text-slate-400 text-xs font-semibold flex items-center gap-1 opacity-80">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Processado
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Modo Tabela (Desktop por padrão, ou quando selecionado) */}
+            <div className={viewMode === 'table' ? 'block overflow-x-auto p-2' : viewMode === 'cards' ? 'hidden' : 'hidden md:block overflow-x-auto p-2'}>
+              <table className="w-full text-left text-xs">
+                <thead className="text-slate-500 uppercase text-[10px] font-extrabold tracking-wider border-b border-slate-100">
+                  <tr>
+                    <th className="px-5 py-4 whitespace-nowrap">Propriedade</th>
+                    <th className="px-5 py-4 whitespace-nowrap">Data Visita</th>
+                    <th className="px-5 py-4 whitespace-nowrap font-extrabold">Índice Conformidade</th>
+                    <th className="px-5 py-4 whitespace-nowrap">Status Atual</th>
+                    <th className="px-5 py-4 text-right min-w-[150px] whitespace-nowrap">Ação Estratégica</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredAudits.map((auditoria) => (
+                    <tr key={auditoria.id} className="hover:bg-slate-50/80 transition-colors duration-200 group">
+                      <td className="px-5 py-4.5 font-bold text-slate-900 whitespace-nowrap flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-[#1B7547] opacity-0 group-hover:opacity-100 transition-opacity" />
+                        <span>{auditoria.fazenda}</span>
+                      </td>
+                      <td className="px-5 py-4.5 text-slate-500 font-medium whitespace-nowrap">
+                        {new Date(auditoria.data).toLocaleDateString('pt-BR')}
+                      </td>
+                      <td className="px-5 py-4.5 font-extrabold text-[#1B7547] whitespace-nowrap text-sm">
+                        {auditoria.score}%
+                      </td>
+                      <td className="px-5 py-4.5 whitespace-nowrap">
+                        {auditoria.status === 'Certificada' && (
+                          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-emerald-800 bg-emerald-100/80 border border-emerald-200 px-3 py-1 rounded-xl shadow-2xs">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> Aprovada
+                          </span>
+                        )}
+                        {auditoria.status === 'Em Análise' && (
+                          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-amber-800 bg-amber-100/80 border border-amber-200 px-3 py-1 rounded-xl shadow-2xs">
+                            <Clock className="w-3.5 h-3.5 text-amber-600 animate-pulse" /> Em Análise
+                          </span>
+                        )}
+                        {auditoria.status === 'Visita de Campo' && (
+                          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-blue-800 bg-blue-100/80 border border-blue-200 px-3 py-1 rounded-xl shadow-2xs">
+                            <MapPin className="w-3.5 h-3.5 text-blue-600" /> Agendada
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-5 py-4.5 text-right min-w-[150px] whitespace-nowrap">
+                        {auditoria.status === 'Em Análise' ? (
+                          <button 
+                            onClick={() => setRevisaoAuditoria({ id: auditoria.id, nome: auditoria.fazenda })}
+                            className="group/btn relative inline-flex items-center justify-center gap-2 text-xs font-extrabold text-white bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] px-4 py-2 rounded-2xl transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
+                          >
+                            <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover/btn:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+                            <ShieldAlert className="w-4 h-4 transition-transform group-hover/btn:scale-110 duration-300" />
+                            <span>Deliberar</span>
+                          </button>
+                        ) : (
+                          <span className="text-slate-400 text-xs font-semibold flex items-center justify-end gap-1.5 opacity-80">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Processado
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
 
       {revisaoAuditoria && (
