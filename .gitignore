@@ -12,3 +12,6 @@ dev-dist/
 frontend/dev-dist/
 dist/
 frontend/dist/
+
+# MCP Config local com credenciais
+mcp_config.json

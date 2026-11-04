@@ -799,7 +799,7 @@ export default function DashboardProdutor() {
   const activeEtapaName = selectedFarmObj ? resolveFarmEtapa(selectedFarmObj.id, selectedFarmObj.etapa, null) : 'Prospecção';
 
   return (
-    <div className="space-y-6 animate-fade-in-up max-w-7xl mx-auto">
+    <div className="space-y-6 animate-fade-in-up max-w-7xl mx-auto pb-24 sm:pb-8">
       {/* Header Executivo do Produtor com Motion e Tipografia Fluida */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 sm:p-6 rounded-2xl sm:rounded-3xl border border-slate-200/80 shadow-xs">
         <div>
@@ -817,33 +817,35 @@ export default function DashboardProdutor() {
           <p className="text-slate-500 mt-1 text-xs sm:text-sm font-medium">{content.subtitulo}</p>
         </div>
         
-        {/* Tab Navigation com Motion Design e Rolagem Suave no Mobile */}
-        <div className="w-full md:w-auto overflow-x-auto no-scrollbar bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 flex md:inline-flex gap-1.5 sm:gap-2 shadow-2xs shrink-0">
+        {/* Tab Navigation: Grid 2x2 no Mobile (100% visível, zero corte) e Segmented Bar no Desktop */}
+        <div className="w-full md:w-auto bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 grid grid-cols-2 sm:flex sm:flex-wrap md:inline-flex gap-1.5 sm:gap-2 shadow-2xs shrink-0">
           <button
             type="button"
             onClick={() => setActiveTab('mapa')}
-            className={`whitespace-nowrap px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
+            className={`px-3 py-2 sm:px-5 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
               activeTab === 'mapa' 
                 ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
                 : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
             }`}
           >
-            <span>{content.aba_mapa}</span>
+            <MapPin className="w-4 h-4 shrink-0" />
+            <span className="truncate">{content.aba_mapa}</span>
           </button>
           
           <button
             type="button"
             onClick={() => setActiveTab('pendencias')}
-            className={`whitespace-nowrap px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
+            className={`px-3 py-2 sm:px-5 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
               activeTab === 'pendencias' 
                 ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
                 : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
             }`}
           >
-            <ClipboardList className="w-4 h-4" />
-            <span>Checklist de Pendências</span>
+            <ClipboardList className="w-4 h-4 shrink-0" />
+            <span className="truncate sm:hidden">Pendências</span>
+            <span className="hidden sm:inline">Checklist de Pendências</span>
             {pendencias.filter(p => p.status === 'Pendente').length > 0 && (
-              <span className="bg-[#C59B27] text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full shrink-0 shadow-2xs">
+              <span className="bg-[#C59B27] text-white text-[10px] font-extrabold px-1.5 py-0.5 rounded-full shrink-0 shadow-2xs">
                 {pendencias.filter(p => p.status === 'Pendente').length}
               </span>
             )}
@@ -852,27 +854,28 @@ export default function DashboardProdutor() {
           <button
             type="button"
             onClick={() => setActiveTab('ia')}
-            className={`whitespace-nowrap px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
+            className={`px-3 py-2 sm:px-5 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
               activeTab === 'ia' 
                 ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-600/20 scale-102' 
                 : 'text-slate-600 hover:text-indigo-600 hover:bg-white/60'
             }`}
           >
-            <Sparkles className="w-4 h-4" />
-            <span>{content.aba_ia}</span>
+            <Sparkles className="w-4 h-4 shrink-0" />
+            <span className="truncate">{content.aba_ia}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('documentacao')}
-            className={`whitespace-nowrap px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
+            className={`px-3 py-2 sm:px-5 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
               activeTab === 'documentacao' 
                 ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
                 : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
             }`}
           >
-            <FolderOpen className="w-4 h-4" />
-            <span>Documentação & Evidências</span>
+            <FolderOpen className="w-4 h-4 shrink-0" />
+            <span className="truncate sm:hidden">Evidências</span>
+            <span className="hidden sm:inline">Documentação & Evidências</span>
           </button>
         </div>
       </div>
@@ -2011,6 +2014,82 @@ export default function DashboardProdutor() {
           fetchFarmsAndPendencias();
         }}
       />
+
+      {/* Mobile Bottom Navigation Bar — Barra Fixa de Acesso Rápido para Polegar no Mobile */}
+      <div className="fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 py-2 px-3 sm:hidden shadow-[0_-4px_20px_rgba(0,0,0,0.06)]">
+        <div className="grid grid-cols-4 gap-1 max-w-md mx-auto">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('mapa');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl text-[10px] font-bold transition-all cursor-pointer ${
+              activeTab === 'mapa'
+                ? 'text-[#1B7547] bg-emerald-50/80 font-black'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <MapPin className="w-4 h-4 mb-0.5" />
+            <span className="truncate">Mapa</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('pendencias');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl text-[10px] font-bold transition-all cursor-pointer relative ${
+              activeTab === 'pendencias'
+                ? 'text-[#1B7547] bg-emerald-50/80 font-black'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <div className="relative">
+              <ClipboardList className="w-4 h-4 mb-0.5" />
+              {pendencias.filter(p => p.status === 'Pendente').length > 0 && (
+                <span className="absolute -top-1 -right-2 bg-[#C59B27] text-white text-[9px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center">
+                  {pendencias.filter(p => p.status === 'Pendente').length}
+                </span>
+              )}
+            </div>
+            <span className="truncate">Pendências</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('ia');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl text-[10px] font-bold transition-all cursor-pointer ${
+              activeTab === 'ia'
+                ? 'text-indigo-600 bg-indigo-50/80 font-black'
+                : 'text-slate-500 hover:text-indigo-600'
+            }`}
+          >
+            <Sparkles className="w-4 h-4 mb-0.5" />
+            <span className="truncate">Assistente</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('documentacao');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl text-[10px] font-bold transition-all cursor-pointer ${
+              activeTab === 'documentacao'
+                ? 'text-[#1B7547] bg-emerald-50/80 font-black'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <FolderOpen className="w-4 h-4 mb-0.5" />
+            <span className="truncate">Evidências</span>
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -3124,40 +3124,69 @@ export default function DashboardTecnico() {
         </div>
       )}
 
-      {/* Tabs Principais com Motion Design Padronizado */}
-      <div className="bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 flex overflow-x-auto scrollbar-none sm:inline-flex sm:flex-wrap gap-2 shadow-2xs max-w-full">
+      {/* Tabs Principais - Grid 3-colunas no Mobile (Zero Rolagem Oculta) e Segmented Bar no Desktop */}
+      <div className="bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 grid grid-cols-3 sm:inline-flex sm:flex-wrap gap-1.5 sm:gap-2 shadow-2xs w-full sm:w-auto">
         <button
+          type="button"
           onClick={() => setActiveTab('mapa')}
-          className={`px-4 sm:px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 whitespace-nowrap ${
+          className={`px-1.5 sm:px-5 py-2 sm:py-2.5 rounded-xl font-extrabold text-[11px] sm:text-xs transition-all duration-300 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 cursor-pointer text-center ${
             activeTab === 'mapa'
-              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 '
+              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20'
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          <MapIcon className="w-4 h-4 shrink-0" />
-          <span>Mapa & Propriedades</span>
+          <div className="flex items-center gap-1 shrink-0">
+            <MapIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+            <span className="sm:hidden text-[11px] font-black">Mapa</span>
+          </div>
+          <span className="hidden sm:inline whitespace-nowrap">Mapa & Propriedades</span>
+          <span className={`text-[9px] sm:text-[10px] px-1.5 py-0.2 rounded-full font-black ${
+            activeTab === 'mapa' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
+          }`}>
+            {filteredFarms.length}
+          </span>
         </button>
+
         <button
+          type="button"
           onClick={() => setActiveTab('auditorias')}
-          className={`px-4 sm:px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 whitespace-nowrap ${
+          className={`px-1.5 sm:px-5 py-2 sm:py-2.5 rounded-xl font-extrabold text-[11px] sm:text-xs transition-all duration-300 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 cursor-pointer text-center ${
             activeTab === 'auditorias'
-              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 '
+              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20'
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          <ClipboardList className="w-4 h-4 shrink-0" />
-          <span>Auditorias & Visitas</span>
+          <div className="flex items-center gap-1 shrink-0">
+            <ClipboardList className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+            <span className="sm:hidden text-[11px] font-black">Auditorias</span>
+          </div>
+          <span className="hidden sm:inline whitespace-nowrap">Auditorias & Visitas</span>
+          <span className={`text-[9px] sm:text-[10px] px-1.5 py-0.2 rounded-full font-black ${
+            activeTab === 'auditorias' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
+          }`}>
+            {auditorias.length}
+          </span>
         </button>
+
         <button
+          type="button"
           onClick={() => setActiveTab('documentacao')}
-          className={`px-4 sm:px-5 py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center gap-2 cursor-pointer shrink-0 whitespace-nowrap ${
+          className={`px-1.5 sm:px-5 py-2 sm:py-2.5 rounded-xl font-extrabold text-[11px] sm:text-xs transition-all duration-300 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 cursor-pointer text-center ${
             activeTab === 'documentacao'
-              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 '
+              ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20'
               : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
           }`}
         >
-          <FolderOpen className="w-4 h-4 shrink-0" />
-          <span>Histórico de Documentação & Evidências</span>
+          <div className="flex items-center gap-1 shrink-0">
+            <FolderOpen className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+            <span className="sm:hidden text-[11px] font-black">Evidências</span>
+          </div>
+          <span className="hidden sm:inline whitespace-nowrap">Histórico de Documentação & Evidências</span>
+          <span className={`text-[9px] sm:text-[10px] px-1.5 py-0.2 rounded-full font-black ${
+            activeTab === 'documentacao' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
+          }`}>
+            {documentos.length}
+          </span>
         </button>
       </div>
 
@@ -4593,6 +4622,80 @@ export default function DashboardTecnico() {
           </div>
         </div>,
         document.body
+      )}
+
+      {/* Barra de Navegação Inferior Fixa (Mobile Bottom Navigation Bar) - Estilo App Nativo */}
+      {!showQuestionario && !selectedAuditForDetail && !showCreateFarmModal && !showScheduleAuditModal && !fotoAmpliada && !pdfAmpliado && (
+        <nav
+          aria-label="Navegação rápida de campo"
+          className="fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 shadow-[0_-4px_20px_rgba(0,0,0,0.08)] sm:hidden px-3 pt-1.5 pb-2"
+        >
+          <div className="grid grid-cols-3 gap-1 max-w-md mx-auto">
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('mapa');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition-all duration-200 cursor-pointer ${
+                activeTab === 'mapa'
+                  ? 'text-[#1B7547] font-black'
+                  : 'text-slate-500 hover:text-slate-800 font-semibold'
+              }`}
+            >
+              <div className={`p-1 rounded-lg transition-all ${activeTab === 'mapa' ? 'bg-[#1B7547]/10' : ''}`}>
+                <MapIcon className="w-5 h-5 shrink-0" />
+              </div>
+              <span className="text-[10px] mt-0.5 leading-tight">Mapa</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('auditorias');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition-all duration-200 cursor-pointer relative ${
+                activeTab === 'auditorias'
+                  ? 'text-[#1B7547] font-black'
+                  : 'text-slate-500 hover:text-slate-800 font-semibold'
+              }`}
+            >
+              <div className={`p-1 rounded-lg transition-all relative ${activeTab === 'auditorias' ? 'bg-[#1B7547]/10' : ''}`}>
+                <ClipboardList className="w-5 h-5 shrink-0" />
+                {auditorias.length > 0 && (
+                  <span className="absolute -top-1 -right-2 bg-[#1B7547] text-white text-[9px] font-black px-1.5 py-0.2 rounded-full min-w-[16px] text-center">
+                    {auditorias.length}
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] mt-0.5 leading-tight">Auditorias</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('documentacao');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition-all duration-200 cursor-pointer relative ${
+                activeTab === 'documentacao'
+                  ? 'text-[#1B7547] font-black'
+                  : 'text-slate-500 hover:text-slate-800 font-semibold'
+              }`}
+            >
+              <div className={`p-1 rounded-lg transition-all relative ${activeTab === 'documentacao' ? 'bg-[#1B7547]/10' : ''}`}>
+                <FolderOpen className="w-5 h-5 shrink-0" />
+                {documentos.length > 0 && (
+                  <span className="absolute -top-1 -right-2 bg-emerald-600 text-white text-[9px] font-black px-1.5 py-0.2 rounded-full min-w-[16px] text-center">
+                    {documentos.length}
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] mt-0.5 leading-tight">Evidências</span>
+            </button>
+          </div>
+        </nav>
       )}
     </div>
   );
