@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { MapPin, Plus, AlertTriangle, CheckCircle, Search, ShieldAlert, Loader2, Sparkles, ClipboardList, Clock, CheckCircle2, Image as ImageIcon, FolderOpen, FileText, Trash2, X, Eye, Download, ExternalLink, Compass, Building2, ShieldCheck } from 'lucide-react';
+import { MapPin, Plus, AlertTriangle, CheckCircle, Search, ShieldAlert, Loader2, Sparkles, ClipboardList, Clock, CheckCircle2, Image as ImageIcon, FolderOpen, FileText, Trash2, X, Eye, Download, ExternalLink, Compass, Building2, ShieldCheck, Award, RotateCcw } from 'lucide-react';
+import PanoramaScoreRTRS, { type PanoramaCriterioItem } from '../../components/auditoria/PanoramaScoreRTRS';
 import MapView from '../../components/map/MapView';
 import type { FeatureCollection, Feature, Polygon } from 'geojson';
 import QuestionarioRTRS from '../../components/auditoria/QuestionarioRTRS';
@@ -84,6 +85,110 @@ export default function DashboardProdutor() {
   const [newFarmName, setNewFarmName] = useState('');
   const [farmsData, setFarmsData] = useState<FeatureCollection>(MOCK_FARMS);
   const [selectedFarmId, setSelectedFarmId] = useState<string | null>(null);
+  const [panoramaModalFarm, setPanoramaModalFarm] = useState<any>(null);
+  const [panoramaCriteriosList, setPanoramaCriteriosList] = useState<PanoramaCriterioItem[]>([]);
+  const [loadingPanorama, setLoadingPanorama] = useState(false);
+
+  // Helper para garantir integridade do perfil e evitar erro de FK ao criar fazendas
+  const ensureProducerProfile = async (user: any): Promise<string> => {
+    if (!user) return '';
+    try {
+      const { data: existingProfile } = await supabase
+        .from('perfis')
+        .select('id')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (existingProfile?.id) {
+        return existingProfile.id;
+      }
+
+      if (user.email) {
+        const { data: profileByEmail } = await supabase
+          .from('perfis')
+          .select('id')
+          .ilike('email', user.email)
+          .maybeSingle();
+
+        if (profileByEmail?.id) {
+          return profileByEmail.id;
+        }
+      }
+
+      const { data: newProfile } = await supabase
+        .from('perfis')
+        .upsert([{
+          id: user.id,
+          nome: user.user_metadata?.full_name || 'Produtor Rural',
+          email: user.email || '',
+          role: 'produtor',
+          status: 'Ativo'
+        }])
+        .select('id')
+        .single();
+
+      return newProfile?.id || user.id;
+    } catch (e) {
+      console.warn('Aviso ao sincronizar perfil do produtor:', e);
+      return user.id;
+    }
+  };
+
+  const handleOpenPanorama = async (farmId: string) => {
+    const farm = properties.find(p => p.id === farmId);
+    if (!farm) return;
+    setPanoramaModalFarm(farm);
+    setLoadingPanorama(true);
+
+    try {
+      const { data: audit } = await supabase
+        .from('auditorias')
+        .select('id, etapa')
+        .eq('propriedade_id', farmId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const { data: questions } = await supabase
+        .from('perguntas_rtrs')
+        .select('*')
+        .eq('ativo', true)
+        .order('ordem', { ascending: true });
+
+      let resps: any[] = [];
+      if (audit?.id) {
+        const { data: respsData } = await supabase
+          .from('respostas_auditoria')
+          .select('*')
+          .eq('auditoria_id', audit.id);
+        if (respsData) resps = respsData;
+      }
+
+      const respsMap = new Map<string, any>();
+      resps.forEach(r => respsMap.set(r.pergunta_id, r));
+
+      const items: PanoramaCriterioItem[] = (questions || []).map(q => {
+        const r = respsMap.get(q.id);
+        return {
+          id: q.id,
+          secao: q.secao,
+          criterio: q.numero_criterio,
+          enunciado: q.enunciado || q.criterio,
+          conforme: r?.conforme,
+          nao_se_aplica: r?.nao_se_aplica,
+          observacao: r?.observacoes,
+          evidencia: r?.evidencia_url,
+          ponderacao: q.ponderacao
+        };
+      });
+
+      setPanoramaCriteriosList(items);
+    } catch (err) {
+      console.error('Erro ao carregar panorama da fazenda:', err);
+    } finally {
+      setLoadingPanorama(false);
+    }
+  };
 
   const handleConfirmLocationFromModal = async (loc: LocationResult) => {
     setShowLocationModal(false);
@@ -92,11 +197,12 @@ export default function DashboardProdutor() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Usuário não autenticado');
 
+      const validProducerId = await ensureProducerProfile(user);
       const farmName = newFarmName.trim() || `Fazenda Sede (${loc.municipio})`;
       const nowIso = new Date().toISOString();
 
       const newProp = {
-        produtor_id: user.id,
+        produtor_id: validProducerId,
         nome_fazenda: farmName,
         etapa: 'Prospecção',
         nome_produtor: user.user_metadata?.full_name || 'Produtor Rural',
@@ -107,8 +213,21 @@ export default function DashboardProdutor() {
         updated_at: nowIso
       };
 
-      const { error: err } = await supabase.from('propriedades').insert([newProp]);
+      const { data: insertedProp, error: err } = await supabase
+        .from('propriedades')
+        .insert([newProp])
+        .select()
+        .single();
       if (err) throw err;
+
+      if (insertedProp?.id) {
+        await supabase.from('auditorias').insert([{
+          propriedade_id: insertedProp.id,
+          status: 'Autoavaliação',
+          etapa: 'Prospecção',
+          data_agendamento: nowIso
+        }]);
+      }
 
       await fetchFarmsAndPendencias();
       setShowNewFarmModal(false);
@@ -183,20 +302,28 @@ export default function DashboardProdutor() {
   const fetchDocuments = async () => {
     setLoadingDocs(true);
     try {
-      // 1. Buscar documentos gerais do banco
+      const propIds = properties.map(p => p.id);
+      if (propIds.length === 0) {
+        setDocumentos([]);
+        setLoadingDocs(false);
+        return;
+      }
+
+      // 1. Buscar documentos gerais do banco pertencentes às fazendas do produtor
       const { data: genDocs } = await supabase
-        .from('documentos')
+        .from('documentos_propriedade')
         .select('*')
+        .in('propriedade_id', propIds)
         .order('created_at', { ascending: false });
 
-      // 2. Buscar respostas da autoavaliação com evidências
+      // 2. Buscar respostas da autoavaliação com evidências APENAS das fazendas do produtor
       const { data: respData } = await supabase
         .from('respostas_auditoria')
         .select(`
           id,
           evidencia_url,
           created_at,
-          auditorias (
+          auditorias!inner (
             propriedade_id,
             status
           ),
@@ -205,12 +332,14 @@ export default function DashboardProdutor() {
             secao
           )
         `)
+        .in('auditorias.propriedade_id', propIds)
         .not('evidencia_url', 'is', null);
 
-      // 3. Buscar pendências com evidências
+      // 3. Buscar pendências com evidências APENAS das fazendas do produtor
       const { data: pendsData } = await supabase
         .from('pendencias')
         .select('id, propriedade_id, titulo, evidencia_url, status, created_at')
+        .in('propriedade_id', propIds)
         .not('evidencia_url', 'is', null);
 
       const mergedList: any[] = [];
@@ -332,7 +461,7 @@ export default function DashboardProdutor() {
         criado_por: user?.id || null
       };
 
-      const { error: err } = await supabase.from('documentos').insert([payload]);
+      const { error: err } = await supabase.from('documentos_propriedade').insert([payload]);
       if (err) throw err;
 
       success('Documento arquivado com sucesso!');
@@ -353,7 +482,7 @@ export default function DashboardProdutor() {
     const id = deleteDocConfirmId;
     if (!id) return;
     try {
-      const { error: err } = await supabase.from('documentos').delete().eq('id', id);
+      const { error: err } = await supabase.from('documentos_propriedade').delete().eq('id', id);
       if (err) throw err;
       fetchDocuments();
       success('Documento excluído com sucesso!');
@@ -452,6 +581,17 @@ export default function DashboardProdutor() {
 
       setProperties(props || []);
       setPendencias(pends);
+      
+      // Carregar contagem de documentos de imediato para KPI
+      if (props && props.length > 0) {
+        supabase
+          .from('documentos_propriedade')
+          .select('id, propriedade_id, categoria, nome, arquivo_url, created_at')
+          .in('propriedade_id', props.map((p: any) => p.id))
+          .then(({ data: docsData }) => {
+            if (docsData) setDocumentos(docsData);
+          }).catch(() => {});
+      }
 
       // 4. Gerar FeatureCollection para o mapa EXCLUSIVAMENTE dos imóveis do produtor logado
       if (props && props.length > 0) {
@@ -595,9 +735,10 @@ export default function DashboardProdutor() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Usuário não autenticado no Supabase.');
 
+      const validProducerId = await ensureProducerProfile(user);
       const nowIso = new Date().toISOString();
       const newProp = {
-        produtor_id: user.id,
+        produtor_id: validProducerId,
         nome_fazenda: codeFarmData.nome_fazenda,
         etapa: 'Prospecção',
         nome_produtor: user.user_metadata?.full_name || 'Produtor',
@@ -610,8 +751,21 @@ export default function DashboardProdutor() {
         updated_at: nowIso
       };
 
-      const { error: err } = await supabase.from('propriedades').insert([newProp]);
+      const { data: insertedProp, error: err } = await supabase
+        .from('propriedades')
+        .insert([newProp])
+        .select()
+        .single();
       if (err) throw err;
+
+      if (insertedProp?.id) {
+        await supabase.from('auditorias').insert([{
+          propriedade_id: insertedProp.id,
+          status: 'Autoavaliação',
+          etapa: 'Prospecção',
+          data_agendamento: nowIso
+        }]);
+      }
 
       await fetchFarmsAndPendencias();
       setShowCodeFarmModal(false);
@@ -637,17 +791,34 @@ export default function DashboardProdutor() {
           coordinates: [[[lng - 0.03, lat + 0.03], [lng + 0.03, lat + 0.03], [lng + 0.03, lat - 0.03], [lng - 0.03, lat - 0.03], [lng - 0.03, lat + 0.03]]]
         };
 
+        const validProducerId = await ensureProducerProfile(user);
+        const nowIso = new Date().toISOString();
         const newProp = {
-          produtor_id: user.id,
+          produtor_id: validProducerId,
           nome_fazenda: newFarmName,
           etapa: 'Prospecção',
           nome_produtor: user.user_metadata?.full_name || 'Produtor',
           codigo_car: `MS-${Math.floor(1000000 + Math.random() * 9000000)}-ABCD.EFGH.IJKL.MNOP`,
-          geom: geom
+          geom: geom,
+          created_at: nowIso,
+          updated_at: nowIso
         };
 
-        const { error: err } = await supabase.from('propriedades').insert([newProp]);
+        const { data: insertedProp, error: err } = await supabase
+          .from('propriedades')
+          .insert([newProp])
+          .select()
+          .single();
         if (err) throw err;
+
+        if (insertedProp?.id) {
+          await supabase.from('auditorias').insert([{
+            propriedade_id: insertedProp.id,
+            status: 'Autoavaliação',
+            etapa: 'Prospecção',
+            data_agendamento: nowIso
+          }]);
+        }
 
         await fetchFarmsAndPendencias();
         setShowNewFarmModal(false);
@@ -907,7 +1078,7 @@ export default function DashboardProdutor() {
               {(() => {
                 const total = pendencias.length;
                 if (total === 0) return '100%';
-                const res = pendencias.filter(p => p.status === 'Resolvido' || p.status === 'Em Análise').length;
+                const res = pendencias.filter(p => p.status === 'Resolvida' || p.status === 'Resolvido').length;
                 return `${Math.round((res / total) * 100)}%`;
               })()}
             </p>
@@ -1043,24 +1214,39 @@ export default function DashboardProdutor() {
                         </p>
                       </div>
 
-                      <div className="flex gap-2">
+                      <div className="flex flex-col gap-2">
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowQuestionario(feature.properties?.id);
+                            }}
+                            className="flex-1 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg text-[11px] font-bold transition-all border border-emerald-200 shadow-sm cursor-pointer text-center"
+                          >
+                            Autoavaliação RTRS
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveTab('pendencias');
+                            }}
+                            className="flex-1 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-lg text-[11px] font-bold transition-all border border-slate-200 shadow-sm cursor-pointer text-center"
+                          >
+                            Pendências
+                          </button>
+                        </div>
                         <button
+                          type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setShowQuestionario(feature.properties?.id);
+                            handleOpenPanorama(feature.properties?.id);
                           }}
-                          className="flex-1 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg text-[11px] font-bold transition-all border border-emerald-200 shadow-sm cursor-pointer text-center"
+                          className="w-full py-1.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-lg text-[11px] font-extrabold transition-all shadow-2xs flex items-center justify-center gap-1.5 cursor-pointer text-center"
                         >
-                          Autoavaliação RTRS
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveTab('pendencias');
-                          }}
-                          className="flex-1 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-lg text-[11px] font-bold transition-all border border-slate-200 shadow-sm cursor-pointer text-center"
-                        >
-                          Pendências
+                          <Award className="w-3.5 h-3.5 text-[#C59B27]" />
+                          <span>Ver Panorama & Score RTRS</span>
                         </button>
                       </div>
                       
@@ -1242,7 +1428,7 @@ export default function DashboardProdutor() {
                                     </div>
                                   )}
 
-                                  {pend.status === 'Em Análise' && (
+                                  {(pend.status === 'Em Análise' || pend.status === 'Resolvida' || pend.status === 'Resolvido') && (
                                     <div className="p-3 bg-indigo-50/50 rounded-lg border border-indigo-100 text-xs text-indigo-900 space-y-1">
                                       <div className="font-semibold">Resolução Enviada:</div>
                                       <div className="italic">"{pend.resolucao_descricao}"</div>
@@ -1321,7 +1507,7 @@ export default function DashboardProdutor() {
                                             <span className="font-bold">Ajustes Solicitados: </span>"{pend.motivo_rejeicao}"
                                           </div>
                                         )}
-                                        {pend.status === 'Em Análise' && (
+                                        {(pend.status === 'Em Análise' || pend.status === 'Resolvida' || pend.status === 'Resolvido') && (
                                           <div className="mt-2 p-2.5 bg-indigo-50/50 rounded-lg border border-indigo-100 text-xs text-indigo-900">
                                             <span className="font-semibold">Resolução: </span>"{pend.resolucao_descricao}"
                                             {pend.evidencia_url && (
@@ -2003,6 +2189,40 @@ export default function DashboardProdutor() {
         onConfirmLocation={handleConfirmLocationFromModal}
         initialFarmName={newFarmName}
       />
+
+      {/* Modal Executivo de Panorama & Pontuação RTRS da Fazenda */}
+      {panoramaModalFarm && (
+        <Modal
+          isOpen={true}
+          onClose={() => setPanoramaModalFarm(null)}
+          title=""
+          maxWidth="max-w-4xl"
+        >
+          <div className="p-1 sm:p-2">
+            {loadingPanorama ? (
+              <div className="flex flex-col items-center justify-center py-16 gap-3">
+                <Loader2 className="w-8 h-8 animate-spin text-[#1B7547]" />
+                <span className="text-xs font-bold text-slate-600">Calculando indicadores e conformidade RTRS...</span>
+              </div>
+            ) : (
+              <PanoramaScoreRTRS
+                propriedadeNome={panoramaModalFarm.nome_fazenda}
+                municipio={panoramaModalFarm.municipio || 'Mato Grosso do Sul'}
+                produtorNome={panoramaModalFarm.nome_produtor}
+                criterios={panoramaCriteriosList}
+                readOnly={true}
+                etapa={resolveFarmEtapa(panoramaModalFarm.id, panoramaModalFarm.etapa, null)}
+                onClose={() => setPanoramaModalFarm(null)}
+                onBackToQuestions={() => {
+                  const fId = panoramaModalFarm.id;
+                  setPanoramaModalFarm(null);
+                  setShowQuestionario(fId);
+                }}
+              />
+            )}
+          </div>
+        </Modal>
+      )}
 
       {/* Modal Obrigatorio de Onboarding de Primeiro Acesso */}
       <OnboardingQuestionarioModal

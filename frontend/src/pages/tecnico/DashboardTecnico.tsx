@@ -1988,6 +1988,30 @@ export default function DashboardTecnico() {
       const validProdId = isUUID(selectedProdutorId) ? selectedProdutorId : null;
       const validTecId = isUUID(user?.id) ? user.id : null;
 
+      // Pré-criar Auth user para o produtor se for novo cadastro, garantindo login imediato no Portal do Produtor
+      let preCreatedAuthUserId: string | null = null;
+      if (produtorOption === 'novo' && novoProdutorData.nome) {
+        const defaultEmail = novoProdutorData.email?.trim() || `${novoProdutorData.nome.toLowerCase().replace(/\s+/g, '')}@produtor.com.br`;
+        try {
+          const isolatedAuth = createIsolatedAuthClient();
+          const { data: signUpData } = await isolatedAuth.auth.signUp({
+            email: defaultEmail,
+            password: 'Senha@123',
+            options: {
+              data: {
+                full_name: novoProdutorData.nome,
+                role: 'produtor'
+              }
+            }
+          });
+          if (signUpData?.user?.id && isUUID(signUpData.user.id)) {
+            preCreatedAuthUserId = signUpData.user.id;
+          }
+        } catch (e) {
+          console.warn('Aviso ao criar conta Auth do produtor:', e);
+        }
+      }
+
       const payload = {
         produtor_option: produtorOption,
         produtor_id: produtorOption === 'existente' ? validProdId : null,

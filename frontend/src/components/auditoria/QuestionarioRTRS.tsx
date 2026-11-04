@@ -841,7 +841,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         .update({ 
           updated_at: nowIso,
           status: modo === 'autoavaliacao' ? 'Autoavaliação' : 'Em Andamento',
-          ...(user?.id ? { tecnico_responsavel_id: user.id } : {})
+          ...(user?.id && modo !== 'autoavaliacao' ? { tecnico_responsavel_id: user.id } : {})
         })
         .eq('id', aid)
         .then(({ error: aErr }) => {
@@ -1019,7 +1019,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                 await supabase.from('auditorias').upsert([{
                   id: auditIdToUse,
                   propriedade_id: targetPropId,
-                  tecnico_responsavel_id: user?.id || cachedAud?.tecnico_responsavel_id || null,
+                  tecnico_responsavel_id: modo !== 'autoavaliacao' ? (user?.id || cachedAud?.tecnico_responsavel_id || null) : (cachedAud?.tecnico_responsavel_id || null),
                   status: modo === 'autoavaliacao' ? 'Autoavaliação' : 'Em Andamento',
                   data_agendamento: cachedAud?.data_agendamento || nowIso,
                   updated_at: nowIso
@@ -1070,6 +1070,30 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               if (typeof window !== 'undefined') {
                 window.dispatchEvent(new CustomEvent('ms:audit-updated', { detail: { auditoriaId: auditIdToUse } }));
               }
+
+              // Sincronização em tempo real de pendências RTRS com o Portal do Produtor
+              try {
+                const targetPropId = propriedadeId || (await db.cached_auditorias.get(auditIdToUse))?.propriedade_id;
+                if (targetPropId && !targetPropId.startsWith('mock-') && pergunta?.numero_criterio) {
+                  const critTitulo = `Não conformidade - Critério ${pergunta.numero_criterio}`;
+                  if (nextStateForId.conforme === false && !nextStateForId.nao_se_aplica) {
+                    supabase.from('pendencias').upsert({
+                      propriedade_id: targetPropId,
+                      titulo: critTitulo,
+                      descricao: `Ação necessária para atender ao critério ${pergunta.numero_criterio}: "${pergunta.enunciado || pergunta.criterio}". Observação: ${nextStateForId.observacao || 'Nenhuma observação informada.'}`,
+                      status: 'Pendente',
+                      prazo: pergunta.ponderacao === 'Imediata' ? new Date(Date.now() + 15 * 86400000).toISOString().split('T')[0] : new Date(Date.now() + 60 * 86400000).toISOString().split('T')[0],
+                      tecnico_responsavel_id: modo !== 'autoavaliacao' ? (user?.id || null) : null
+                    }, { onConflict: 'propriedade_id,titulo' }).then(() => {});
+                  } else if (nextStateForId.conforme === true || nextStateForId.nao_se_aplica) {
+                    supabase.from('pendencias').update({
+                      status: 'Resolvida',
+                      resolucao_descricao: 'Critério validado em conformidade pelo técnico.',
+                      updated_at: nowIso
+                    }).eq('propriedade_id', targetPropId).eq('titulo', critTitulo).then(() => {});
+                  }
+                }
+              } catch (e) {}
             } else {
               console.warn('[QuestionarioRTRS] Falha no upsert direto de resposta, SyncEngine assumirá em background:', dbErr);
             }
@@ -1396,7 +1420,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                 await supabase.from('auditorias').upsert([{
                   id: auditIdToUse,
                   propriedade_id: targetPropId,
-                  tecnico_responsavel_id: user?.id || cachedAud?.tecnico_responsavel_id || null,
+                  tecnico_responsavel_id: modo !== 'autoavaliacao' ? (user?.id || cachedAud?.tecnico_responsavel_id || null) : (cachedAud?.tecnico_responsavel_id || null),
                   status: modo === 'autoavaliacao' ? 'Autoavaliação' : 'Em Andamento',
                   data_agendamento: cachedAud?.data_agendamento || nowIso,
                   updated_at: nowIso
@@ -1579,7 +1603,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               .from('auditorias')
               .insert([{
                 propriedade_id: targetPropId,
-                tecnico_responsavel_id: user?.id || null,
+                tecnico_responsavel_id: modo !== 'autoavaliacao' ? (user?.id || null) : null,
                 status: modo === 'autoavaliacao' ? 'Autoavaliação' : 'Em Andamento',
                 data_agendamento: new Date().toISOString()
               }])
@@ -1698,7 +1722,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
             id: activeId,
             status: 'Em Andamento',
             updated_at: new Date().toISOString(),
-            ...(user?.id ? { tecnico_responsavel_id: user.id } : {})
+            ...(user?.id && modo !== 'autoavaliacao' ? { tecnico_responsavel_id: user.id } : {})
           }
         });
       }
@@ -1759,7 +1783,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
 
       // Enfileirar pendências automáticas APENAS para não-conformidades reais (exclui Não se Aplica)
       const naoConformes = perguntas.filter(p => {
-        const ans = respostas[p.id];
+        const ans = respostas[p.id] || respostas[normalizePerguntaId(p.id)];
         return ans && ans.conforme === false && !ans.nao_se_aplica;
       });
       if (naoConformes.length > 0) {
@@ -1775,18 +1799,27 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
 
         if (finalPropId) {
           for (const p of naoConformes) {
+            const ans = respostas[p.id] || respostas[normalizePerguntaId(p.id)];
+            const pendPayload = {
+              propriedade_id: finalPropId,
+              titulo: `Não conformidade - Critério ${p.numero_criterio}`,
+              descricao: `Ação necessária para atender ao critério ${p.numero_criterio}: "${p.enunciado || p.criterio}". Observação registrada: ${ans?.observacao || 'Nenhuma'}`,
+              status: 'Pendente',
+              prazo: p.ponderacao === 'Imediata' ? new Date(Date.now() + 15 * 86400000).toISOString().split('T')[0] : new Date(Date.now() + 60 * 86400000).toISOString().split('T')[0],
+              criado_por: modo !== 'autoavaliacao' ? (user?.id || null) : null,
+              tecnico_responsavel_id: modo !== 'autoavaliacao' ? (user?.id || null) : null
+            };
+
             await enqueueMutation({
               table: 'pendencias',
               action: 'upsert',
               on_conflict: 'propriedade_id,titulo',
-              payload: {
-                propriedade_id: finalPropId,
-                titulo: `Não conformidade - Critério ${p.numero_criterio}`,
-                descricao: `Ação necessária para atender ao critério ${p.numero_criterio}: "${p.enunciado}". Observação registrada: ${respostas[p.id]?.observacao || 'Nenhuma'}`,
-                status: 'Pendente',
-                prazo: p.ponderacao === 'Imediata' ? new Date(Date.now() + 15 * 86400000).toISOString().split('T')[0] : new Date(Date.now() + 60 * 86400000).toISOString().split('T')[0]
-              }
+              payload: pendPayload
             });
+
+            if (isDeviceOnline && !finalPropId.startsWith('mock-')) {
+              supabase.from('pendencias').upsert(pendPayload, { onConflict: 'propriedade_id,titulo' }).then(() => {});
+            }
           }
         }
       }
