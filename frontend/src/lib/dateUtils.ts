@@ -128,7 +128,11 @@ export function formatUltimaAlteracao(dateInput: string | Date | null | undefine
     }
   }
 
-  const badgeText = `${relative} (${fullDate} ${timeStr})`;
+  const badgeText = relative.includes(fullDate)
+    ? relative
+    : relative.includes(timeStr)
+    ? `${relative} (${fullDate})`
+    : `${relative} (${fullDate} ${timeStr})`;
 
   return {
     relative,

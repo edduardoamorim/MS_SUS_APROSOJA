@@ -18,6 +18,7 @@ import ProducerInput from '../../components/form/ProducerInput';
 import { ListSkeleton, AuditCardSkeleton } from '../../components/ui/Skeleton';
 import ConfirmAction from '../../components/ui/ConfirmAction';
 import AuditDetailModal from '../../components/auditoria/AuditDetailModal';
+import ModalErrorBoundary from '../../components/ui/ModalErrorBoundary';
 import { resolveMunicipioFromCarOrName } from '../../lib/geoUtils';
 import { resolveFarmEtapa, persistFarmEtapa, normalizeEtapa } from '../../lib/etapaUtils';
 import { db, enqueueMutation, getCachedReadData, cacheReadData, generateUUID, getCachedAuditorias, bulkSaveAuditorias, useLiveAuditorias, updateCachedAuditoria, compareAuditoriasDeterministically, resetAuthFailedQueueItems, getPendingEvidenceKeys, getCachedPendenciasByPropriedade, bulkSavePendencias } from '../../lib/offlineDb';
@@ -25,6 +26,7 @@ import { prepareFieldModeData, getLastFieldPrepInfo, seedDefaultAuditorias, hydr
 import { syncEngine } from '../../services/syncEngine';
 import { normalizePerguntaId } from '../../constants/rtrsMapping';
 import { cleanEvidenceUrl, isPdfEvidence } from '../../lib/evidenceService';
+import { syncPendencyStatusWithRtrsAnswer } from '../../lib/pendenciaService';
 
 
 // Helper canônico de identificação de critério (disponível em todo o módulo sem erro de escopo)
@@ -251,19 +253,24 @@ export default function DashboardTecnico() {
   }, [activeTab]);
 
   useEffect(() => {
-    const onFocus = () => {
+    const handleRecheck = () => {
+      if (document.visibilityState === 'hidden') return;
       const now = Date.now();
-      if (now - lastAuditsFetchRef.current > 30000) {
+      if (now - lastAuditsFetchRef.current > 3000) {
         if (activeTab === 'auditorias') fetchAudits(true);
         else if (activeTab === 'mapa') fetchCollaborativeMapData();
         else if (activeTab === 'documentacao') {
           fetchTechnicalDocuments();
-          fetchAudits();
+          fetchAudits(true);
         }
       }
     };
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
+    window.addEventListener('focus', handleRecheck);
+    document.addEventListener('visibilitychange', handleRecheck);
+    return () => {
+      window.removeEventListener('focus', handleRecheck);
+      document.removeEventListener('visibilitychange', handleRecheck);
+    };
   }, [activeTab]);
 
   useEffect(() => {
@@ -1350,7 +1357,7 @@ export default function DashboardTecnico() {
       fetchCollaborativeMapData();
       if (typeof navigator !== 'undefined' && navigator.onLine && user) {
         prepareFieldModeData(user).then((res) => {
-          if (res?.summary) setLastPrepSummary(res.summary);
+          if ((res as any)?.summary) setLastPrepSummary((res as any).summary);
           else if (res?.success) {
             getLastFieldPrepInfo().then(info => {
               if (info?.summary) setLastPrepSummary(info.summary);
@@ -1372,6 +1379,7 @@ export default function DashboardTecnico() {
   }, []);
   const [showQuestionario, setShowQuestionario] = useState(false);
   const [activeAuditoria, setActiveAuditoria] = useState<any>(null);
+  const [questionarioInitialTab, setQuestionarioInitialTab] = useState<'resumo' | 'criterios' | 'ficha'>('criterios');
   const [fotoAmpliada, setFotoAmpliada] = useState<string | null>(null);
   const [pdfAmpliado, setPdfAmpliado] = useState<string | null>(null);
 
@@ -1387,6 +1395,7 @@ export default function DashboardTecnico() {
   const [technicalEtapaTab, setTechnicalEtapaTab] = useState<'Prospecção' | 'Auditoria Prévia' | 'Auditoria Oficial'>('Prospecção');
   const isFetchingAuditsRef = useRef(false);
   const lastAuditsFetchRef = useRef(0);
+  const hasQueuedAuditsFetchRef = useRef(false);
 
   // Lista memoizada para a etapa ativa (elimina re-cálculos a cada render)
   const filteredAuditorias = useMemo(() => {
@@ -1429,7 +1438,7 @@ export default function DashboardTecnico() {
   // Prospecção States
   const [produtorOption, setProdutorOption] = useState<'existente' | 'novo'>('existente');
   const [selectedProdutorId, setSelectedProdutorId] = useState<string>('');
-  const [novoProdutorData, setNovoProdutorData] = useState({ nome: '', email: '', regiao: '' });
+  const [novoProdutorData, setNovoProdutorData] = useState({ nome: '', email: '', telefone: '', regiao: '' });
   const [propertiesList, setPropertiesList] = useState<{
     nome_fazenda: string;
     codigo_car: string;
@@ -1437,16 +1446,17 @@ export default function DashboardTecnico() {
     origem: string;
     geom: any | null;
     errorCar: string;
+    area_soja_ha?: string;
   }[]>([
-    { nome_fazenda: '', codigo_car: '', codigo_sigef: '', origem: 'CAR', geom: null, errorCar: '' }
+    { nome_fazenda: '', codigo_car: '', codigo_sigef: '', origem: 'CAR', geom: null, errorCar: '', area_soja_ha: '' }
   ]);
   const [autoScheduleAudit, setAutoScheduleAudit] = useState(true);
 
   const handleOpenCreateFarmModal = () => {
     setProdutorOption('existente');
     setSelectedProdutorId('');
-    setNovoProdutorData({ nome: '', email: '', regiao: '' });
-    setPropertiesList([{ nome_fazenda: '', codigo_car: '', codigo_sigef: '', origem: 'CAR', geom: null, errorCar: '' }]);
+    setNovoProdutorData({ nome: '', email: '', telefone: '', regiao: '' });
+    setPropertiesList([{ nome_fazenda: '', codigo_car: '', codigo_sigef: '', origem: 'CAR', geom: null, errorCar: '', area_soja_ha: '' }]);
     setAutoScheduleAudit(true);
     setShowCreateFarmModal(true);
   };
@@ -1537,8 +1547,9 @@ export default function DashboardTecnico() {
       // 2. Fetch producers
       const { data: prodsData } = await supabase
         .from('perfis')
-        .select('id, nome, email, regiao')
-        .eq('role', 'produtor');
+        .select('id, nome, email, telefone, regiao')
+        .eq('role', 'produtor')
+        .order('nome', { ascending: true });
       if (prodsData && prodsData.length > 0) {
         setProducers(prodsData);
       }
@@ -1945,6 +1956,16 @@ export default function DashboardTecnico() {
 
   const handleCreateFarm = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // 0. Validar seleção/cadastro do produtor antes de prosseguir
+    if (produtorOption === 'existente' && !selectedProdutorId) {
+      warning('Por favor, selecione um produtor cadastrado na lista ou mude para "Cadastrar Novo Produtor".');
+      return;
+    }
+    if (produtorOption === 'novo' && !novoProdutorData.nome.trim()) {
+      warning('Por favor, informe o nome completo do novo produtor rural.');
+      return;
+    }
     
     // 1. Validar e limpar a lista de propriedades
     let hasError = false;
@@ -1976,46 +1997,71 @@ export default function DashboardTecnico() {
 
     setLoading(true);
     try {
-      // Garantir nome de fazenda padrão caso fique em branco
+      const selectedProdObj = producers.find(p => p.id === selectedProdutorId);
+      const defaultMunicipio = (produtorOption === 'novo' ? novoProdutorData.regiao : selectedProdObj?.regiao) || 'Geral, MS';
+
+      // Garantir nome de fazenda padrão caso fique em branco e preservar todos os campos
       const processedProps = propertiesList.map(p => ({
         nome_fazenda: p.nome_fazenda?.trim() || `Fazenda ${p.codigo_car || p.codigo_sigef || 'Prospecção'}`,
         codigo_car: p.codigo_car || '',
         codigo_sigef: p.codigo_sigef || '',
         origem: p.origem,
-        geom: p.geom
+        origem_cadastro: p.origem || 'CAR',
+        geom: p.geom,
+        area_soja_ha: p.area_soja_ha ? parseFloat(p.area_soja_ha) : null,
+        municipio: defaultMunicipio
       }));
 
       const validProdId = isUUID(selectedProdutorId) ? selectedProdutorId : null;
-      const validTecId = isUUID(user?.id) ? user.id : null;
+      const validTecId = isUUID(user?.id) ? user?.id : null;
 
-      // Pré-criar Auth user para o produtor se for novo cadastro, garantindo login imediato no Portal do Produtor
+      // Pré-reconciliar ou criar Auth + Perfil para o produtor via RPC reconciliar_perfil_produtor (com fallback Auth isolado)
       let preCreatedAuthUserId: string | null = null;
-      if (produtorOption === 'novo' && novoProdutorData.nome) {
-        const defaultEmail = novoProdutorData.email?.trim() || `${novoProdutorData.nome.toLowerCase().replace(/\s+/g, '')}@produtor.com.br`;
+      if (produtorOption === 'novo' && novoProdutorData.nome.trim()) {
+        const cleanNome = novoProdutorData.nome.trim();
+        const defaultEmail = (novoProdutorData.email?.trim() || `${cleanNome.toLowerCase().replace(/[^a-z0-9]+/g, '')}@produtor.ms.gov.br`).toLowerCase();
         try {
-          const isolatedAuth = createIsolatedAuthClient();
-          const { data: signUpData } = await isolatedAuth.auth.signUp({
-            email: defaultEmail,
-            password: 'Senha@123',
-            options: {
-              data: {
-                full_name: novoProdutorData.nome,
-                role: 'produtor'
-              }
-            }
+          const { data: recData, error: recErr } = await supabase.rpc('reconciliar_perfil_produtor', {
+            p_auth_id: null,
+            p_email: defaultEmail,
+            p_nome: cleanNome,
+            p_telefone: novoProdutorData.telefone?.trim() || null,
+            p_regiao: novoProdutorData.regiao?.trim() || null,
+            p_role: 'produtor'
           });
-          if (signUpData?.user?.id && isUUID(signUpData.user.id)) {
-            preCreatedAuthUserId = signUpData.user.id;
+          if (!recErr && recData?.id && isUUID(recData.id)) {
+            preCreatedAuthUserId = recData.id;
           }
         } catch (e) {
-          console.warn('Aviso ao criar conta Auth do produtor:', e);
+          console.warn('Aviso ao chamar reconciliar_perfil_produtor:', e);
+        }
+
+        if (!preCreatedAuthUserId) {
+          try {
+            const isolatedAuth = createIsolatedAuthClient();
+            const { data: signUpData } = await isolatedAuth.auth.signUp({
+              email: defaultEmail,
+              password: 'Senha@123',
+              options: {
+                data: {
+                  full_name: cleanNome,
+                  role: 'produtor'
+                }
+              }
+            });
+            if (signUpData?.user?.id && isUUID(signUpData.user.id)) {
+              preCreatedAuthUserId = signUpData.user.id;
+            }
+          } catch (e) {
+            console.warn('Aviso ao criar conta Auth do produtor:', e);
+          }
         }
       }
 
       const payload = {
         produtor_option: produtorOption,
-        produtor_id: produtorOption === 'existente' ? validProdId : null,
-        novo_produtor: produtorOption === 'novo' ? novoProdutorData : null,
+        produtor_id: produtorOption === 'existente' ? validProdId : preCreatedAuthUserId,
+        novo_produtor: produtorOption === 'novo' ? { ...novoProdutorData, id: preCreatedAuthUserId } : null,
         propriedades_list: processedProps,
         tecnico_id: validTecId,
         auto_schedule: autoScheduleAudit
@@ -2037,53 +2083,61 @@ export default function DashboardTecnico() {
 
       // Estratégia 2: Fallback de inserção direta nas tabelas do Supabase
       if (!isSuccess) {
-        let prodId = validProdId;
+        let prodId = validProdId || preCreatedAuthUserId;
         let prodNome = 'Produtor Rural';
 
-        // 2a. Tratar produtor
-        if (produtorOption === 'novo' && novoProdutorData.nome) {
-          const defaultEmail = novoProdutorData.email?.trim() || `${novoProdutorData.nome.toLowerCase().replace(/\s+/g, '')}@produtor.com.br`;
-          let authUserId: string | null = null;
-          
-          try {
-            const isolatedAuth = createIsolatedAuthClient();
-            const { data: signUpData } = await isolatedAuth.auth.signUp({
+        // 2a. Tratar produtor (sem duplicar signUp nem perfis)
+        if (produtorOption === 'novo' && novoProdutorData.nome.trim()) {
+          const cleanNome = novoProdutorData.nome.trim();
+          const defaultEmail = (novoProdutorData.email?.trim() || `${cleanNome.toLowerCase().replace(/[^a-z0-9]+/g, '')}@produtor.ms.gov.br`).toLowerCase();
+
+          // Verificar se o perfil já existe por ID ou e-mail antes de fazer upsert
+          let existingProd: any = null;
+          if (prodId) {
+            const { data } = await supabase.from('perfis').select('id, nome, email').eq('id', prodId).maybeSingle();
+            existingProd = data;
+          }
+          if (!existingProd) {
+            const { data } = await supabase.from('perfis').select('id, nome, email').ilike('email', defaultEmail).maybeSingle();
+            existingProd = data;
+          }
+
+          if (existingProd && isUUID(existingProd.id)) {
+            prodId = existingProd.id;
+            prodNome = cleanNome || existingProd.nome;
+            await supabase
+              .from('perfis')
+              .update({
+                nome: prodNome,
+                telefone: novoProdutorData.telefone?.trim() || null,
+                regiao: novoProdutorData.regiao || 'Geral, MS'
+              })
+              .eq('id', prodId);
+          } else {
+            const profileInsert: any = {
+              nome: cleanNome,
               email: defaultEmail,
-              password: 'Senha@123',
-              options: {
-                data: {
-                  full_name: novoProdutorData.nome,
-                  role: 'produtor'
-                }
-              }
-            });
-            if (signUpData?.user?.id && isUUID(signUpData.user.id)) {
-              authUserId = signUpData.user.id;
+              role: 'produtor',
+              telefone: novoProdutorData.telefone?.trim() || null,
+              regiao: novoProdutorData.regiao || 'Geral, MS',
+              status: 'Ativo'
+            };
+            if (preCreatedAuthUserId) {
+              profileInsert.id = preCreatedAuthUserId;
             }
-          } catch (e) {
-            console.warn('Aviso ao criar conta Auth do produtor:', e);
-          }
 
-          const profileInsert: any = {
-            nome: novoProdutorData.nome,
-            email: defaultEmail,
-            role: 'produtor',
-            regiao: novoProdutorData.regiao || 'Geral, MS',
-            status: 'Ativo'
-          };
-          if (authUserId) {
-            profileInsert.id = authUserId;
-          }
+            const { data: newProd, error: prodErr } = await supabase
+              .from('perfis')
+              .upsert([profileInsert])
+              .select()
+              .single();
 
-          const { data: newProd, error: prodErr } = await supabase
-            .from('perfis')
-            .upsert([profileInsert])
-            .select()
-            .single();
-          
-          if (!prodErr && newProd && isUUID(newProd.id)) {
-            prodId = newProd.id;
-            prodNome = newProd.nome;
+            if (!prodErr && newProd && isUUID(newProd.id)) {
+              prodId = newProd.id;
+              prodNome = newProd.nome;
+            } else {
+              prodNome = cleanNome;
+            }
           }
         } else if (selectedProdutorId) {
           const foundProd = producers.find(p => p.id === selectedProdutorId || p.nome === selectedProdutorId);
@@ -2102,9 +2156,13 @@ export default function DashboardTecnico() {
             nome_fazenda: p.nome_fazenda,
             nome_produtor: prodNome,
             produtor_id: isUUID(prodId) ? prodId : null,
+            tecnico_id: validTecId,
             codigo_car: p.origem === 'CAR' ? p.codigo_car : null,
             codigo_sigef: p.origem === 'SIGEF' ? p.codigo_sigef : null,
             origem_cadastro: p.origem || 'CAR',
+            municipio: p.municipio || 'Geral, MS',
+            area_soja_ha: p.area_soja_ha,
+            etapa: 'Prospecção',
             created_at: nowIso,
             updated_at: nowIso
           };
@@ -2151,15 +2209,26 @@ export default function DashboardTecnico() {
             if (!existingAuds || existingAuds.length === 0) {
               const auditPayload: any = {
                 propriedade_id: insertedPropId,
-                data_agendamento: new Date().toISOString().split('T')[0],
-                status: 'Visita de Campo'
+                data_agendamento: new Date().toISOString(),
+                status: 'Em Andamento',
+                etapa: 'Prospecção'
               };
-              if (isUUID(user?.id)) {
-                auditPayload.tecnico_responsavel_id = user.id;
+              if (validTecId) {
+                auditPayload.tecnico_responsavel_id = validTecId;
               }
               await supabase.from('auditorias').insert([auditPayload]);
             }
           }
+        }
+
+        // 2d. Atualizar fazendas_vinculadas no perfil do produtor
+        if (isUUID(prodId)) {
+          try {
+            await supabase.rpc('reconciliar_perfil_produtor', {
+              p_auth_id: prodId,
+              p_role: 'produtor'
+            });
+          } catch (e) {}
         }
       }
 
@@ -2247,8 +2316,8 @@ export default function DashboardTecnico() {
         setShowCreateFarmModal(false);
         
         // Resetar estados
-        setPropertiesList([{ nome_fazenda: '', codigo_car: '', codigo_sigef: '', origem: 'CAR', geom: null, errorCar: '' }]);
-        setNovoProdutorData({ nome: '', email: '', regiao: '' });
+        setPropertiesList([{ nome_fazenda: '', codigo_car: '', codigo_sigef: '', origem: 'CAR', geom: null, errorCar: '', area_soja_ha: '' }]);
+        setNovoProdutorData({ nome: '', email: '', telefone: '', regiao: '' });
         setSelectedProdutorId('');
         
         // Recarregar dados
@@ -2511,9 +2580,14 @@ export default function DashboardTecnico() {
 
   async function fetchAudits(force = false) {
     const now = Date.now();
-    // Previne execuções concorrentes ou requisições repetitivas no intervalo de 10 segundos
-    if (isFetchingAuditsRef.current) return;
-    if (!force && now - lastAuditsFetchRef.current < 10000 && auditorias.length > 0) return;
+    // Previne execuções concorrentes ou requisições repetitivas no intervalo de 4 segundos
+    if (isFetchingAuditsRef.current) {
+      if (force) {
+        hasQueuedAuditsFetchRef.current = true;
+      }
+      return;
+    }
+    if (!force && now - lastAuditsFetchRef.current < 4000 && auditorias.length > 0) return;
 
     isFetchingAuditsRef.current = true;
     lastAuditsFetchRef.current = now;
@@ -2581,7 +2655,7 @@ export default function DashboardTecnico() {
         }
 
         const propMap = new Map<string, any>();
-        propsData.forEach(p => propMap.set(p.id, p));
+        propsData.forEach((p: any) => propMap.set(p.id, p));
 
         const { auditRespMap, propPendsMap } = await fetchLatestActivityTimestamps();
 
@@ -2637,7 +2711,7 @@ export default function DashboardTecnico() {
         const allList: any[] = Array.from(auditByProp.values());
 
         const existingPropIds = new Set(allList.map(a => a.propriedade_id));
-        propsData.forEach(p => {
+        propsData.forEach((p: any) => {
           if (!existingPropIds.has(p.id)) {
             const lastTs = computeCompositeUltimaAlteracao({
               auditUpdatedAt: null,
@@ -2723,17 +2797,25 @@ export default function DashboardTecnico() {
     } finally {
       setLoading(false); // IMPRESCINDÍVEL: nunca deixar a tela em skeleton infinito
       isFetchingAuditsRef.current = false;
+      if (hasQueuedAuditsFetchRef.current) {
+        hasQueuedAuditsFetchRef.current = false;
+        fetchAudits(true);
+      }
     }
   }
 
-  const handleStartAuditoria = (auditoria: any) => {
+  const handleStartAuditoria = (auditoria: any, initialTab: 'resumo' | 'criterios' | 'ficha' = 'criterios') => {
+    setSelectedAuditForDetail(null);
+    setQuestionarioInitialTab(initialTab);
     setActiveAuditoria(auditoria);
     setShowQuestionario(true);
   };
 
   const handleComplete = async (auditoriaId: string) => {
+    const nowIso = new Date().toISOString();
     if (auditoriaId) {
-      await updateCachedAuditoria(auditoriaId, { status: 'Em Análise' });
+      await updateCachedAuditoria(auditoriaId, { status: 'Aguardando Aprovação', ultima_alteracao_at: nowIso });
+      setAuditorias(prev => prev.map(a => a.id === auditoriaId ? { ...a, status: 'Aguardando Aprovação', ultima_alteracao_at: nowIso } : a));
     }
 
     if (auditoriaId.startsWith('mock-') || auditoriaId.startsWith('prop-audit-')) {
@@ -2744,18 +2826,17 @@ export default function DashboardTecnico() {
     }
 
     try {
-      const { error: err } = await supabase
+      await supabase
         .from('auditorias')
-        .update({ status: 'Em Análise' })
+        .update({ status: 'Aguardando Aprovação', updated_at: nowIso })
         .eq('id', auditoriaId);
-      if (err) throw err;
       setShowQuestionario(false);
       fetchAudits(true);
       fetchTechnicalDocuments();
-      success('Relatório de auditoria salvo com sucesso!');
     } catch (err: any) {
-      console.error('Erro ao atualizar auditoria:', err);
-      error('Erro ao salvar relatório de auditoria: ' + err.message);
+      console.warn('Aviso ao atualizar status final da auditoria:', err);
+      setShowQuestionario(false);
+      fetchAudits(true);
     }
   };
 
@@ -2970,6 +3051,11 @@ export default function DashboardTecnico() {
         .eq('id', id);
       if (err) throw err;
 
+      const targetPend = propPendencias.find(p => p.id === id);
+      if (targetPend) {
+        await syncPendencyStatusWithRtrsAnswer(targetPend, 'Pendente');
+      }
+
       setPropPendencias(propPendencias.map(p => p.id === id ? { ...p, ...payload } : p));
       setRejectingPendId(null);
       setMotivoRejeicaoText('');
@@ -2988,15 +3074,20 @@ export default function DashboardTecnico() {
     }
 
     try {
+      const targetPend = propPendencias.find(p => p.id === id);
       const payload: any = { status: newStatus };
       if (newStatus === 'Resolvida') {
-        payload.resolucao_descricao = 'Resolvido in loco pelo técnico.';
+        payload.resolucao_descricao = targetPend?.resolucao_descricao || 'Resolvido in loco pelo técnico.';
       }
       const { error: err } = await supabase
         .from('pendencias')
         .update(payload)
         .eq('id', id);
       if (err) throw err;
+
+      if (targetPend) {
+        await syncPendencyStatusWithRtrsAnswer(targetPend, newStatus);
+      }
 
       setPropPendencias(propPendencias.map(p => p.id === id ? { ...p, ...payload } : p));
       success('Status da pendência atualizado com sucesso!');
@@ -3337,17 +3428,17 @@ export default function DashboardTecnico() {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 const targetAudit = auditorias.find(a => (a.propriedade_id === props.id || a.propriedades?.id === props.id));
-                                setSelectedAuditForDetail(targetAudit || {
+                                handleStartAuditoria(targetAudit || {
                                   id: `mock-view-${props.id}`,
                                   propriedade_id: props.id,
                                   status: props.status || 'Visita de Campo',
                                   propriedades: { id: props.id, nome_fazenda: props.name, nome_produtor: props.produtor, municipio: props.municipio }
-                                });
+                                }, 'resumo');
                               }}
                               className="w-full py-2 px-3 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 shadow-sm cursor-pointer hover:scale-102 active:scale-95"
                             >
                               <ShieldCheck className="w-3.5 h-3.5 text-emerald-300" />
-                              <span>Ver Panorama & Score da Fazenda</span>
+                              <span>Abrir Central da Fazenda & Score RTRS</span>
                             </button>
                           </div>
                         )}
@@ -3523,21 +3614,22 @@ export default function DashboardTecnico() {
                         </div>
                         <div className="flex items-center gap-2">
                           <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider border ${
+                            auditoria.status === 'Aguardando Aprovação' || auditoria.status === 'Em Análise' ? 'bg-amber-50 text-amber-800 border-amber-300 font-extrabold shadow-2xs' :
                             auditoria.status === 'Autoavaliação' ? 'bg-amber-100 text-amber-800 border-amber-200' :
                             auditoria.status === 'Visita de Campo' ? 'bg-indigo-100 text-indigo-800 border-indigo-200' :
-                            auditoria.status === 'Em Análise' ? 'bg-blue-100 text-blue-800 border-blue-200' :
                             auditoria.status === 'Acompanhamento' ? 'bg-purple-100 text-purple-800 border-purple-200 font-semibold shadow-sm' :
-                            'bg-emerald-100 text-emerald-800 border-emerald-200'
+                            auditoria.status === 'Certificada' ? 'bg-emerald-100 text-emerald-800 border-emerald-300 font-extrabold' :
+                            'bg-emerald-50 text-emerald-800 border-emerald-200'
                           }`}>
-                            {auditoria.status}
+                            {auditoria.status === 'Aguardando Aprovação' || auditoria.status === 'Em Análise' ? 'Aguardando Aprovação' : auditoria.status}
                           </span>
                         </div>
                       </div>
 
                       <div
                         className="p-6 cursor-pointer group/card transition-all duration-300 relative hover:bg-gradient-to-br hover:from-card hover:to-primary/5"
-                        onClick={() => setSelectedAuditForDetail(auditoria)}
-                        title="Clique para visualizar Ficha Técnica Completa"
+                        onClick={() => handleStartAuditoria(auditoria, 'resumo')}
+                        title="Clique para abrir a Central da Fazenda (Resumo Score RTRS, Critérios e Ficha Cadastral)"
                       >
                         <div className="flex items-center justify-between gap-4">
                           <div className="min-w-0 flex-1">
@@ -3578,7 +3670,7 @@ export default function DashboardTecnico() {
                             </div>
                           </div>
 
-                          <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0 group-hover/card:bg-primary group-hover/card:text-white group-hover/card:scale-110 group-hover/card:shadow-md transition-all duration-300">
+                          <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center shrink-0 group-hover/card:bg-primary group-hover/card:text-white group-hover/card:scale-110 group-hover/card:shadow-md transition-all duration-300" title="Ver Resumo & Ficha da Fazenda">
                             <ChevronRight className="w-5 h-5 transition-transform duration-300 group-hover/card:translate-x-0.5" />
                           </div>
                         </div>
@@ -3596,41 +3688,38 @@ export default function DashboardTecnico() {
                             <span>Pendências</span>
                           </button>
 
-                          {auditoria.status === 'Visita de Campo' || auditoria.status === 'Autoavaliação' ? (
+                          {auditoria.status === 'Aguardando Aprovação' || auditoria.status === 'Em Análise' ? (
                             <button
-                              onClick={() => handleStartAuditoria(auditoria)}
-                              className="group relative flex-1 py-2.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
+                              onClick={() => handleStartAuditoria(auditoria, 'resumo')}
+                              className="group/btn flex-1 py-2.5 bg-amber-50 border border-amber-300 text-amber-900 hover:bg-amber-100 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs"
                             >
-                              <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
-                              <ClipboardList className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
-                              <span>Realizar Visita</span>
-                            </button>
-                          ) : auditoria.status === 'Em Análise' ? (
-                            <button
-                              onClick={() => handleStartAuditoria(auditoria)}
-                              className="group/btn flex-1 py-2.5 bg-indigo-50 border border-indigo-200 text-indigo-800 hover:bg-indigo-100 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs"
-                            >
-                              <Clock className="w-4 h-4 text-indigo-600 transition-transform group-hover/btn:scale-110 duration-300" />
-                              <span>Em Análise do Gestor</span>
+                              <Clock className="w-4 h-4 text-amber-600 transition-transform group-hover/btn:scale-110 duration-300" />
+                              <span>Enviado ao Gestor • Ver Resumo</span>
                             </button>
                           ) : auditoria.status === 'Acompanhamento' ? (
-                            <div className="flex-1 py-2.5 bg-purple-50 border border-purple-200 text-purple-800 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs shadow-2xs">
+                            <button
+                              onClick={() => handleStartAuditoria(auditoria, 'resumo')}
+                              className="flex-1 py-2.5 bg-purple-50 hover:bg-purple-100 border border-purple-200 text-purple-800 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs shadow-2xs cursor-pointer transition-all"
+                            >
                               <Clock className="w-4 h-4 text-purple-600 animate-pulse" />
-                              <span>Acompanhamento</span>
-                            </div>
+                              <span>Acompanhamento • Ver Central</span>
+                            </button>
                           ) : auditoria.status === 'Certificada' ? (
-                            <div className="flex-1 py-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs shadow-2xs">
+                            <button
+                              onClick={() => handleStartAuditoria(auditoria, 'resumo')}
+                              className="flex-1 py-2.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-800 rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs shadow-2xs cursor-pointer transition-all"
+                            >
                               <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                              <span>Certificada</span>
-                            </div>
+                              <span>Certificada • Ver Panorama</span>
+                            </button>
                           ) : (
                             <button
-                              onClick={() => handleStartAuditoria(auditoria)}
+                              onClick={() => handleStartAuditoria(auditoria, 'criterios')}
                               className="group relative flex-1 py-2.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-2xl flex items-center justify-center gap-2 font-extrabold text-xs transition-all duration-300 shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
                             >
                               <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
                               <ClipboardList className="w-4 h-4 transition-transform group-hover:scale-110 duration-300" />
-                              <span>Realizar Visita</span>
+                              <span>Checklist RTRS (Critérios)</span>
                             </button>
                           )}
                         </div>
@@ -3645,13 +3734,15 @@ export default function DashboardTecnico() {
 
         {/* Modal de Ficha Técnica Completa da Auditoria */}
         {selectedAuditForDetail && (
-          <AuditDetailModal
-            isOpen={!!selectedAuditForDetail}
-            onClose={() => setSelectedAuditForDetail(null)}
-            auditoria={selectedAuditForDetail}
-            onStartVisita={handleStartAuditoria}
-            onOpenPendencias={handleOpenPendencias}
-          />
+          <ModalErrorBoundary onClose={() => { setShowQuestionario(false); setSelectedAuditForDetail(null); }}>
+            <AuditDetailModal
+              isOpen={!!selectedAuditForDetail}
+              onClose={() => setSelectedAuditForDetail(null)}
+              auditoria={selectedAuditForDetail}
+              onStartVisita={handleStartAuditoria}
+              onOpenPendencias={handleOpenPendencias}
+            />
+          </ModalErrorBoundary>
         )}
       </div>
 
@@ -3798,7 +3889,7 @@ export default function DashboardTecnico() {
                     {filteredDocs.map((doc) => {
                       const isPdf = !!doc.arquivo_url?.toLowerCase().includes('.pdf');
                       const isPending = !!doc.isLocalPending;
-                      const isFailed = !!doc.hasError || (isPending && connectionState === 'FAILED');
+                      const isFailed = !!doc.hasError || (isPending && (connectionState as string) === 'FAILED');
 
                       return (
                         <div
@@ -3932,7 +4023,7 @@ export default function DashboardTecnico() {
                         {filteredDocs.map((doc) => {
                           const isPdf = !!doc.arquivo_url?.toLowerCase().includes('.pdf');
                           const isPending = !!doc.isLocalPending;
-                          const isFailed = !!doc.hasError || (isPending && connectionState === 'FAILED');
+                          const isFailed = !!doc.hasError || (isPending && (connectionState as string) === 'FAILED');
 
                           return (
                             <tr key={doc.id} className="hover:bg-slate-50/80 transition-colors duration-200 group">
@@ -4030,24 +4121,37 @@ export default function DashboardTecnico() {
       </div>
 
       {showQuestionario && activeAuditoria && (
-        <QuestionarioRTRS 
-          modo="auditoria"
-          propriedadeNome={activeAuditoria.propriedades?.nome_fazenda || "Fazenda Sol Nascente"}
-          onClose={() => {
-            setShowQuestionario(false);
-            fetchAudits(true);
-            fetchCollaborativeMapData();
-            fetchTechnicalDocuments();
-          }}
-          onComplete={() => {
-            handleComplete(activeAuditoria.id);
-            fetchAudits(true);
-            fetchCollaborativeMapData();
-            fetchTechnicalDocuments();
-          }}
-          auditoriaId={activeAuditoria.id}
-          propriedadeId={activeAuditoria.propriedade_id || activeAuditoria.propriedades?.id}
-        />
+        <ModalErrorBoundary onClose={() => { setShowQuestionario(false); setSelectedAuditForDetail(null); }}>
+          <QuestionarioRTRS 
+            modo="auditoria"
+            propriedadeNome={activeAuditoria.propriedades?.nome_fazenda || "Fazenda Sol Nascente"}
+            onClose={() => {
+              setShowQuestionario(false);
+              fetchAudits(true);
+              fetchCollaborativeMapData();
+              fetchTechnicalDocuments();
+            }}
+            onComplete={() => {
+              handleComplete(activeAuditoria.id);
+              fetchAudits(true);
+              fetchCollaborativeMapData();
+              fetchTechnicalDocuments();
+            }}
+            onSubmitted={(submittedId, newStatus) => {
+              const nowIso = new Date().toISOString();
+              setAuditorias(prev => prev.map(a =>
+                (a.id === submittedId || a.id === activeAuditoria.id)
+                  ? { ...a, status: newStatus, ultima_alteracao_at: nowIso }
+                  : a
+              ));
+            }}
+            auditoriaId={activeAuditoria.id}
+            propriedadeId={activeAuditoria.propriedade_id || activeAuditoria.propriedades?.id}
+            initialMainTab={questionarioInitialTab}
+            propriedadeData={Array.isArray(activeAuditoria.propriedades) ? activeAuditoria.propriedades[0] : activeAuditoria.propriedades}
+            auditoriaStatus={activeAuditoria.status}
+          />
+        </ModalErrorBoundary>
       )}
 
       {/* Modal de Pendências */}
@@ -4193,7 +4297,7 @@ export default function DashboardTecnico() {
                       </button>
                     </div>
 
-                    {pend.status === 'Em Análise' && (
+                    {(pend.status === 'Em Análise' || pend.status === 'Resolvida') && (
                       <div className="p-3 bg-indigo-50/50 rounded-lg border border-indigo-100 space-y-2">
                         <div className="text-[11px] font-bold text-indigo-950 uppercase tracking-wider">Solução Enviada pelo Produtor:</div>
                         <p className="text-xs text-indigo-900 font-medium italic">"{pend.resolucao_descricao}"</p>
@@ -4323,7 +4427,12 @@ export default function DashboardTecnico() {
                     producers={producers}
                     selectedId={selectedProdutorId}
                     onChange={setSelectedProdutorId}
-                    placeholder="Digite o nome do produtor para pesquisar..."
+                    onCreateNew={(typedName) => {
+                      setProdutorOption('novo');
+                      setSelectedProdutorId('');
+                      setNovoProdutorData(prev => ({ ...prev, nome: typedName }));
+                    }}
+                    placeholder="Digite o nome, e-mail ou telefone do produtor..."
                     required
                   />
                 </div>

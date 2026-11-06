@@ -427,7 +427,7 @@ export default function LocationFinderModal({
               type="geojson"
               data={{
                 type: 'Feature',
-                geometry: generateBoundaryGeom(markerPos.lat, markerPos.lng),
+                geometry: generateBoundaryGeom(markerPos.lat, markerPos.lng) as any,
                 properties: {}
               }}
             >

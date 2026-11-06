@@ -168,6 +168,45 @@ export async function hydrateAuditoriasCache(): Promise<CachedAuditoria[]> {
         };
       });
       await bulkSaveAuditorias(mapped);
+
+      // Hidratação proativa de respostas mais recentes em background para manter tablet e PC perfeitamente sincronizados
+      try {
+        const { data: latestResps } = await supabase
+          .from('respostas_auditoria')
+          .select('auditoria_id, pergunta_id, conforme, nao_se_aplica, observacoes, evidencia_url, updated_at')
+          .order('updated_at', { ascending: false })
+          .limit(1000);
+
+        if (latestResps && latestResps.length > 0) {
+          const pendingJournal = await db.sync_journal.toArray();
+          const pendingKeys = new Set(pendingJournal.map(j => `${j.auditoria_id}_${normalizePerguntaId(j.pergunta_id)}`));
+
+          const toUpdate: CachedResposta[] = [];
+          for (const lr of latestResps) {
+            const canonId = normalizePerguntaId(lr.pergunta_id);
+            const key = `${lr.auditoria_id}_${canonId}`;
+            // Preserva qualquer alteração que o técnico tenha feito localmente e ainda esteja na outbox/journal deste aparelho
+            if (!pendingKeys.has(key)) {
+              toUpdate.push({
+                auditoria_id: lr.auditoria_id,
+                pergunta_id: canonId,
+                conforme: lr.conforme,
+                nao_se_aplica: lr.nao_se_aplica,
+                observacoes: lr.observacoes,
+                evidencia_url: lr.evidencia_url,
+                updated_at: lr.updated_at
+              });
+            }
+          }
+          if (toUpdate.length > 0) {
+            await bulkSaveRespostas(toUpdate);
+            console.log(`[Precache] ${toUpdate.length} respostas sincronizadas da nuvem para o cache local.`);
+          }
+        }
+      } catch (respErr) {
+        console.warn('[Precache] Aviso ao hidratar respostas em segundo plano:', respErr);
+      }
+
       return mapped;
     }
   } catch (err) {
@@ -301,6 +340,8 @@ export async function prepareFieldModeData(user?: any): Promise<PrecacheResult> 
               data_agendamento: new Date().toISOString(),
               status: 'Autoavaliação',
               etapa: resolveFarmEtapa(p.id, p.etapa),
+              created_at: p.created_at || new Date().toISOString(),
+              updated_at: p.updated_at || new Date().toISOString(),
               ultima_alteracao_at: p.updated_at || p.created_at,
               propriedades: p
             });

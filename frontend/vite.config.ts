@@ -61,6 +61,9 @@ export default defineConfig(({ mode }) => {
         ]
       },
       workbox: {
+        cleanupOutdatedCaches: true,
+        clientsClaim: true,
+        skipWaiting: true,
         globPatterns: ['**/*.{js,css,html,ico,png,svg,jpeg,jpg,json,woff,woff2}'],
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [
@@ -110,14 +113,16 @@ export default defineConfig(({ mode }) => {
             }
           },
           {
-            urlPattern: new RegExp('.*\\.supabase\\.co/rest/v1/(perguntas_rtrs|propriedades|auditorias).*'),
+            // Apenas o catálogo estático de perguntas RTRS é armazenado em cache pelo Service Worker.
+            // Tabelas operacionais dinâmicas (propriedades, auditorias, respostas) são controladas via Dexie/IndexedDB sem risco de dados obsoletos.
+            urlPattern: new RegExp('.*\\.supabase\\.co/rest/v1/(perguntas_rtrs).*'),
             handler: 'NetworkFirst',
             options: {
-              cacheName: 'supabase-read-cache',
+              cacheName: 'supabase-static-catalog-cache',
               networkTimeoutSeconds: 3,
               expiration: {
-                maxEntries: 50,
-                maxAgeSeconds: 60 * 60 * 24
+                maxEntries: 10,
+                maxAgeSeconds: 60 * 60 * 24 * 7
               },
               cacheableResponse: {
                 statuses: [0, 200]

@@ -128,7 +128,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(({ data: { session } }: any) => {
       if (session?.user) {
         setSession(session);
         setUser(session.user);
@@ -160,7 +160,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         setLoading(false);
       }
-    }).catch(err => {
+    }).catch((err: any) => {
       console.warn('Erro ao obter sessão remota, usando cache local:', err);
       const stored = localStorage.getItem('ms_auth_fallback_session');
       if (stored) {
@@ -180,7 +180,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event: any, session: any) => {
       if (session?.user) {
         setSession(session);
         setUser(session.user);

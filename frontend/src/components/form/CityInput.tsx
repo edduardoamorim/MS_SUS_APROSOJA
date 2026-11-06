@@ -48,7 +48,7 @@ export default function CityInput({ value, onChange, placeholder = 'Ex: Sidrolâ
           .order('nm_mun');
         
         if (!error && data && data.length > 0) {
-          const names = data.map(m => m.nm_mun);
+          const names = data.map((m: any) => m.nm_mun);
           setCitiesList(names);
         }
       } catch (err) {

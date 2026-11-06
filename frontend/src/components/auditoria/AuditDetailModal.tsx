@@ -30,6 +30,7 @@ import Modal from '../ui/Modal';
 import { resolveMunicipioFromCarOrName } from '../../lib/geoUtils';
 import { formatUltimaAlteracao } from '../../lib/dateUtils';
 import { cleanEvidenceUrl, isPdfEvidence } from '../../lib/evidenceService';
+import ExportarPdfButton from '../ui/ExportarPdfButton';
 
 function compareCriterios(critA: string, critB: string): number {
   const extractParts = (str: string) => {
@@ -84,6 +85,18 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
   useEffect(() => {
     if (isOpen && auditoria) {
       fetchAuditDetails();
+      const onSync = () => fetchAuditDetails();
+      const onVis = () => {
+        if (document.visibilityState === 'visible') fetchAuditDetails();
+      };
+      window.addEventListener('ms:sync-complete', onSync);
+      window.addEventListener('ms:outbox-changed', onSync);
+      document.addEventListener('visibilitychange', onVis);
+      return () => {
+        window.removeEventListener('ms:sync-complete', onSync);
+        window.removeEventListener('ms:outbox-changed', onSync);
+        document.removeEventListener('visibilitychange', onVis);
+      };
     }
   }, [isOpen, auditoria]);
 
@@ -114,7 +127,7 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
             .eq('auditoria_id', currentAuditId);
           
           if (!ansErr && respData && respData.length > 0) {
-            loadedCriterios = respData.map(r => ({
+            loadedCriterios = respData.map((r: any) => ({
               id: r.id,
               secao: (r.perguntas_rtrs as any)?.secao || 'Geral',
               criterio: (r.perguntas_rtrs as any)?.numero_criterio || '1.1',
@@ -138,8 +151,8 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
               .eq('propriedade_id', propId);
 
             const otherAuditIds = (propAuds || [])
-              .map(a => a.id)
-              .filter(id => id && id !== currentAuditId);
+              .map((a: any) => a.id)
+              .filter((id: any) => id && id !== currentAuditId);
 
             if (otherAuditIds.length > 0) {
               const { data: propRespData } = await supabase
@@ -153,17 +166,19 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
                   perguntas_rtrs (
                     secao,
                     numero_criterio,
-                    enunciado
+                    enunciado,
+                    ponderacao
                   )
                 `)
                 .in('auditoria_id', otherAuditIds);
 
               if (propRespData && propRespData.length > 0) {
-                const sisterCriterios = propRespData.map(r => ({
+                const sisterCriterios = propRespData.map((r: any) => ({
                   id: r.id,
                   secao: (r.perguntas_rtrs as any)?.secao || 'Geral',
                   criterio: (r.perguntas_rtrs as any)?.numero_criterio || '1.1',
                   enunciado: (r.perguntas_rtrs as any)?.enunciado || 'Critério de Conformidade RTRS',
+                  ponderacao: (r.perguntas_rtrs as any)?.ponderacao || 'Imediata',
                   conforme: !!r.conforme,
                   nao_se_aplica: !!r.nao_se_aplica,
                   observacao: (r as any).observacoes || (r as any).observacao || '',
@@ -225,6 +240,7 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
                 secao: p?.secao || 'Geral',
                 criterio: p?.numero_criterio || r.numero_criterio || '1.1',
                 enunciado: p?.enunciado || 'Critério de Conformidade RTRS',
+                ponderacao: p?.ponderacao || 'Imediata',
                 conforme: !!r.conforme,
                 nao_se_aplica: !!r.nao_se_aplica,
                 observacao: r.observacoes || (r as any).observacao || '',
@@ -409,14 +425,23 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer shrink-0 z-20"
-              aria-label="Fechar modal"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-2 shrink-0 z-20">
+              <ExportarPdfButton
+                auditoriaId={auditoria.id}
+                propriedadeId={propId}
+                propriedadeNome={farmName}
+                status={auditoria.status}
+                variant="header"
+              />
+              <button
+                type="button"
+                onClick={onClose}
+                className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer shrink-0"
+                aria-label="Fechar modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -483,8 +508,7 @@ export default function AuditDetailModal({ isOpen, onClose, auditoria, onStartVi
               embedded={true}
               etapa={etapaName}
               onBackToQuestions={() => {
-                onClose();
-                onStartVisita(auditoria);
+                setActiveTab('criterios');
               }}
             />
           </div>

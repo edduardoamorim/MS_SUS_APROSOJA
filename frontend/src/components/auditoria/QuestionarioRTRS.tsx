@@ -1,7 +1,7 @@
 import { normalizePerguntaId } from '../../constants/rtrsMapping';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { CheckCircle2, Camera, AlertCircle, MinusCircle, X, Loader2, Image as ImageIcon, FileText, Save, ChevronLeft, ChevronRight, CloudCheck, Download, ExternalLink, WifiOff, UploadCloud, Award, Sparkles, ArrowRight, RotateCcw } from 'lucide-react';
+import { CheckCircle2, Camera, AlertCircle, MinusCircle, X, Loader2, Image as ImageIcon, FileText, Save, ChevronLeft, ChevronRight, CloudCheck, Download, ExternalLink, WifiOff, UploadCloud, Award, Sparkles, ArrowRight, RotateCcw, Building2, User, Phone, Mail, MapPin, ClipboardList, Clock, ShieldCheck, AlertTriangle } from 'lucide-react';
 import PanoramaScoreRTRS, { type PanoramaCriterioItem } from './PanoramaScoreRTRS';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../context/ToastContext';
@@ -11,6 +11,9 @@ import { syncEngine } from '../../services/syncEngine';
 import { recordAuditChange, removeJournalItem, generateUUID, notifyOutboxChange, enqueueMutation, enqueueFile, removeEvidenceLocally, db, updateCachedAuditoria, getCachedReadData, cacheReadData, getAllCachedPerguntas, bulkSavePerguntas, getCachedRespostasByAuditoria, bulkSaveRespostas, type CachedPergunta } from '../../lib/offlineDb';
 import { seedDefaultRTRSQuestions } from '../../services/precacheService';
 import { cleanEvidenceUrl, resolveEvidenceUrlAsync, isPdfEvidence } from '../../lib/evidenceService';
+import { resolveMunicipioFromCarOrName } from '../../lib/geoUtils';
+import { resolveFarmEtapa, persistFarmEtapa } from '../../lib/etapaUtils';
+import ExportarPdfButton from '../ui/ExportarPdfButton';
 
 interface QuestionarioRTRSProps {
   modo: 'autoavaliacao' | 'auditoria';
@@ -19,6 +22,10 @@ interface QuestionarioRTRSProps {
   onComplete: () => void;
   auditoriaId?: string;
   propriedadeId?: string;
+  onSubmitted?: (auditoriaId: string, newStatus: string) => void;
+  initialMainTab?: 'resumo' | 'criterios' | 'ficha';
+  propriedadeData?: any;
+  auditoriaStatus?: string;
 }
 
 interface Pergunta {
@@ -44,7 +51,18 @@ interface RespostaItem {
   updated_at?: string;
 }
 
-export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onComplete, auditoriaId, propriedadeId }: QuestionarioRTRSProps) {
+export default function QuestionarioRTRS({
+  modo,
+  propriedadeNome,
+  onClose,
+  onComplete,
+  auditoriaId,
+  propriedadeId,
+  onSubmitted,
+  initialMainTab,
+  propriedadeData,
+  auditoriaStatus
+}: QuestionarioRTRSProps) {
   const { user } = useAuth();
   const { success, error, warning, info } = useToast();
   const { isOnline, isSyncing, pendingCounts } = useSync();
@@ -52,6 +70,14 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const [perguntas, setPerguntas] = useState<Pergunta[]>([]);
   const [loadingPerguntas, setLoadingPerguntas] = useState(true);
   const [respostas, setRespostas] = useState<Record<string, RespostaItem>>({});
+  const respostasRef = useRef<Record<string, RespostaItem>>({});
+  const fetchExistingRespostasRef = useRef<(() => Promise<void>) | null>(null);
+
+  // Mantém respostasRef sempre em sincronia imediata com o estado
+  useEffect(() => {
+    respostasRef.current = respostas;
+  }, [respostas]);
+
   const [syncingDb, setSyncingDb] = useState(true);
   const [showSyncBadge, setShowSyncBadge] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -66,6 +92,33 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const [activeModalPerguntaId, setActiveModalPerguntaId] = useState<string | null>(null);
   const [imageLoadError, setImageLoadError] = useState<boolean>(false);
   const [isRecoveringEvidence, setIsRecoveringEvidence] = useState<boolean>(false);
+
+  // Controle das 3 Abas Superiores Unificadas da Central Única da Fazenda
+  const [activeMainTab, setActiveMainTab] = useState<'resumo' | 'criterios' | 'ficha'>(initialMainTab || 'criterios');
+  const autoOpenedPanoramaRef = useRef(false);
+  const prevRespondidasCountRef = useRef<number | null>(null);
+  const [currentAuditoriaStatus, setCurrentAuditoriaStatus] = useState<string>(auditoriaStatus || 'Em Andamento');
+  const [hasUnsavedCriteriaAfterSubmit, setHasUnsavedCriteriaAfterSubmit] = useState(false);
+  const [ajustesGestor, setAjustesGestor] = useState<any[]>([]);
+  const [savingFicha, setSavingFicha] = useState(false);
+
+  // Estado da Aba 3: Ficha da Fazenda & Produtor
+  const [fichaForm, setFichaForm] = useState({
+    nome_fazenda: propriedadeData?.nome_fazenda || propriedadeNome || '',
+    municipio: resolveMunicipioFromCarOrName(propriedadeData?.codigo_car, propriedadeData?.nome_fazenda || propriedadeNome, propriedadeData?.municipio),
+    codigo_car: propriedadeData?.codigo_car || '',
+    matricula: propriedadeData?.matricula || propriedadeData?.codigo_sigef || '',
+    area_total_ha: propriedadeData?.area_total_ha ? String(propriedadeData.area_total_ha) : '',
+    area_soja_ha: propriedadeData?.area_soja_ha ? String(propriedadeData.area_soja_ha) : '',
+    latitude: propriedadeData?.latitude ? String(propriedadeData.latitude) : '',
+    longitude: propriedadeData?.longitude ? String(propriedadeData.longitude) : '',
+    etapa: (resolveFarmEtapa(propriedadeId || propriedadeData?.id, propriedadeData?.etapa) || 'Prospecção') as string,
+    nome_produtor: propriedadeData?.nome_produtor || '',
+    cpf_produtor: propriedadeData?.cpf_produtor || '',
+    telefone_produtor: propriedadeData?.telefone_produtor || propriedadeData?.telefone || '',
+    email_produtor: propriedadeData?.email_produtor || propriedadeData?.email || '',
+    produtor_id: propriedadeData?.produtor_id || ''
+  });
 
   // Auto-hide do badge "Dados carregados" após 2.5s
   useEffect(() => {
@@ -97,6 +150,46 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   // Efeito para buscar perguntas
   useEffect(() => {
     async function fetchPerguntas() {
+      const sortPerguntas = (items: any[]) => {
+        const parseNum = (str: string) => {
+          return (str || '').split('.').map(x => {
+            const match = x.match(/^(\d*)([a-zA-Z]*)$/);
+            if (match) {
+              const num = match[1] ? parseInt(match[1], 10) : 0;
+              const char = match[2] || '';
+              return [num, char];
+            }
+            return [0, x];
+          });
+        };
+
+        return [...items].sort((a, b) => {
+          const orderA = a.ordem || 0;
+          const orderB = b.ordem || 0;
+          if (a.criterio && b.criterio && a.criterio === b.criterio && orderA !== orderB) {
+            return orderA - orderB;
+          }
+
+          const partsA = parseNum(a.numero_criterio || '');
+          const partsB = parseNum(b.numero_criterio || '');
+          for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+            if (partsA[i] === undefined) return -1;
+            if (partsB[i] === undefined) return 1;
+            const itemA = partsA[i];
+            const itemB = partsB[i];
+
+            const numA = typeof itemA[0] === 'number' ? itemA[0] : 0;
+            const numB = typeof itemB[0] === 'number' ? itemB[0] : 0;
+            const charA = typeof itemA[1] === 'string' ? itemA[1] : '';
+            const charB = typeof itemB[1] === 'string' ? itemB[1] : '';
+
+            if (numA !== numB) return numA - numB;
+            if (charA !== charB) return charA.localeCompare(charB);
+          }
+          return 0;
+        });
+      };
+
       // 1. Busca imediata no IndexedDB (Read-Through Cache)
       let local = await getAllCachedPerguntas();
       
@@ -106,8 +199,10 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       }
 
       if (local && local.length > 0) {
-        setPerguntas(local as any);
-        const secoes = Array.from(new Set(local.map(p => p.secao)));
+        const activeLocal = local.filter((p: any) => p.ativo !== false);
+        const sortedLocal = sortPerguntas(activeLocal);
+        setPerguntas(sortedLocal as any);
+        const secoes = Array.from(new Set(sortedLocal.map(p => p.secao)));
         if (secoes.length > 0) setSecaoAtiva(secoes[0]);
         setLoadingPerguntas(false);
       }
@@ -121,38 +216,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
             .eq('ativo', true);
 
           if (!error && data && data.length > 0) {
-            const parseNum = (str: string) => {
-              return str.split('.').map(x => {
-                const match = x.match(/^(\d*)([a-zA-Z]*)$/);
-                if (match) {
-                  const num = match[1] ? parseInt(match[1], 10) : 0;
-                  const char = match[2] || '';
-                  return [num, char];
-                }
-                return [0, x];
-              });
-            };
-
-            const sorted = [...data].sort((a, b) => {
-              const partsA = parseNum(a.numero_criterio || '');
-              const partsB = parseNum(b.numero_criterio || '');
-              for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
-                if (partsA[i] === undefined) return -1;
-                if (partsB[i] === undefined) return 1;
-                const itemA = partsA[i];
-                const itemB = partsB[i];
-
-                const numA = typeof itemA[0] === 'number' ? itemA[0] : 0;
-                const numB = typeof itemB[0] === 'number' ? itemB[0] : 0;
-                const charA = typeof itemA[1] === 'string' ? itemA[1] : '';
-                const charB = typeof itemB[1] === 'string' ? itemB[1] : '';
-
-                if (numA !== numB) return numA - numB;
-                if (charA !== charB) return charA.localeCompare(charB);
-              }
-              return 0;
-            });
-
+            const sorted = sortPerguntas(data);
             setPerguntas(sorted as any);
             await bulkSavePerguntas(sorted as any);
           }
@@ -231,6 +295,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
             }
           });
           setRespostas(parsed);
+          respostasRef.current = parsed;
         }
       }
     } catch (e) {
@@ -238,6 +303,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     }
 
     async function fetchExistingRespostas() {
+      fetchExistingRespostasRef.current = fetchExistingRespostas;
       setSyncingDb(true);
       try {
         let targetAuditId = currentAuditoriaId;
@@ -245,14 +311,33 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           targetAuditId = await getOrCreateRealAuditoriaId();
         }
         const cleanName = (propriedadeNome || '').split('-')[0].trim();
+        const propIdToLook = (propriedadeId && !propriedadeId.startsWith('mock-')) ? propriedadeId : null;
+        let localAuditIds = targetAuditId ? [targetAuditId] : [];
+        if (propIdToLook) {
+          const sisterLocalAuds = await db.cached_auditorias.where('propriedade_id').equals(propIdToLook).toArray().catch(() => []);
+          sisterLocalAuds.forEach(sa => {
+            if (sa.id && !localAuditIds.includes(sa.id)) localAuditIds.push(sa.id);
+          });
+        }
 
         // 1. Tentar ler do IndexedDB (cached_respostas + sync_journal) imediatamente (Local-First)
         if (targetAuditId && !targetAuditId.startsWith('mock-')) {
-          const [cachedResps, journalItems, localFiles] = await Promise.all([
-            getCachedRespostasByAuditoria(targetAuditId).catch(() => []),
-            db.sync_journal.where('auditoria_id').equals(targetAuditId).toArray().catch(() => []),
+          const [allLocalResps, allJournalItems, localFiles] = await Promise.all([
+            db.cached_respostas.where('auditoria_id').anyOf(localAuditIds).toArray().catch(() => []),
+            db.sync_journal.where('auditoria_id').anyOf(localAuditIds).toArray().catch(() => []),
             db.outbox_files.toArray().catch(() => [])
           ]);
+
+          const cachedResps = allLocalResps.length > 0 ? allLocalResps : await getCachedRespostasByAuditoria(targetAuditId).catch(() => []);
+          const journalItems = allJournalItems.length > 0 ? allJournalItems : await db.sync_journal.where('auditoria_id').equals(targetAuditId).toArray().catch(() => []);
+
+          // Se houver itens no journal sob um ID irmão desta mesma propriedade, migra para targetAuditId
+          for (const j of journalItems) {
+            if (j.auditoria_id !== targetAuditId && j.id) {
+              await db.sync_journal.update(j.id, { auditoria_id: targetAuditId });
+              j.auditoria_id = targetAuditId;
+            }
+          }
 
           const loadedFromCache: Record<string, any> = {};
 
@@ -591,7 +676,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               const loadedRespostas: Record<string, any> = {};
               const cacheBatch: any[] = [];
 
-              finalServerRespostas.forEach(r => {
+              finalServerRespostas.forEach((r: any) => {
                 const rawObs = (r as any).observacoes || '';
                 const numCrit = (r as any).perguntas_rtrs?.numero_criterio || '';
                 let evUrl = cleanEvidenceUrl(r.evidencia_url);
@@ -739,7 +824,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                       .eq('pergunta_id', pId);
                     await db.cached_respostas
                       .where('auditoria_id')
-                      .equals(targetAuditId)
+                      .equals(targetAuditId || '')
                       .and(r => normalizePerguntaId(r.pergunta_id) === pId)
                       .modify({ evidencia_url: evUrl, evidencia_uploaded_at: nowIsoHeal, data_envio: nowIsoHeal });
                   } catch (hErr) {
@@ -844,7 +929,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           ...(user?.id && modo !== 'autoavaliacao' ? { tecnico_responsavel_id: user.id } : {})
         })
         .eq('id', aid)
-        .then(({ error: aErr }) => {
+        .then(({ error: aErr }: any) => {
           if (aErr) console.warn('Aviso ao atualizar timestamp da auditoria:', aErr);
         });
 
@@ -853,7 +938,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           .from('propriedades')
           .update({ updated_at: nowIso })
           .eq('id', propriedadeId)
-          .then(({ error: pErr }) => {
+          .then(({ error: pErr }: any) => {
             if (pErr) console.warn('Aviso ao atualizar timestamp da propriedade:', pErr);
           });
       } else {
@@ -862,7 +947,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           .select('propriedade_id')
           .eq('id', aid)
           .maybeSingle()
-          .then(({ data: auditRow }) => {
+          .then(({ data: auditRow }: any) => {
             if (auditRow?.propriedade_id) {
               supabase.from('propriedades').update({ updated_at: nowIso }).eq('id', auditRow.propriedade_id).then(() => {});
             }
@@ -896,14 +981,14 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     const pergunta = perguntas.find(p => p.id === canonicalId || p.id === perguntaId);
     const numCrit = pergunta?.numero_criterio || '';
 
-    const currentAns = respostas[canonicalId] || respostas[perguntaId] || {};
+    const currentAns = respostasRef.current[canonicalId] || respostasRef.current[perguntaId] || respostas[canonicalId] || respostas[perguntaId] || {};
     const isRemovingEvidence = updates.evidenciaUrl === null;
     let nextEvidenciaUrl = currentAns.evidenciaUrl || null;
     if (updates.evidenciaUrl !== undefined) {
       nextEvidenciaUrl = updates.evidenciaUrl;
     }
 
-    let nextStateForId: RespostaItem = {
+    const nextStateForId: RespostaItem = {
       conforme: updates.conforme !== undefined ? updates.conforme : (currentAns.conforme ?? null),
       nao_se_aplica: updates.nao_se_aplica !== undefined ? updates.nao_se_aplica : (currentAns.nao_se_aplica ?? false),
       observacao: updates.observacao !== undefined ? updates.observacao : (currentAns.observacao || ''),
@@ -915,25 +1000,18 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       updated_at: nowIso
     };
 
+    // Atualização síncrona imediata da referência para eliminar concorrência do React 19
+    respostasRef.current = {
+      ...respostasRef.current,
+      [canonicalId]: nextStateForId,
+      ...(canonicalId !== perguntaId ? { [perguntaId]: nextStateForId } : {})
+    };
+
     // 1. Atualização instantânea da UI e LocalStorage
     setRespostas(prev => {
-      const current = prev[canonicalId] || prev[perguntaId] || {};
-      const nextForId: RespostaItem = {
-        ...current,
-        conforme: updates.conforme !== undefined ? updates.conforme : (current.conforme ?? null),
-        nao_se_aplica: updates.nao_se_aplica !== undefined ? updates.nao_se_aplica : (current.nao_se_aplica ?? false),
-        observacao: updates.observacao !== undefined ? updates.observacao : (current.observacao || ''),
-        evidenciaUrl: nextEvidenciaUrl,
-        numero_criterio: numCrit,
-        evidencia_uploaded_at: isRemovingEvidence
-          ? null
-          : (updates.evidenciaUploadedAt || current.evidencia_uploaded_at || (nextEvidenciaUrl ? nowIso : null)),
-        updated_at: nowIso
-      };
-      nextStateForId = nextForId;
-      const next = { ...prev, [canonicalId]: nextForId };
+      const next = { ...prev, [canonicalId]: nextStateForId };
       if (canonicalId !== perguntaId) {
-        next[perguntaId] = nextForId;
+        next[perguntaId] = nextStateForId;
       }
       try { localStorage.setItem(getCacheKey(), JSON.stringify(next)); } catch (e) {}
       return next;
@@ -1046,9 +1124,9 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                   supabase.storage.from('evidencias').list('evidencias', { search: prefix2 })
                 ]);
                 const filesToDelete: string[] = [];
-                if (res1.data) res1.data.forEach(f => filesToDelete.push(f.name));
-                if (res2.data) res2.data.forEach(f => filesToDelete.push(f.name));
-                if (res3.data) res3.data.forEach(f => filesToDelete.push(`evidencias/${f.name}`));
+                if (res1.data) res1.data.forEach((f: any) => filesToDelete.push(f.name));
+                if (res2.data) res2.data.forEach((f: any) => filesToDelete.push(f.name));
+                if (res3.data) res3.data.forEach((f: any) => filesToDelete.push(`evidencias/${f.name}`));
                 if (currentAns.evidenciaUrl && typeof currentAns.evidenciaUrl === 'string' && currentAns.evidenciaUrl.includes('/evidencias/')) {
                   const splitted = currentAns.evidenciaUrl.split('/evidencias/');
                   if (splitted[1]) filesToDelete.push(decodeURIComponent(splitted[1].split('?')[0]));
@@ -1287,25 +1365,33 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
       const fileName = `evidencia_${auditIdToUse || 'temp'}_${canonicalId}_${Date.now()}.${finalExt}`;
       const filePath = `${fileName}`;
 
-      const currentAns = respostas[canonicalId] || respostas[id] || {};
+      const currentAns = respostasRef.current[canonicalId] || respostasRef.current[id] || respostas[canonicalId] || respostas[id] || {};
       const safeConforme = currentAns.conforme ?? false;
       const safeNaoSeAplica = currentAns.nao_se_aplica ?? false;
       const safeObservacoes = currentAns.observacao || '';
       const numCrit = perguntas.find(p => p.id === canonicalId || p.id === id)?.numero_criterio || '';
 
+      const updatedItem: RespostaItem = {
+        ...currentAns,
+        conforme: safeConforme,
+        nao_se_aplica: safeNaoSeAplica,
+        evidenciaUrl: previewUrl,
+        numero_criterio: numCrit,
+        evidencia_uploaded_at: nowIso,
+        updated_at: nowIso
+      };
+
+      respostasRef.current = {
+        ...respostasRef.current,
+        [canonicalId]: updatedItem,
+        ...(canonicalId !== id ? { [id]: updatedItem } : {})
+      };
+
       // 2. Atualização instantânea da UI e LocalStorage
       setRespostas(prev => {
         const next = {
           ...prev,
-          [canonicalId]: {
-            ...currentAns,
-            conforme: safeConforme,
-            nao_se_aplica: safeNaoSeAplica,
-            evidenciaUrl: previewUrl,
-            numero_criterio: numCrit,
-            evidencia_uploaded_at: nowIso,
-            updated_at: nowIso
-          }
+          [canonicalId]: updatedItem
         };
         if (canonicalId !== id) {
           next[id] = next[canonicalId];
@@ -1471,6 +1557,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                   }
                 };
                 if (canonicalId !== id) updated[id] = updated[canonicalId];
+                respostasRef.current = updated;
                 try { localStorage.setItem(getCacheKey(), JSON.stringify(updated)); } catch (e) {}
                 return updated;
               });
@@ -1656,8 +1743,8 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const handleGoToNextPending = () => {
     const next = perguntas.find(p => !isPerguntaRespondida(p));
     if (next) {
-      if (showPanoramaView) {
-        setShowPanoramaView(false);
+      if (activeMainTab !== 'criterios') {
+        setActiveMainTab('criterios');
       }
       if (next.secao && next.secao !== secaoAtiva) {
         setSecaoAtiva(next.secao);
@@ -1674,8 +1761,9 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   };
 
   const handleSavePartial = async () => {
-    const answeredIds = Object.keys(respostas).filter(id => {
-      const r = respostas[id];
+    const currentRespostas = { ...respostasRef.current, ...respostas };
+    const answeredIds = Object.keys(currentRespostas).filter(id => {
+      const r = currentRespostas[id];
       return r && (r.nao_se_aplica === true || (r.conforme !== null && r.conforme !== undefined));
     });
     if (answeredIds.length === 0) {
@@ -1684,7 +1772,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     }
 
     try {
-      localStorage.setItem(getCacheKey(), JSON.stringify(respostas));
+      localStorage.setItem(getCacheKey(), JSON.stringify(currentRespostas));
     } catch (e) {}
 
     setSavingPartial(true);
@@ -1695,23 +1783,61 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         throw new Error('Não foi possível registrar ou vincular um ID de auditoria válido.');
       }
 
+      const nowIso = new Date().toISOString();
+      const cacheBatch: any[] = [];
+      const supabaseBatch: any[] = [];
+
       for (const id of answeredIds) {
-        const ans = respostas[id];
-        const numCrit = perguntas.find(p => p.id === id)?.numero_criterio || '';
+        const canonicalId = normalizePerguntaId(id);
+        const ans = currentRespostas[canonicalId] || currentRespostas[id];
+        const numCrit = perguntas.find(p => p.id === id || p.id === canonicalId)?.numero_criterio || '';
+        const safeConforme = ans?.conforme ?? false;
+        const safeNaoSeAplica = ans?.nao_se_aplica ?? false;
+        const safeObs = ans?.observacao || '';
+        let safeEvUrl = ans?.evidenciaUrl || null;
+        if (safeEvUrl && (safeEvUrl.startsWith('blob:') || safeEvUrl.includes('supabase.local') || safeEvUrl.includes('1787833477963'))) {
+          safeEvUrl = null;
+        }
+
         await recordAuditChange({
           auditoria_id: activeId,
-          pergunta_id: id,
-          conforme: ans.conforme ?? false,
-          nao_se_aplica: ans.nao_se_aplica ?? false,
-          observacoes: ans.observacao || '',
-          evidencia_url: ans.evidenciaUrl || null,
+          pergunta_id: canonicalId,
+          conforme: safeConforme,
+          nao_se_aplica: safeNaoSeAplica,
+          observacoes: safeObs,
+          evidencia_url: safeEvUrl,
           numero_criterio: numCrit,
           status: 'pending',
           created_at: Date.now(),
-          updated_at: new Date().toISOString(),
+          updated_at: nowIso,
           attempts: 0
         });
+
+        cacheBatch.push({
+          auditoria_id: activeId,
+          pergunta_id: canonicalId,
+          conforme: safeConforme,
+          nao_se_aplica: safeNaoSeAplica,
+          observacoes: safeObs,
+          evidencia_url: safeEvUrl,
+          numero_criterio: numCrit,
+          updated_at: nowIso,
+          evidencia_uploaded_at: ans?.evidencia_uploaded_at || (safeEvUrl ? nowIso : null),
+          data_envio: ans?.data_envio || (safeEvUrl ? nowIso : null)
+        });
+
+        supabaseBatch.push({
+          auditoria_id: activeId,
+          pergunta_id: canonicalId,
+          conforme: safeConforme,
+          nao_se_aplica: safeNaoSeAplica,
+          observacoes: safeObs,
+          evidencia_url: safeEvUrl,
+          updated_at: nowIso
+        });
       }
+
+      await bulkSaveRespostas(cacheBatch);
 
       if (modo === 'auditoria') {
         await enqueueMutation({
@@ -1721,21 +1847,53 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
           payload: {
             id: activeId,
             status: 'Em Andamento',
-            updated_at: new Date().toISOString(),
-            ...(user?.id && modo !== 'autoavaliacao' ? { tecnico_responsavel_id: user.id } : {})
+            updated_at: nowIso,
+            ...(user?.id ? { tecnico_responsavel_id: user.id } : {})
           }
         });
       }
 
-      touchAuditoriaTimestamp(activeId);
+      touchAuditoriaTimestamp(activeId, nowIso);
+
+      const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+      // Fast Batch Upsert direto ao Supabase quando online
+      if (isDeviceOnline && !activeId.startsWith('mock-') && supabaseBatch.length > 0) {
+        try {
+          const targetPropId = propriedadeId || (await db.cached_auditorias.get(activeId))?.propriedade_id;
+          if (targetPropId && !targetPropId.startsWith('mock-')) {
+            await supabase.from('auditorias').upsert([{
+              id: activeId,
+              propriedade_id: targetPropId,
+              tecnico_responsavel_id: modo !== 'autoavaliacao' ? (user?.id || null) : null,
+              status: modo === 'autoavaliacao' ? 'Autoavaliação' : 'Em Andamento',
+              updated_at: nowIso
+            }], { onConflict: 'id' });
+          }
+
+          const { error: partErr } = await supabase
+            .from('respostas_auditoria')
+            .upsert(supabaseBatch, { onConflict: 'auditoria_id,pergunta_id' });
+
+          if (!partErr) {
+            for (const sp of supabaseBatch) {
+              const jItem = await db.sync_journal.where('[auditoria_id+pergunta_id]').equals([sp.auditoria_id, sp.pergunta_id]).first();
+              if (jItem && !jItem.file_blob && jItem.id) {
+                await db.sync_journal.delete(jItem.id);
+              }
+            }
+            notifyOutboxChange();
+          }
+        } catch (fastPartErr) {
+          console.warn('[QuestionarioRTRS] Aviso no fast batch upsert parcial:', fastPartErr);
+        }
+      }
 
       const timeStr = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
       setLastSavedTime(timeStr);
 
-      const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
-
       if (isDeviceOnline) {
-        syncEngine.syncNow(true);
+        await syncEngine.syncNow(true);
         success(`Rascunho salvo e sincronizado às ${timeStr}!`);
       } else {
         success(`Rascunho salvo no aparelho às ${timeStr}. O envio ocorrerá automaticamente assim que a conexão for restabelecida.`);
@@ -1756,6 +1914,7 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     }
 
     setLoading(true);
+    const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
 
     try {
       const activeId = await getOrCreateRealAuditoriaId();
@@ -1763,49 +1922,109 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         throw new Error('Não foi possível registrar um ID de auditoria válido.');
       }
 
+      const currentRespostas = { ...respostasRef.current, ...respostas };
+
+      // Calcular scoreConformidade: Conformes / (Conformes + Não Conformes) * 100
+      const conformesCount = perguntas.filter(p => {
+        const canonicalId = normalizePerguntaId(p.id);
+        const ans = currentRespostas[canonicalId] || currentRespostas[p.id];
+        return ans && ans.conforme === true && !ans.nao_se_aplica;
+      }).length;
+      const naoConformesCount = perguntas.filter(p => {
+        const canonicalId = normalizePerguntaId(p.id);
+        const ans = currentRespostas[canonicalId] || currentRespostas[p.id];
+        return ans && ans.conforme === false && !ans.nao_se_aplica;
+      }).length;
+      const aplicaveisCount = conformesCount + naoConformesCount;
+      const scoreConformidade = aplicaveisCount > 0 ? Math.round((conformesCount / aplicaveisCount) * 100) : 100;
+
+      const nowIso = new Date().toISOString();
+      const cacheBatch: any[] = [];
+      const supabaseBatch: any[] = [];
+
       // Gravar todas as respostas no Unified WAL via recordAuditChange (Idempotente)
       for (const p of perguntas) {
-        const ans = respostas[p.id];
+        const canonicalId = normalizePerguntaId(p.id);
+        const ans = currentRespostas[canonicalId] || currentRespostas[p.id];
+        const safeConforme = ans?.conforme ?? false;
+        const safeNaoSeAplica = ans?.nao_se_aplica ?? false;
+        const safeObs = ans?.observacao || '';
+        let safeEvUrl = ans?.evidenciaUrl || null;
+        if (safeEvUrl && (safeEvUrl.startsWith('blob:') || safeEvUrl.includes('supabase.local') || safeEvUrl.includes('1787833477963'))) {
+          safeEvUrl = null;
+        }
+
         await recordAuditChange({
           auditoria_id: activeId,
-          pergunta_id: p.id,
-          conforme: ans?.conforme ?? false,
-          nao_se_aplica: ans?.nao_se_aplica ?? false,
-          observacoes: ans?.observacao || '',
-          evidencia_url: ans?.evidenciaUrl || null,
+          pergunta_id: canonicalId,
+          conforme: safeConforme,
+          nao_se_aplica: safeNaoSeAplica,
+          observacoes: safeObs,
+          evidencia_url: safeEvUrl,
           numero_criterio: p.numero_criterio,
           status: 'pending',
           created_at: Date.now(),
-          updated_at: new Date().toISOString(),
+          updated_at: nowIso,
           attempts: 0
+        });
+
+        cacheBatch.push({
+          auditoria_id: activeId,
+          pergunta_id: canonicalId,
+          conforme: safeConforme,
+          nao_se_aplica: safeNaoSeAplica,
+          observacoes: safeObs,
+          evidencia_url: safeEvUrl,
+          numero_criterio: p.numero_criterio,
+          updated_at: nowIso,
+          evidencia_uploaded_at: ans?.evidencia_uploaded_at || (safeEvUrl ? nowIso : null),
+          data_envio: ans?.data_envio || (safeEvUrl ? nowIso : null)
+        });
+
+        supabaseBatch.push({
+          auditoria_id: activeId,
+          pergunta_id: canonicalId,
+          conforme: safeConforme,
+          nao_se_aplica: safeNaoSeAplica,
+          observacoes: safeObs,
+          evidencia_url: safeEvUrl,
+          updated_at: nowIso
         });
       }
 
+      await bulkSaveRespostas(cacheBatch);
+
       // Enfileirar pendências automáticas APENAS para não-conformidades reais (exclui Não se Aplica)
       const naoConformes = perguntas.filter(p => {
-        const ans = respostas[p.id] || respostas[normalizePerguntaId(p.id)];
+        const canonicalId = normalizePerguntaId(p.id);
+        const ans = currentRespostas[canonicalId] || currentRespostas[p.id];
         return ans && ans.conforme === false && !ans.nao_se_aplica;
       });
       if (naoConformes.length > 0) {
-        let finalPropId = propriedadeId;
+        let finalPropId = propriedadeId || propriedadeData?.id;
         if (!finalPropId || finalPropId.startsWith('mock-')) {
-          const { data: auditData } = await supabase
-            .from('auditorias')
-            .select('propriedade_id')
-            .eq('id', activeId)
-            .single();
-          finalPropId = auditData?.propriedade_id;
+          try {
+            const { data: auditData } = await supabase
+              .from('auditorias')
+              .select('propriedade_id')
+              .eq('id', activeId)
+              .single();
+            finalPropId = auditData?.propriedade_id;
+          } catch {}
         }
 
         if (finalPropId) {
           for (const p of naoConformes) {
-            const ans = respostas[p.id] || respostas[normalizePerguntaId(p.id)];
-            const pendPayload = {
+            const canonicalId = normalizePerguntaId(p.id);
+            const ans = currentRespostas[canonicalId] || currentRespostas[p.id];
+            const lowPond = (p.ponderacao || '').toLowerCase();
+            const diasPrazo = lowPond.includes('imediat') ? 15 : lowPond.includes('curto') ? 60 : 120;
+            const pendPayload: any = {
               propriedade_id: finalPropId,
               titulo: `Não conformidade - Critério ${p.numero_criterio}`,
               descricao: `Ação necessária para atender ao critério ${p.numero_criterio}: "${p.enunciado || p.criterio}". Observação registrada: ${ans?.observacao || 'Nenhuma'}`,
               status: 'Pendente',
-              prazo: p.ponderacao === 'Imediata' ? new Date(Date.now() + 15 * 86400000).toISOString().split('T')[0] : new Date(Date.now() + 60 * 86400000).toISOString().split('T')[0],
+              prazo: new Date(Date.now() + diasPrazo * 86400000).toISOString().split('T')[0],
               criado_por: modo !== 'autoavaliacao' ? (user?.id || null) : null,
               tecnico_responsavel_id: modo !== 'autoavaliacao' ? (user?.id || null) : null
             };
@@ -1818,13 +2037,43 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
             });
 
             if (isDeviceOnline && !finalPropId.startsWith('mock-')) {
-              supabase.from('pendencias').upsert(pendPayload, { onConflict: 'propriedade_id,titulo' }).then(() => {});
+              try {
+                const { error: upPendErr } = await supabase
+                  .from('pendencias')
+                  .upsert(pendPayload, { onConflict: 'propriedade_id,titulo' });
+                if (upPendErr) {
+                  const fallbackPend = { ...pendPayload };
+                  delete fallbackPend.tecnico_responsavel_id;
+                  delete fallbackPend.criado_por;
+                  await supabase.from('pendencias').insert([fallbackPend]);
+                }
+              } catch (pendSyncErr) {
+                try {
+                  const fallbackPend = { ...pendPayload };
+                  delete fallbackPend.tecnico_responsavel_id;
+                  delete fallbackPend.criado_por;
+                  await supabase.from('pendencias').insert([fallbackPend]);
+                } catch {}
+              }
             }
           }
         }
       }
 
       const nextStatus = modo === 'autoavaliacao' ? 'Concluída' : 'Aguardando Aprovação';
+
+      // Atualizar auditoria localmente no Dexie
+      try {
+        await db.cached_auditorias.update(activeId, {
+          status: nextStatus,
+          pontuacao_atual: scoreConformidade,
+          ultima_alteracao_at: nowIso,
+          updated_at: nowIso
+        } as any);
+      } catch (dexUpdErr) {
+        console.warn('[QuestionarioRTRS] Aviso ao atualizar cached_auditorias localmente:', dexUpdErr);
+      }
+
       await enqueueMutation({
         table: 'auditorias',
         action: 'update',
@@ -1832,25 +2081,65 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
         payload: {
           id: activeId,
           status: nextStatus,
-          updated_at: new Date().toISOString()
+          updated_at: nowIso
         }
       });
 
-      touchAuditoriaTimestamp(activeId);
+      // Atualização direta no Supabase quando online (com batch upsert garantido!)
+      if (isDeviceOnline && !activeId.startsWith('local-') && !activeId.startsWith('mock-')) {
+        try {
+          const targetPropId = propriedadeId || propriedadeData?.id || (await db.cached_auditorias.get(activeId))?.propriedade_id;
+          if (targetPropId && !targetPropId.startsWith('mock-')) {
+            await supabase.from('auditorias').upsert([{
+              id: activeId,
+              propriedade_id: targetPropId,
+              tecnico_responsavel_id: modo !== 'autoavaliacao' ? (user?.id || null) : null,
+              status: nextStatus,
+              data_auditoria: nowIso,
+              updated_at: nowIso
+            }], { onConflict: 'id' });
+          }
 
-      const isDeviceOnline = isOnline && (typeof navigator !== 'undefined' ? navigator.onLine : true);
+          // FAST BATCH UPSERT de todas as 115 respostas direto no Supabase em uma única requisição HTTP!
+          if (supabaseBatch.length > 0) {
+            const { error: batchErr } = await supabase
+              .from('respostas_auditoria')
+              .upsert(supabaseBatch, { onConflict: 'auditoria_id,pergunta_id' });
+
+            if (!batchErr) {
+              console.log(`[QuestionarioRTRS] Batch upsert de submissão (${supabaseBatch.length} respostas) gravado com sucesso no Supabase!`);
+              for (const sp of supabaseBatch) {
+                const jItem = await db.sync_journal.where('[auditoria_id+pergunta_id]').equals([sp.auditoria_id, sp.pergunta_id]).first();
+                if (jItem && !jItem.file_blob && jItem.id) {
+                  await db.sync_journal.delete(jItem.id);
+                }
+              }
+              notifyOutboxChange();
+            } else {
+              console.warn('[QuestionarioRTRS] Aviso no batch upsert de submissão:', batchErr);
+            }
+          }
+        } catch (supaAudErr) {
+          console.warn('[QuestionarioRTRS] Aviso ao atualizar status no Supabase:', supaAudErr);
+        }
+      }
+
+      touchAuditoriaTimestamp(activeId, nowIso);
+      setCurrentAuditoriaStatus(nextStatus);
+      setHasUnsavedCriteriaAfterSubmit(false);
 
       if (isDeviceOnline) {
-        syncEngine.syncNow(true);
-        success(modo === 'autoavaliacao' ? 'Autoavaliação concluída e sincronizada com sucesso!' : 'Relatório de Auditoria submetido com sucesso!');
+        await syncEngine.syncNow(true);
+        success(modo === 'autoavaliacao' ? 'Autoavaliação concluída e sincronizada com sucesso!' : 'Vistoria RTRS submetida! Aguardando deliberação do Gestor.');
       } else {
         success(
           modo === 'autoavaliacao'
             ? 'Autoavaliação salva no aparelho. O envio ocorrerá automaticamente assim que a conexão for restabelecida.'
-            : 'Relatório de Auditoria gravado no aparelho. O envio ocorrerá automaticamente assim que a conexão for restabelecida.'
+            : 'Vistoria RTRS gravada como Aguardando Aprovação. O envio ocorrerá automaticamente assim que a conexão for restabelecida.'
         );
       }
 
+      onSubmitted?.(activeId, nextStatus);
       onComplete();
     } catch (err: any) {
       console.error('Erro ao salvar auditoria:', err);
@@ -1860,6 +2149,29 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     }
   };
 
+  // Reatividade em tempo real: sincroniza com outros dispositivos ou quando o dreno offline termina
+  useEffect(() => {
+    const handleSyncComplete = () => {
+      fetchExistingRespostasRef.current?.();
+    };
+
+    const handleVisibilityOrFocus = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        fetchExistingRespostasRef.current?.();
+      }
+    };
+
+    window.addEventListener('ms:sync-complete', handleSyncComplete);
+    window.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+
+    return () => {
+      window.removeEventListener('ms:sync-complete', handleSyncComplete);
+      window.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+    };
+  }, []);
+
   const secoesUnicas = Array.from(new Set(perguntas.map(p => p.secao)));
   const perguntasFiltradas = perguntas.filter(p => p.secao === secaoAtiva);
 
@@ -1867,8 +2179,289 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
   const totalRespondidas = perguntas.filter(isPerguntaRespondida).length;
   const percentualConcluido = totalPerguntas > 0 ? Math.round((totalRespondidas / totalPerguntas) * 100) : 0;
 
-  const [showPanoramaView, setShowPanoramaView] = useState(false);
-  const [hasAutoOpenedPanorama, setHasAutoOpenedPanorama] = useState(false);
+  // Sincroniza initialMainTab quando passado explicitamente pelo card clicado
+  useEffect(() => {
+    if (initialMainTab) {
+      setActiveMainTab(initialMainTab);
+      autoOpenedPanoramaRef.current = true;
+    }
+  }, [initialMainTab]);
+
+  useEffect(() => {
+    if (auditoriaStatus) {
+      setCurrentAuditoriaStatus(auditoriaStatus);
+    }
+  }, [auditoriaStatus]);
+
+  // Carrega dados completos da Ficha da Fazenda & Produtor + Ajustes do Gestor
+  useEffect(() => {
+    async function loadFichaAndStatus() {
+      const targetPropId = propriedadeId || propriedadeData?.id;
+      const targetAudId = currentAuditoriaId || auditoriaId;
+
+      // 1. Verificar cache local de ficha salvo no localStorage
+      if (targetPropId) {
+        try {
+          const cachedFicha = localStorage.getItem(`ms_ficha_fazenda_${targetPropId}`);
+          if (cachedFicha) {
+            const parsed = JSON.parse(cachedFicha);
+            setFichaForm(prev => ({ ...prev, ...parsed }));
+          }
+        } catch {}
+      }
+
+      // 2. Consultar Dexie cached_auditorias para status e dados locais
+      if (targetAudId) {
+        try {
+          const localAud = await db.cached_auditorias.get(targetAudId);
+          if (localAud) {
+            if (localAud.status) setCurrentAuditoriaStatus(localAud.status);
+            const lp = localAud.propriedades as any;
+            if (lp) {
+              setFichaForm(prev => ({
+                ...prev,
+                nome_fazenda: lp.nome_fazenda || prev.nome_fazenda,
+                municipio: lp.municipio || prev.municipio,
+                codigo_car: lp.codigo_car || prev.codigo_car,
+                matricula: lp.matricula || lp.codigo_sigef || prev.matricula,
+                area_total_ha: lp.area_total_ha ? String(lp.area_total_ha) : prev.area_total_ha,
+                area_soja_ha: lp.area_soja_ha ? String(lp.area_soja_ha) : prev.area_soja_ha,
+                etapa: resolveFarmEtapa(targetPropId || lp.id, lp.etapa, localAud.etapa) || prev.etapa,
+                nome_produtor: lp.nome_produtor || prev.nome_produtor
+              }));
+            }
+          }
+        } catch {}
+      }
+
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+
+      try {
+        // 3. Buscar status da auditoria no Supabase
+        if (targetAudId && !targetAudId.startsWith('mock-') && !targetAudId.startsWith('local-')) {
+          const { data: audRow } = await supabase
+            .from('auditorias')
+            .select('status, etapa, propriedade_id')
+            .eq('id', targetAudId)
+            .maybeSingle();
+          if (audRow?.status) {
+            setCurrentAuditoriaStatus(audRow.status);
+          }
+        }
+
+        // 4. Buscar dados da propriedade e do produtor no Supabase
+        if (targetPropId && !targetPropId.startsWith('mock-')) {
+          const { data: propRow } = await supabase
+            .from('propriedades')
+            .select('*')
+            .eq('id', targetPropId)
+            .maybeSingle();
+
+          let prodRow: any = null;
+          if (propRow?.produtor_id) {
+            const { data: pData } = await supabase
+              .from('perfis')
+              .select('*')
+              .eq('id', propRow.produtor_id)
+              .maybeSingle();
+            prodRow = pData;
+          } else if (propRow?.nome_produtor) {
+            const { data: pData } = await supabase
+              .from('perfis')
+              .select('*')
+              .eq('nome', propRow.nome_produtor)
+              .maybeSingle();
+            prodRow = pData;
+          }
+
+          if (propRow || prodRow) {
+            // Extrair centroide de geom se latitude/longitude não estiverem explícitos
+            let latStr = propRow?.latitude ? String(propRow.latitude) : '';
+            let lngStr = propRow?.longitude ? String(propRow.longitude) : '';
+            if ((!latStr || !lngStr) && propRow?.geom) {
+              try {
+                const g = typeof propRow.geom === 'string' ? JSON.parse(propRow.geom) : propRow.geom;
+                if (g?.type === 'Point' && Array.isArray(g.coordinates)) {
+                  lngStr = String(Number(g.coordinates[0]).toFixed(6));
+                  latStr = String(Number(g.coordinates[1]).toFixed(6));
+                } else if (g?.type === 'Polygon' && Array.isArray(g.coordinates?.[0]?.[0])) {
+                  lngStr = String(Number(g.coordinates[0][0][0]).toFixed(6));
+                  latStr = String(Number(g.coordinates[0][0][1]).toFixed(6));
+                }
+              } catch {}
+            }
+
+            setFichaForm(prev => ({
+              ...prev,
+              nome_fazenda: propRow?.nome_fazenda || prev.nome_fazenda,
+              municipio: resolveMunicipioFromCarOrName(propRow?.codigo_car, propRow?.nome_fazenda, propRow?.municipio || prev.municipio),
+              codigo_car: propRow?.codigo_car || prev.codigo_car,
+              matricula: propRow?.matricula || propRow?.codigo_sigef || prev.matricula,
+              area_total_ha: propRow?.area_total_ha ? String(propRow.area_total_ha) : prev.area_total_ha,
+              area_soja_ha: propRow?.area_soja_ha ? String(propRow.area_soja_ha) : prev.area_soja_ha,
+              latitude: latStr || prev.latitude,
+              longitude: lngStr || prev.longitude,
+              etapa: resolveFarmEtapa(targetPropId, propRow?.etapa) || prev.etapa,
+              nome_produtor: prodRow?.nome || propRow?.nome_produtor || prev.nome_produtor,
+              cpf_produtor: prodRow?.cpf || propRow?.cpf_produtor || prev.cpf_produtor,
+              telefone_produtor: prodRow?.telefone || propRow?.telefone_produtor || prev.telefone_produtor,
+              email_produtor: prodRow?.email || propRow?.email_produtor || prev.email_produtor,
+              produtor_id: prodRow?.id || propRow?.produtor_id || prev.produtor_id
+            }));
+          }
+
+          // 5. Buscar pendências de ajuste solicitado pelo gestor para esta propriedade
+          const { data: pends } = await supabase
+            .from('pendencias')
+            .select('*')
+            .eq('propriedade_id', targetPropId)
+            .neq('status', 'Resolvida')
+            .order('created_at', { ascending: false });
+
+          if (pends && pends.length > 0) {
+            const managerAdjustments = pends.filter((p: any) =>
+              p.motivo_rejeicao ||
+              (p.titulo && (
+                p.titulo.toLowerCase().includes('ajuste') ||
+                p.titulo.toLowerCase().includes('revisão') ||
+                p.titulo.toLowerCase().includes('gestor')
+              ))
+            );
+            setAjustesGestor(managerAdjustments);
+          }
+        }
+      } catch (e) {
+        console.warn('[QuestionarioRTRS] Aviso ao carregar ficha da fazenda:', e);
+      }
+    }
+
+    loadFichaAndStatus();
+  }, [propriedadeId, currentAuditoriaId]);
+
+  const handleSaveFicha = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setSavingFicha(true);
+    const targetPropId = propriedadeId || propriedadeData?.id;
+    const targetAudId = currentAuditoriaId || auditoriaId;
+    const nowIso = new Date().toISOString();
+
+    try {
+      // 1. Persistir no localStorage imediatamente
+      if (targetPropId) {
+        try {
+          localStorage.setItem(`ms_ficha_fazenda_${targetPropId}`, JSON.stringify(fichaForm));
+        } catch {}
+      }
+
+      // 2. Persistir Etapa e atualizar Dexie cached_auditorias
+      if (targetPropId && fichaForm.etapa) {
+        await persistFarmEtapa(targetPropId, targetAudId || '', fichaForm.etapa as any);
+      }
+
+      if (targetAudId) {
+        try {
+          const existingAud = await db.cached_auditorias.get(targetAudId);
+          await db.cached_auditorias.update(targetAudId, {
+            etapa: fichaForm.etapa,
+            ultima_alteracao_at: nowIso,
+            updated_at: nowIso,
+            propriedades: {
+              ...(existingAud?.propriedades || {}),
+              id: targetPropId || existingAud?.propriedade_id || '',
+              nome_fazenda: fichaForm.nome_fazenda,
+              nome_produtor: fichaForm.nome_produtor,
+              codigo_car: fichaForm.codigo_car,
+              codigo_sigef: fichaForm.matricula,
+              municipio: fichaForm.municipio,
+              area_soja_ha: fichaForm.area_soja_ha ? parseFloat(fichaForm.area_soja_ha) : null,
+              etapa: fichaForm.etapa,
+              updated_at: nowIso
+            } as any
+          });
+        } catch {}
+      }
+
+      // 3. Sincronizar com o Supabase
+      if (isDeviceOnline && targetPropId && !targetPropId.startsWith('mock-')) {
+        const corePropPayload: any = {
+          nome_fazenda: fichaForm.nome_fazenda.trim() || propriedadeNome,
+          nome_produtor: fichaForm.nome_produtor.trim() || 'Produtor Rural',
+          municipio: fichaForm.municipio.trim() || 'Mato Grosso do Sul, MS',
+          codigo_car: fichaForm.codigo_car.trim() || null,
+          codigo_sigef: fichaForm.matricula.trim() || null,
+          area_soja_ha: fichaForm.area_soja_ha ? parseFloat(fichaForm.area_soja_ha) : null,
+          etapa: fichaForm.etapa,
+          updated_at: nowIso
+        };
+
+        const { error: propUpdErr } = await supabase
+          .from('propriedades')
+          .update(corePropPayload)
+          .eq('id', targetPropId);
+
+        if (propUpdErr) {
+          // Fallback mínimo garantido
+          await supabase
+            .from('propriedades')
+            .update({
+              nome_fazenda: corePropPayload.nome_fazenda,
+              nome_produtor: corePropPayload.nome_produtor,
+              municipio: corePropPayload.municipio,
+              codigo_car: corePropPayload.codigo_car,
+              updated_at: nowIso
+            })
+            .eq('id', targetPropId);
+        }
+
+        // Atualizar etapa na auditoria se aplicável
+        if (targetAudId && !targetAudId.startsWith('mock-') && !targetAudId.startsWith('local-')) {
+          await supabase
+            .from('auditorias')
+            .update({ etapa: fichaForm.etapa, updated_at: nowIso })
+            .eq('id', targetAudId);
+        }
+
+        // Atualizar perfil do produtor se houver produtor_id válido
+        if (fichaForm.produtor_id && !fichaForm.produtor_id.startsWith('mock-')) {
+          await supabase
+            .from('perfis')
+            .update({
+              nome: fichaForm.nome_produtor.trim(),
+              telefone: fichaForm.telefone_produtor.trim() || null,
+              email: fichaForm.email_produtor.trim() || undefined,
+              regiao: fichaForm.municipio.trim() || undefined
+            })
+            .eq('id', fichaForm.produtor_id);
+        }
+      } else if (targetPropId) {
+        await enqueueMutation({
+          table: 'propriedades',
+          action: 'update',
+          match_key: { id: targetPropId },
+          payload: {
+            id: targetPropId,
+            nome_fazenda: fichaForm.nome_fazenda.trim() || propriedadeNome,
+            nome_produtor: fichaForm.nome_produtor.trim() || 'Produtor Rural',
+            municipio: fichaForm.municipio.trim() || 'Mato Grosso do Sul, MS',
+            codigo_car: fichaForm.codigo_car.trim() || null,
+            area_soja_ha: fichaForm.area_soja_ha ? parseFloat(fichaForm.area_soja_ha) : null,
+            etapa: fichaForm.etapa,
+            updated_at: nowIso
+          }
+        });
+      }
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('ms:audit-updated', { detail: { auditoriaId: targetAudId, propriedadeId: targetPropId } }));
+      }
+      success('Dados da Fazenda e do Produtor salvos e sincronizados com sucesso!');
+    } catch (err: any) {
+      console.error('Erro ao salvar ficha da fazenda:', err);
+      error('Não foi possível salvar alguns dados: ' + (err.message || 'Erro local'));
+    } finally {
+      setSavingFicha(false);
+    }
+  };
 
   // Mapeia todas as perguntas e respostas ativas para a visão do Panorama RTRS
   const panoramaCriterios: PanoramaCriterioItem[] = useMemo(() => {
@@ -1889,62 +2482,450 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
     });
   }, [perguntas, respostas]);
 
-  // Transição automática para o Panorama assim que o técnico responde a última pergunta pendente
+  const { scoreConformidadeAtual, conformesCountAtual, naoConformesCountAtual } = useMemo(() => {
+    const conf = panoramaCriterios.filter(c => c.conforme === true && !c.nao_se_aplica).length;
+    const nconf = panoramaCriterios.filter(c => c.conforme === false && !c.nao_se_aplica).length;
+    const aplic = conf + nconf;
+    const score = aplic > 0 ? Math.round((conf / aplic) * 100) : (totalPerguntas > 0 && totalRespondidas === totalPerguntas ? 100 : 0);
+    return { scoreConformidadeAtual: score, conformesCountAtual: conf, naoConformesCountAtual: nconf };
+  }, [panoramaCriterios, totalPerguntas, totalRespondidas]);
+
+  // Controle de abertura inicial e transição ao completar 115/115 sem sobrescrever initialMainTab
   useEffect(() => {
-    if (totalPerguntas > 0 && totalRespondidas === totalPerguntas && !hasAutoOpenedPanorama) {
-      setHasAutoOpenedPanorama(true);
-      setShowPanoramaView(true);
-      success('Todas as perguntas foram respondidas! Confira o Panorama & Score de Conformidade da fazenda.');
+    if (totalPerguntas === 0) return;
+
+    // Caso initialMainTab não tenha sido forçado nas props e já esteja 100% respondido ao abrir
+    if (!initialMainTab && !autoOpenedPanoramaRef.current && totalRespondidas === totalPerguntas) {
+      autoOpenedPanoramaRef.current = true;
+      setActiveMainTab('resumo');
+    } else if (
+      prevRespondidasCountRef.current !== null &&
+      prevRespondidasCountRef.current < totalPerguntas &&
+      totalRespondidas === totalPerguntas
+    ) {
+      // Transição quando o técnico acaba de responder o último item pendente na sessão
+      setActiveMainTab('resumo');
+      success('Todos os 115 critérios foram respondidos! Confira o Resumo & Score RTRS para submeter a vistoria.');
     }
-  }, [totalRespondidas, totalPerguntas, hasAutoOpenedPanorama]);
+
+    prevRespondidasCountRef.current = totalRespondidas;
+  }, [totalRespondidas, totalPerguntas, initialMainTab]);
+
+  const isAwaitingManager = currentAuditoriaStatus === 'Aguardando Aprovação' || currentAuditoriaStatus === 'Em Análise';
+  const isCertified = currentAuditoriaStatus === 'Certificada';
 
   return createPortal(
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex justify-center items-center p-0 sm:p-4 overflow-y-auto animate-fadeIn">
       <div className="bg-slate-50 w-full max-w-4xl h-full sm:h-auto sm:max-h-[92vh] rounded-none sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden border-0 sm:border sm:border-emerald-100">
         
-        {/* Cabeçalho do Modal com Alternador de Panorama & Pontuação */}
-        <div className="bg-emerald-800 text-white px-3 py-2 sm:px-6 sm:py-3.5 flex items-center justify-between shrink-0 shadow-sm">
+        {/* Cabeçalho Verde da Central Única da Fazenda */}
+        <div className="bg-emerald-800 text-white px-3 py-2.5 sm:px-6 sm:py-3.5 flex items-center justify-between shrink-0 shadow-sm">
           <div className="min-w-0 flex-1 pr-2">
-            <span className="text-[9px] sm:text-[10px] font-extrabold tracking-wider text-emerald-200 uppercase bg-emerald-900/60 px-2 py-0.5 rounded border border-emerald-700/50">
-              {modo === 'autoavaliacao' ? 'Autoavaliação do Produtor' : 'Auditoria In Loco'}
-            </span>
-            <h2 className="text-sm sm:text-xl font-black text-white mt-0.5 leading-tight truncate">{propriedadeNome}</h2>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[9px] sm:text-[10px] font-extrabold tracking-wider text-emerald-200 uppercase bg-emerald-900/60 px-2 py-0.5 rounded border border-emerald-700/50">
+                {modo === 'autoavaliacao' ? 'Autoavaliação do Produtor' : 'Central Única da Fazenda • Vistoria RTRS'}
+              </span>
+              <span className={`text-[9px] sm:text-[10px] font-black uppercase px-2 py-0.5 rounded border ${
+                isCertified
+                  ? 'bg-emerald-400 text-emerald-950 border-emerald-300'
+                  : isAwaitingManager
+                  ? 'bg-amber-400 text-amber-950 border-amber-300'
+                  : 'bg-white/15 text-white border-white/20'
+              }`}>
+                {isCertified ? 'Certificada RTRS' : isAwaitingManager ? 'Aguardando Aprovação' : currentAuditoriaStatus}
+              </span>
+            </div>
+            <h2 className="text-sm sm:text-xl font-black text-white mt-0.5 leading-tight truncate">
+              {fichaForm.nome_fazenda || propriedadeNome}
+            </h2>
           </div>
           
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => setShowPanoramaView(prev => !prev)}
-              className={`px-2.5 py-1.5 rounded-xl font-extrabold text-[11px] sm:text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs ${
-                showPanoramaView
-                  ? 'bg-white text-emerald-950 ring-2 ring-emerald-300'
-                  : 'bg-emerald-900/80 hover:bg-emerald-700/80 text-emerald-100 border border-emerald-600/50'
-              }`}
-              title="Alternar entre Perguntas e Panorama de Pontuação"
-            >
-              <Award className="w-3.5 h-3.5 text-[#C59B27]" />
-              <span className="hidden sm:inline">{showPanoramaView ? 'Voltar aos Critérios' : 'Panorama & Score'}</span>
-              <span className="sm:hidden">{showPanoramaView ? 'Critérios' : 'Score'}</span>
-            </button>
-            <button id="btn-fechar-x" onClick={onClose} aria-label="Fechar Questionario" title="Fechar Questionario" className="p-1.5 sm:p-2 hover:bg-emerald-700/60 rounded-xl transition-colors text-emerald-100 hover:text-white cursor-pointer shrink-0">
+            <ExportarPdfButton
+              auditoriaId={currentAuditoriaId}
+              propriedadeId={propriedadeId}
+              propriedadeNome={fichaForm.nome_fazenda || propriedadeNome}
+              status={currentAuditoriaStatus}
+              variant="header"
+            />
+            <button id="btn-fechar-x" onClick={onClose} aria-label="Fechar Central da Fazenda" title="Fechar Central da Fazenda" className="p-1.5 sm:p-2 hover:bg-emerald-700/60 rounded-xl transition-colors text-emerald-100 hover:text-white cursor-pointer shrink-0">
               <X className="w-5 h-5 sm:w-6 sm:h-6" />
             </button>
           </div>
         </div>
 
-{showPanoramaView ? (
-          <div className="flex-1 overflow-y-auto p-3 sm:p-6">
+        {/* Barra de Abas Superiores Unificada (3 Abas Claras e Diretas) */}
+        <div className="bg-white border-b border-slate-200 px-2 sm:px-6 py-2 shrink-0 grid grid-cols-3 gap-1.5 sm:gap-2.5 shadow-2xs">
+          <button
+            type="button"
+            onClick={() => setActiveMainTab('resumo')}
+            className={`px-2 py-2 sm:px-3.5 sm:py-2.5 rounded-xl font-extrabold text-[10px] sm:text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer border ${
+              activeMainTab === 'resumo'
+                ? 'bg-[#1B7547] text-white border-[#1B7547] shadow-sm ring-2 ring-[#1B7547]/20'
+                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+            }`}
+          >
+            <Award className={`w-3.5 h-3.5 shrink-0 ${activeMainTab === 'resumo' ? 'text-[#C59B27]' : 'text-amber-600'}`} />
+            <span className="truncate">1. Resumo & Score</span>
+            <span className={`inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-mono font-black ${
+              activeMainTab === 'resumo' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'
+            }`}>
+              {scoreConformidadeAtual}%
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveMainTab('criterios')}
+            className={`px-2 py-2 sm:px-3.5 sm:py-2.5 rounded-xl font-extrabold text-[10px] sm:text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer border ${
+              activeMainTab === 'criterios'
+                ? 'bg-[#1B7547] text-white border-[#1B7547] shadow-sm ring-2 ring-[#1B7547]/20'
+                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+            }`}
+          >
+            <ClipboardList className={`w-3.5 h-3.5 shrink-0 ${activeMainTab === 'criterios' ? 'text-emerald-200' : 'text-emerald-700'}`} />
+            <span className="truncate">2. Critérios (115)</span>
+            <span className={`inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-mono font-black ${
+              activeMainTab === 'criterios' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
+            }`}>
+              {totalRespondidas}/{totalPerguntas || 115}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveMainTab('ficha')}
+            className={`px-2 py-2 sm:px-3.5 sm:py-2.5 rounded-xl font-extrabold text-[10px] sm:text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer border ${
+              activeMainTab === 'ficha'
+                ? 'bg-[#1B7547] text-white border-[#1B7547] shadow-sm ring-2 ring-[#1B7547]/20'
+                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+            }`}
+          >
+            <Building2 className={`w-3.5 h-3.5 shrink-0 ${activeMainTab === 'ficha' ? 'text-emerald-200' : 'text-slate-600'}`} />
+            <span className="truncate">3. Ficha Cadastral</span>
+          </button>
+        </div>
+
+        {/* CONTEÚDO DA ABA 1: RESUMO & SUBMISSÃO (SCORE RTRS) */}
+        {activeMainTab === 'resumo' && (
+          <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4">
+            {/* Banner de Ajustes Solicitados pelo Gestor (quando houver) */}
+            {ajustesGestor.length > 0 && (
+              <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 shadow-xs space-y-2 animate-fadeIn">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2 text-amber-950 font-black text-xs sm:text-sm">
+                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                    <span>Orientação do Gestor — Ajustes Solicitados na Vistoria</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveMainTab('criterios')}
+                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-[11px] font-extrabold transition-all cursor-pointer shrink-0 shadow-2xs"
+                  >
+                    Revisar Critérios
+                  </button>
+                </div>
+                <div className="space-y-1.5 pl-7">
+                  {ajustesGestor.map((aj, idx) => (
+                    <div key={aj.id || idx} className="text-xs text-amber-900 bg-white/80 p-2.5 rounded-xl border border-amber-200">
+                      <p className="font-extrabold">{aj.titulo}</p>
+                      <p className="text-amber-800 mt-0.5">{aj.motivo_rejeicao || aj.descricao}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Banner Informativo quando já submetido ao Gestor */}
+            {isAwaitingManager && (
+              <div className="bg-amber-50/90 border border-amber-300 rounded-2xl p-3.5 sm:p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-2xs">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-amber-100 text-amber-800 rounded-xl border border-amber-300 shrink-0">
+                    <Clock className="w-5 h-5 text-amber-700" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs sm:text-sm font-black text-amber-950">
+                      Vistoria Submetida • Aguardando Deliberação do Gestor
+                    </h4>
+                    <p className="text-[11px] sm:text-xs text-amber-800 font-medium mt-0.5">
+                      O relatório RTRS ({scoreConformidadeAtual}% de conformidade) já foi enviado para análise. Caso altere algum critério, clique em "Reenviar / Atualizar Vistoria RTRS" abaixo.
+                    </p>
+                  </div>
+                </div>
+                <div className="shrink-0 w-full sm:w-auto">
+                  <ExportarPdfButton
+                    auditoriaId={currentAuditoriaId}
+                    propriedadeId={propriedadeId}
+                    propriedadeNome={fichaForm.nome_fazenda || propriedadeNome}
+                    status={currentAuditoriaStatus}
+                    variant="primary"
+                    className="w-full sm:w-auto"
+                  />
+                </div>
+              </div>
+            )}
+
             <PanoramaScoreRTRS
-              propriedadeNome={propriedadeNome}
+              propriedadeNome={fichaForm.nome_fazenda || propriedadeNome}
+              municipio={fichaForm.municipio}
+              produtorNome={fichaForm.nome_produtor}
               criterios={panoramaCriterios}
               embedded={true}
-              onBackToQuestions={() => setShowPanoramaView(false)}
+              onBackToQuestions={() => setActiveMainTab('criterios')}
               onSubmitAuditoria={handleSubmit}
               isSubmitting={loading}
-              etapa={modo === 'autoavaliacao' ? 'Autoavaliação do Produtor' : 'Auditoria In Loco'}
+              etapa={fichaForm.etapa || (modo === 'autoavaliacao' ? 'Autoavaliação do Produtor' : 'Auditoria In Loco')}
             />
           </div>
-        ) : (
+        )}
+
+        {/* CONTEÚDO DA ABA 3: FICHA DA FAZENDA & PRODUTOR */}
+        {activeMainTab === 'ficha' && (
+          <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-5 animate-fadeIn">
+            {/* Resumo Executivo Rápido no Topo da Ficha */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="bg-white p-3.5 rounded-2xl border border-emerald-200 shadow-2xs flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">Score & Checklist</span>
+                  <span className="text-lg font-black text-[#1B7547] font-mono">{scoreConformidadeAtual}% Conformidade</span>
+                  <span className="text-[11px] text-slate-500 block font-bold">{totalRespondidas}/{totalPerguntas || 115} respondidos</span>
+                </div>
+                <div className="p-2.5 bg-emerald-50 text-[#1B7547] rounded-xl border border-emerald-100">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+              </div>
+
+              <div className="bg-white p-3.5 rounded-2xl border border-amber-200 shadow-2xs flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">Status da Auditoria</span>
+                  <span className="text-sm font-black text-slate-900 block mt-0.5">{currentAuditoriaStatus}</span>
+                  <span className="text-[11px] text-amber-700 font-bold block">Etapa: {fichaForm.etapa}</span>
+                </div>
+                <div className="p-2.5 bg-amber-50 text-amber-700 rounded-xl border border-amber-100">
+                  <Clock className="w-5 h-5" />
+                </div>
+              </div>
+
+              <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">Não Conformidades</span>
+                  <span className="text-lg font-black text-rose-600 font-mono">{naoConformesCountAtual} apontamentos</span>
+                  <span className="text-[11px] text-slate-500 block font-bold">{conformesCountAtual} conformes</span>
+                </div>
+                <div className="p-2.5 bg-rose-50 text-rose-600 rounded-xl border border-rose-100">
+                  <AlertCircle className="w-5 h-5" />
+                </div>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveFicha} className="space-y-5">
+              {/* Bloco 1: Dados da Propriedade Rural */}
+              <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/90 shadow-xs space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <Building2 className="w-4 h-4 text-[#1B7547]" />
+                    <h3 className="text-xs sm:text-sm font-black text-slate-900 uppercase tracking-wider">
+                      Dados Cadastrais da Propriedade Rural
+                    </h3>
+                  </div>
+                  <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                    Edição Sincronizada
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5">
+                  <div className="sm:col-span-2 space-y-1">
+                    <label className="text-[10px] font-extrabold text-slate-600 uppercase">Nome da Fazenda</label>
+                    <input
+                      type="text"
+                      required
+                      value={fichaForm.nome_fazenda}
+                      onChange={e => setFichaForm(prev => ({ ...prev, nome_fazenda: e.target.value }))}
+                      placeholder="Nome oficial do imóvel rural"
+                      className="w-full px-3 py-2 bg-slate-50/70 focus:bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-extrabold text-slate-600 uppercase">Etapa do Ciclo RTRS</label>
+                    <select
+                      value={fichaForm.etapa}
+                      onChange={e => setFichaForm(prev => ({ ...prev, etapa: e.target.value }))}
+                      className="w-full px-3 py-2 bg-slate-50/70 focus:bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-extrabold text-emerald-900 focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer transition-all"
+                    >
+                      <option value="Prospecção">1. Prospecção</option>
+                      <option value="Auditoria Prévia">2. Auditoria Prévia</option>
+                      <option value="Auditoria Oficial">3. Auditoria Oficial</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-extrabold text-slate-600 uppercase">Município / UF</label>
+                    <input
+                      type="text"
+                      value={fichaForm.municipio}
+                      onChange={e => setFichaForm(prev => ({ ...prev, municipio: e.target.value }))}
+                      placeholder="Ex: Maracaju, MS"
+                      className="w-full px-3 py-2 bg-slate-50/70 focus:bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-extrabold text-slate-600 uppercase">Código CAR (SICAR)</label>
+                    <input
+                      type="text"
+                      value={fichaForm.codigo_car}
+                      onChange={e => setFichaForm(prev => ({ ...prev, codigo_car: e.target.value }))}
+                      placeholder="MS-500..."
+                      className="w-full px-3 py-2 bg-slate-50/70 focus:bg-white border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-extrabold text-slate-600 uppercase">Matrícula / Parcela SIGEF</label>
+                    <input
+                      type="text"
+                      value={fichaForm.matricula}
+                      onChange={e => setFichaForm(prev => ({ ...prev, matricula: e.target.value }))}
+                      placeholder="Nº da Matrícula ou Código SIGEF"
+                      className="w-full px-3 py-2 bg-slate-50/70 focus:bg-white border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-extrabold text-slate-600 uppercase">Área Total do Imóvel (ha)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={fichaForm.area_total_ha}
+                      onChange={e => setFichaForm(prev => ({ ...prev, area_total_ha: e.target.value }))}
+                      placeholder="Ex: 1500"
+                      className="w-full px-3 py-2 bg-slate-50/70 focus:bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-extrabold text-slate-600 uppercase">Área Plantada de Soja (ha)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={fichaForm.area_soja_ha}
+                      onChange={e => setFichaForm(prev => ({ ...prev, area_soja_ha: e.target.value }))}
+                      placeholder="Ex: 950"
+                      className="w-full px-3 py-2 bg-slate-50/70 focus:bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-extrabold text-slate-600 uppercase">Latitude</label>
+                      <input
+                        type="text"
+                        value={fichaForm.latitude}
+                        onChange={e => setFichaForm(prev => ({ ...prev, latitude: e.target.value }))}
+                        placeholder="-21.614"
+                        className="w-full px-2.5 py-2 bg-slate-50/70 focus:bg-white border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-extrabold text-slate-600 uppercase">Longitude</label>
+                      <input
+                        type="text"
+                        value={fichaForm.longitude}
+                        onChange={e => setFichaForm(prev => ({ ...prev, longitude: e.target.value }))}
+                        placeholder="-55.168"
+                        className="w-full px-2.5 py-2 bg-slate-50/70 focus:bg-white border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Bloco 2: Dados do Produtor Rural */}
+              <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/90 shadow-xs space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <User className="w-4 h-4 text-[#C59B27]" />
+                    <h3 className="text-xs sm:text-sm font-black text-slate-900 uppercase tracking-wider">
+                      Dados do Produtor Rural Responsável
+                    </h3>
+                  </div>
+                  {fichaForm.telefone_produtor && (
+                    <a
+                      href={`https://wa.me/55${fichaForm.telefone_produtor.replace(/\D/g, '')}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-3 py-1 bg-emerald-50 hover:bg-emerald-100 text-[#1B7547] border border-emerald-200 rounded-xl text-[11px] font-extrabold flex items-center gap-1.5 transition-all"
+                    >
+                      <Phone className="w-3.5 h-3.5" />
+                      <span>Contatar via WhatsApp</span>
+                    </a>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-extrabold text-slate-600 uppercase">Nome do Produtor Rural</label>
+                    <input
+                      type="text"
+                      value={fichaForm.nome_produtor}
+                      onChange={e => setFichaForm(prev => ({ ...prev, nome_produtor: e.target.value }))}
+                      placeholder="Nome completo do produtor"
+                      className="w-full px-3 py-2 bg-slate-50/70 focus:bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-extrabold text-slate-600 uppercase">CPF / CNPJ do Produtor</label>
+                    <input
+                      type="text"
+                      value={fichaForm.cpf_produtor}
+                      onChange={e => setFichaForm(prev => ({ ...prev, cpf_produtor: e.target.value }))}
+                      placeholder="000.000.000-00"
+                      className="w-full px-3 py-2 bg-slate-50/70 focus:bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-extrabold text-slate-600 uppercase">Telefone / WhatsApp</label>
+                    <input
+                      type="tel"
+                      value={fichaForm.telefone_produtor}
+                      onChange={e => setFichaForm(prev => ({ ...prev, telefone_produtor: e.target.value }))}
+                      placeholder="(67) 99999-9999"
+                      className="w-full px-3 py-2 bg-slate-50/70 focus:bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-extrabold text-slate-600 uppercase">E-mail de Contato</label>
+                    <input
+                      type="email"
+                      value={fichaForm.email_produtor}
+                      onChange={e => setFichaForm(prev => ({ ...prev, email_produtor: e.target.value }))}
+                      placeholder="produtor@email.com"
+                      className="w-full px-3 py-2 bg-slate-50/70 focus:bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={savingFicha}
+                    className="px-5 py-2.5 bg-[#1B7547] hover:bg-[#15613a] text-white rounded-xl font-extrabold text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer disabled:opacity-60"
+                  >
+                    {savingFicha ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                    <span>Salvar Ficha da Fazenda & Produtor</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* CONTEÚDO DA ABA 2: CHECKLIST DE CRITÉRIOS (115 ITENS) */}
+        {activeMainTab === 'criterios' && (
           <>
                     {/* Banner em Destaque do Princípio Ativo (Compacto no Mobile) */}
         {secaoAtiva && (
@@ -2180,9 +3161,31 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="text-[10px] sm:text-xs font-black text-white bg-slate-800 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md sm:rounded-lg">Indicador {pergunta.numero_criterio}</span>
-                        <span className={`text-[9px] sm:text-[10px] font-extrabold px-1.5 py-0.5 rounded ${pergunta.ponderacao === 'Imediata' ? 'bg-red-100 text-red-700 border border-red-200' : pergunta.ponderacao === 'Curto Prazo' ? 'bg-amber-100 text-amber-800 border border-amber-200' : 'bg-blue-100 text-blue-800 border border-blue-200'}`}>
-                          {pergunta.ponderacao}
-                        </span>
+                        {(() => {
+                          const pond = (pergunta.ponderacao || '').toLowerCase();
+                          if (pond.includes('imediat')) {
+                            return (
+                              <span className="text-[9px] sm:text-[10px] font-black px-2 py-0.5 rounded bg-rose-100 text-rose-900 border border-rose-200 flex items-center gap-1">
+                                <Clock className="w-3 h-3 text-rose-600" />
+                                <span>Prazo Imediato (15d)</span>
+                              </span>
+                            );
+                          }
+                          if (pond.includes('curto')) {
+                            return (
+                              <span className="text-[9px] sm:text-[10px] font-black px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-200 flex items-center gap-1">
+                                <Clock className="w-3 h-3 text-amber-600" />
+                                <span>Curto Prazo (60d)</span>
+                              </span>
+                            );
+                          }
+                          return (
+                            <span className="text-[9px] sm:text-[10px] font-black px-2 py-0.5 rounded bg-blue-100 text-blue-900 border border-blue-200 flex items-center gap-1">
+                              <Clock className="w-3 h-3 text-blue-600" />
+                              <span>Médio Prazo (120d)</span>
+                            </span>
+                          );
+                        })()}
                         {isNaoSeAplica && (
                           <span className="text-[9px] sm:text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-300 flex items-center gap-1 shadow-2xs">
                             <MinusCircle className="w-3 h-3 text-slate-500" />
@@ -2437,15 +3440,25 @@ export default function QuestionarioRTRS({ modo, propriedadeNome, onClose, onCom
               <span>Fechar</span>
             </button>
 
-            {showPanoramaView && (
+            {activeMainTab !== 'criterios' ? (
               <button
                 type="button"
-                onClick={() => setShowPanoramaView(false)}
+                onClick={() => setActiveMainTab('criterios')}
                 className="px-3.5 sm:px-4 py-2 sm:py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl sm:rounded-2xl font-extrabold text-xs border border-slate-300/80 transition-all duration-300 hover:scale-102 active:scale-95 cursor-pointer shadow-2xs flex items-center justify-center gap-1.5"
               >
                 <RotateCcw className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                <span className="hidden sm:inline">Voltar aos Critérios</span>
+                <span className="hidden sm:inline">Ir aos Critérios ({totalRespondidas}/{totalPerguntas || 115})</span>
                 <span className="sm:hidden">Critérios</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setActiveMainTab('resumo')}
+                className="px-3.5 sm:px-4 py-2 sm:py-2.5 bg-emerald-50 hover:bg-emerald-100 text-[#1B7547] rounded-xl sm:rounded-2xl font-extrabold text-xs border border-emerald-200 transition-all duration-300 hover:scale-102 active:scale-95 cursor-pointer shadow-2xs flex items-center justify-center gap-1.5"
+              >
+                <Award className="w-3.5 h-3.5 text-[#C59B27] shrink-0" />
+                <span className="hidden sm:inline">Ver Score & Resumo ({scoreConformidadeAtual}%)</span>
+                <span className="sm:hidden">Score ({scoreConformidadeAtual}%)</span>
               </button>
             )}
 

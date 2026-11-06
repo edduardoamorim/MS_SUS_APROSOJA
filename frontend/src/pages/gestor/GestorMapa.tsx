@@ -103,18 +103,20 @@ export default function GestorMapa() {
         .select(`
           id,
           status,
+          etapa,
           data_agendamento,
           tecnico_responsavel_id,
           propriedade_id,
-          score_total,
-          conformidade_percentual,
+          created_at,
+          updated_at,
           propriedades (
             id,
             nome_fazenda,
             nome_produtor,
             codigo_car,
             codigo_sigef,
-            municipio
+            municipio,
+            etapa
           )
         `)
         .order('created_at', { ascending: false });
@@ -126,7 +128,7 @@ export default function GestorMapa() {
       // 3. Carregar todas as propriedades
       const { data: propsList, error: propsError } = await supabase
         .from('propriedades')
-        .select('id, nome_fazenda, nome_produtor, codigo_car, codigo_sigef, municipio, geom, produtor_id, created_at')
+        .select('id, nome_fazenda, nome_produtor, codigo_car, codigo_sigef, municipio, geom, produtor_id, etapa, tecnico_id, created_at, updated_at')
         .order('created_at', { ascending: false });
 
       if (propsError) throw propsError;
@@ -321,8 +323,9 @@ export default function GestorMapa() {
     let auditObj = props.latestAudit;
     if (!auditObj) {
       auditObj = {
-        id: `mock-gestor-${props.id}`,
+        id: `audit-${props.id}`,
         status: props.status || 'Autoavaliação',
+        etapa: props.etapa || 'Prospecção',
         data_agendamento: new Date().toISOString(),
         propriedade_id: props.id,
         propriedades: {
@@ -331,7 +334,8 @@ export default function GestorMapa() {
           nome_produtor: props.nome_produtor,
           codigo_car: props.codigo_car,
           codigo_sigef: props.codigo_sigef,
-          municipio: props.municipio
+          municipio: props.municipio,
+          etapa: props.etapa
         }
       };
     } else if (!auditObj.propriedades) {
@@ -341,7 +345,8 @@ export default function GestorMapa() {
         nome_produtor: props.nome_produtor,
         codigo_car: props.codigo_car,
         codigo_sigef: props.codigo_sigef,
-        municipio: props.municipio
+        municipio: props.municipio,
+        etapa: props.etapa
       };
     }
     setSelectedAuditForDetail(auditObj);
@@ -635,8 +640,14 @@ export default function GestorMapa() {
           isOpen={!!selectedAuditForDetail}
           onClose={() => setSelectedAuditForDetail(null)}
           auditoria={selectedAuditForDetail}
-          onStartVisita={() => {}}
-          onOpenPendencias={() => {}}
+          onStartVisita={() => {
+            setSelectedAuditForDetail(null);
+            window.location.href = '/app/gestor/auditorias';
+          }}
+          onOpenPendencias={() => {
+            setSelectedAuditForDetail(null);
+            window.location.href = '/app/gestor/propriedades';
+          }}
         />
       )}
     </div>

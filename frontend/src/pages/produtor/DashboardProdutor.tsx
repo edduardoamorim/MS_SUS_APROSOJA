@@ -1,9 +1,40 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { MapPin, Plus, AlertTriangle, CheckCircle, Search, ShieldAlert, Loader2, Sparkles, ClipboardList, Clock, CheckCircle2, Image as ImageIcon, FolderOpen, FileText, Trash2, X, Eye, Download, ExternalLink, Compass, Building2, ShieldCheck, Award, RotateCcw } from 'lucide-react';
+import {
+  MapPin,
+  Plus,
+  AlertTriangle,
+  Search,
+  Loader2,
+  Sparkles,
+  ClipboardList,
+  Clock,
+  CheckCircle2,
+  Image as ImageIcon,
+  FolderOpen,
+  FileText,
+  Trash2,
+  X,
+  Eye,
+  Download,
+  ExternalLink,
+  Compass,
+  Building2,
+  ShieldCheck,
+  Award,
+  UserCheck,
+  Calendar,
+  Mail,
+  Phone,
+  Lock,
+  Filter,
+  ChevronDown,
+  ChevronUp,
+  ArrowRight
+} from 'lucide-react';
 import PanoramaScoreRTRS, { type PanoramaCriterioItem } from '../../components/auditoria/PanoramaScoreRTRS';
 import MapView from '../../components/map/MapView';
-import type { FeatureCollection, Feature, Polygon } from 'geojson';
+import type { FeatureCollection } from 'geojson';
 import QuestionarioRTRS from '../../components/auditoria/QuestionarioRTRS';
 import OnboardingQuestionarioModal, { type OnboardingAnswers } from '../../components/auditoria/OnboardingQuestionarioModal';
 import AIInsightsPanel from '../../components/ui/AIInsightsPanel';
@@ -11,9 +42,11 @@ import { aiService } from '../../services/aiService';
 import siteContent from '../../config/site_content.json';
 import { supabase } from '../../lib/supabase';
 import { resolveFarmEtapa } from '../../lib/etapaUtils';
+import { resolveMunicipioFromCarOrName } from '../../lib/geoUtils';
 import { cleanEvidenceUrl, isPdfEvidence } from '../../lib/evidenceService';
 import Modal from '../../components/ui/Modal';
 import { useToast } from '../../context/ToastContext';
+import { useAuth } from '../../context/AuthContext';
 import { useSearchParams } from 'react-router-dom';
 import { getRemainingTimeLabel } from '../../lib/dateUtils';
 import PropertyCodeInput from '../../components/form/PropertyCodeInput';
@@ -21,78 +54,154 @@ import type { PropertyCodeResult } from '../../components/form/PropertyCodeInput
 import { ListSkeleton } from '../../components/ui/Skeleton';
 import ConfirmAction from '../../components/ui/ConfirmAction';
 import LocationFinderModal, { type LocationResult } from '../../components/map/LocationFinderModal';
+import ModalErrorBoundary from '../../components/ui/ModalErrorBoundary';
 
-// Dados Geográficos Mockados de Fallback
-const MOCK_FARMS: FeatureCollection = {
-  type: 'FeatureCollection',
-  features: [
-    {
-      type: 'Feature',
-      properties: { id: 1, name: 'Fazenda Boa Esperança', status: 'Autoavaliação pendente' },
-      geometry: {
-        type: 'Polygon',
-        coordinates: [[[-54.6, -20.4], [-54.5, -20.4], [-54.5, -20.5], [-54.6, -20.5], [-54.6, -20.4]]]
-      }
-    },
-    {
-      type: 'Feature',
-      properties: { id: 2, name: 'Sítio Recanto', status: 'Certificada' },
-      geometry: {
-        type: 'Polygon',
-        coordinates: [[[-55.1, -21.0], [-55.0, -21.0], [-55.0, -21.1], [-55.1, -21.1], [-55.1, -21.0]]]
-      }
-    }
-  ]
-};
+interface FarmAuditMetrics {
+  auditoriaId: string | null;
+  statusAuditoria: string;
+  etapa: string;
+  dataVisita: string | null;
+  tecnicoNome: string;
+  tecnicoEmail: string | null;
+  tecnicoTelefone: string | null;
+  respondidos: number;
+  conformes: number;
+  naoConformes: number;
+  naoSeAplica: number;
+  aplicaveis: number;
+  scoreRtrs: number | null;
+  isSubmittedByTech: boolean;
+}
 
-const MOCK_EMBARGOES: FeatureCollection = {
-  type: 'FeatureCollection',
-  features: [
-    {
-      type: 'Feature',
-      properties: { riskType: 'Desmatamento Ilegal (IBAMA)' },
-      geometry: {
-        type: 'Polygon',
-        coordinates: [[[-54.55, -20.45], [-54.45, -20.45], [-54.45, -20.55], [-54.55, -20.55], [-54.55, -20.45]]]
-      }
-    }
-  ]
-};
+// Extrai o número do Princípio RTRS (1 a 5) a partir do título ou descrição da pendência
+function extractPrincipioFromPendency(titulo?: string, descricao?: string): number | null {
+  const combined = `${titulo || ''} ${descricao || ''}`;
+  const critMatch = combined.match(/(?:Crit[eé]rio\s*)?([1-5])\.\d+/i);
+  if (critMatch) return Number(critMatch[1]);
+  const princMatch = combined.match(/Princ[ií]pio\s*([1-5])/i);
+  if (princMatch) return Number(princMatch[1]);
+  return null;
+}
 
 export default function DashboardProdutor() {
   const { success, error, warning } = useToast();
+  const { user: authContextUser } = useAuth();
   const content = siteContent.dashboard_produtor;
   const [searchParams, setSearchParams] = useSearchParams();
   const rawTab = searchParams.get('tab');
-  const activeTab = (rawTab === 'mapa' || rawTab === 'pendencias' || rawTab === 'ia' || rawTab === 'documentacao') 
-    ? rawTab 
-    : 'mapa';
-  
-  const setActiveTab = (tab: 'mapa' | 'pendencias' | 'ia' | 'documentacao') => {
+  // Redireciona a antiga aba 'ia' diretamente para 'pendencias' onde a IA agora está integrada
+  const activeTab: 'mapa' | 'pendencias' | 'documentacao' =
+    rawTab === 'pendencias' || rawTab === 'ia'
+      ? 'pendencias'
+      : rawTab === 'documentacao'
+      ? 'documentacao'
+      : 'mapa';
+
+  const setActiveTab = (tab: 'mapa' | 'pendencias' | 'documentacao') => {
     setSearchParams({ tab });
   };
-  
-  const [showRisk, setShowRisk] = useState(false);
-  const [isSimulating, setIsSimulating] = useState(false);
-  const [showNewFarmModal, setShowNewFarmModal] = useState(false);
+
+  // Modais de Cadastro e Onboarding
   const [showCodeFarmModal, setShowCodeFarmModal] = useState(false);
+  const [cadastroMetodo, setCadastroMetodo] = useState<'codigo' | 'gps'>('codigo');
   const [showLocationModal, setShowLocationModal] = useState(false);
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
+  const [isManualOnboardingReview, setIsManualOnboardingReview] = useState(false);
   const [producerName, setProducerName] = useState('Produtor Rural');
   const [onboardingAnswers, setOnboardingAnswers] = useState<OnboardingAnswers | null>(null);
+  const [onboardingAlerts, setOnboardingAlerts] = useState<string[]>([]);
   const [codeFarmData, setCodeFarmData] = useState<(PropertyCodeResult & { area_soja_ha?: string }) | null>(null);
-  const [showQuestionario, setShowQuestionario] = useState<string | number | null>(null);
   const [newFarmName, setNewFarmName] = useState('');
-  const [farmsData, setFarmsData] = useState<FeatureCollection>(MOCK_FARMS);
+  const [newFarmAreaHa, setNewFarmAreaHa] = useState('');
+
+  // Estados de Fazenda, Questionário e Panorama
+  const [showQuestionario, setShowQuestionario] = useState<string | number | null>(null);
+  const [farmsData, setFarmsData] = useState<FeatureCollection>({ type: 'FeatureCollection', features: [] });
   const [selectedFarmId, setSelectedFarmId] = useState<string | null>(null);
   const [panoramaModalFarm, setPanoramaModalFarm] = useState<any>(null);
   const [panoramaCriteriosList, setPanoramaCriteriosList] = useState<PanoramaCriterioItem[]>([]);
   const [loadingPanorama, setLoadingPanorama] = useState(false);
+  const [farmMetricsMap, setFarmMetricsMap] = useState<Record<string, FarmAuditMetrics>>({});
+
+  // Estados de IA (Nível 1: Por Pendência | Nível 2: Plano Geral da Fazenda)
+  const [aiActionPlan, setAiActionPlan] = useState('');
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [showGeneralAiPlan, setShowGeneralAiPlan] = useState(false);
+  const [itemAiPlans, setItemAiPlans] = useState<Record<string, { loading: boolean; plan: string; open: boolean }>>({});
+
+  // Estados de Dados do Supabase
+  const [loading, setLoading] = useState(true);
+  const [properties, setProperties] = useState<any[]>([]);
+  const [pendencias, setPendencias] = useState<any[]>([]);
+  const [selectedPendency, setSelectedPendency] = useState<any>(null);
+  const [resolucaoTexto, setResolucaoTexto] = useState('');
+  const [evidenciaUrl, setEvidenciaUrl] = useState('');
+  const [isSubmittingResolution, setIsSubmittingResolution] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [uploadingFile, setUploadingFile] = useState(false);
+
+  // Filtros Inteligentes da Aba Pendências & Adequação
+  const [pendFilterFarmId, setPendFilterFarmId] = useState<string>('todas');
+  const [pendFilterStatus, setPendFilterStatus] = useState<'todas' | 'Pendente' | 'Em Análise' | 'Resolvida'>('todas');
+  const [pendFilterPrincipio, setPendFilterPrincipio] = useState<string>('todos');
+  const [pendSearchText, setPendSearchText] = useState<string>('');
+
+  // Estados de Documentação e Evidências
+  const [documentos, setDocumentos] = useState<any[]>([]);
+  const [loadingDocs, setLoadingDocs] = useState(false);
+  const [deleteDocConfirmId, setDeleteDocConfirmId] = useState<string | null>(null);
+  const [showUploadDocModal, setShowUploadDocModal] = useState(false);
+  const [uploadingDocFile, setUploadingDocFile] = useState(false);
+  const [fotoAmpliada, setFotoAmpliada] = useState<string | null>(null);
+  const [pdfAmpliado, setPdfAmpliado] = useState<string | null>(null);
+  const [docFormData, setDocFormData] = useState({
+    nome: '',
+    categoria: 'CAR',
+    propriedade_id: '',
+    arquivo_url: ''
+  });
+
+  const sampleEvidenceSVG = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><rect width="800" height="600" fill="%230f172a"/><rect x="40" y="40" width="720" height="520" rx="16" fill="%231e293b" stroke="%23334155" stroke-width="2"/><circle cx="400" cy="240" r="80" fill="%2310b981" opacity="0.2"/><path d="M400 180 L440 220 L420 220 L420 280 L380 280 L380 220 L360 220 Z" fill="%2310b981"/><text x="400" y="360" font-family="sans-serif" font-size="24" font-weight="bold" fill="%23f8fafc" text-anchor="middle">Evidência de Campo RTRS</text><text x="400" y="400" font-family="sans-serif" font-size="16" fill="%2394a3b8" text-anchor="middle">Comprovante de Conformidade Ambiental e Social</text><rect x="250" y="450" width="300" height="44" rx="22" fill="%2310b981"/><text x="400" y="478" font-family="sans-serif" font-size="14" font-weight="bold" fill="%23ffffff" text-anchor="middle">Documento Verificado ✓</text></svg>`;
+
+  const handleOpenEvidencia = (url?: string | null) => {
+    const cleanUrl = cleanEvidenceUrl(url);
+    if (!cleanUrl) {
+      setFotoAmpliada(sampleEvidenceSVG);
+      return;
+    }
+
+    if (isPdfEvidence(cleanUrl)) {
+      setPdfAmpliado(cleanUrl);
+    } else {
+      setFotoAmpliada(cleanUrl);
+    }
+  };
+
+  // Resolve o usuário autenticado combinando Supabase Auth com a sessão resiliente do AuthContext
+  const resolveCurrentUser = async (): Promise<any | null> => {
+    try {
+      const { data: { user: supUser } } = await supabase.auth.getUser();
+      if (supUser) return supUser;
+    } catch (e) {}
+    return authContextUser || null;
+  };
 
   // Helper para garantir integridade do perfil e evitar erro de FK ao criar fazendas
   const ensureProducerProfile = async (user: any): Promise<string> => {
     if (!user) return '';
     try {
+      try {
+        const { data: recData, error: recErr } = await supabase.rpc('reconciliar_perfil_produtor', {
+          p_auth_id: user.id || null,
+          p_email: user.email || null,
+          p_nome: user.user_metadata?.full_name || null,
+          p_role: 'produtor'
+        });
+        if (!recErr && recData?.id) {
+          return recData.id;
+        }
+      } catch (e) {}
+
       const { data: existingProfile } = await supabase
         .from('perfis')
         .select('id')
@@ -141,13 +250,11 @@ export default function DashboardProdutor() {
     setLoadingPanorama(true);
 
     try {
-      const { data: audit } = await supabase
+      const { data: audits } = await supabase
         .from('auditorias')
         .select('id, etapa')
         .eq('propriedade_id', farmId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .order('created_at', { ascending: false });
 
       const { data: questions } = await supabase
         .from('perguntas_rtrs')
@@ -156,18 +263,19 @@ export default function DashboardProdutor() {
         .order('ordem', { ascending: true });
 
       let resps: any[] = [];
-      if (audit?.id) {
+      if (audits && audits.length > 0) {
+        const auditIds = audits.map((a: any) => a.id);
         const { data: respsData } = await supabase
           .from('respostas_auditoria')
           .select('*')
-          .eq('auditoria_id', audit.id);
+          .in('auditoria_id', auditIds);
         if (respsData) resps = respsData;
       }
 
       const respsMap = new Map<string, any>();
-      resps.forEach(r => respsMap.set(r.pergunta_id, r));
+      resps.forEach((r: any) => respsMap.set(r.pergunta_id, r));
 
-      const items: PanoramaCriterioItem[] = (questions || []).map(q => {
+      const items: PanoramaCriterioItem[] = (questions || []).map((q: any) => {
         const r = respsMap.get(q.id);
         return {
           id: q.id,
@@ -194,7 +302,7 @@ export default function DashboardProdutor() {
     setShowLocationModal(false);
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = await resolveCurrentUser();
       if (!user) throw new Error('Usuário não autenticado');
 
       const validProducerId = await ensureProducerProfile(user);
@@ -204,8 +312,10 @@ export default function DashboardProdutor() {
       const newProp = {
         produtor_id: validProducerId,
         nome_fazenda: farmName,
+        municipio: loc.municipio || null,
+        area_soja_ha: newFarmAreaHa ? parseFloat(newFarmAreaHa) : null,
         etapa: 'Prospecção',
-        nome_produtor: user.user_metadata?.full_name || 'Produtor Rural',
+        nome_produtor: user.user_metadata?.full_name || producerName || 'Produtor Rural',
         codigo_car: `MS-SEDE-${Math.floor(100000 + Math.random() * 900000)}`,
         origem_cadastro: 'Mapa',
         geom: loc.geom,
@@ -227,11 +337,13 @@ export default function DashboardProdutor() {
           etapa: 'Prospecção',
           data_agendamento: nowIso
         }]);
+        setSelectedFarmId(insertedProp.id);
       }
 
       await fetchFarmsAndPendencias();
-      setShowNewFarmModal(false);
+      setShowCodeFarmModal(false);
       setNewFarmName('');
+      setNewFarmAreaHa('');
       success(`Fazenda "${farmName}" cadastrada com sucesso via Geolocalização!`);
     } catch (err: any) {
       console.error('Erro ao cadastrar via mapa:', err);
@@ -241,111 +353,59 @@ export default function DashboardProdutor() {
     }
   };
 
-  // AI States
-  const [pendingIssues, setPendingIssues] = useState('');
-  const [aiActionPlan, setAiActionPlan] = useState('');
-  const [isAiLoading, setIsAiLoading] = useState(false);
-  const [hasGeneratedPlan, setHasGeneratedPlan] = useState(false);
-
-  // Supabase states
-  const [loading, setLoading] = useState(true);
-  const [properties, setProperties] = useState<any[]>([]);
-  const [pendencias, setPendencias] = useState<any[]>([]);
-  const [selectedPendency, setSelectedPendency] = useState<any>(null);
-  const [resolucaoTexto, setResolucaoTexto] = useState('');
-  const [evidenciaUrl, setEvidenciaUrl] = useState('');
-  const [isSubmittingResolution, setIsSubmittingResolution] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [uploadingFile, setUploadingFile] = useState(false);
-
-  // Documentação e Evidências States
-  const [documentos, setDocumentos] = useState<any[]>([]);
-  const [loadingDocs, setLoadingDocs] = useState(false);
-  const [deleteDocConfirmId, setDeleteDocConfirmId] = useState<string | null>(null);
-  const [showUploadDocModal, setShowUploadDocModal] = useState(false);
-  const [uploadingDocFile, setUploadingDocFile] = useState(false);
-  const [fotoAmpliada, setFotoAmpliada] = useState<string | null>(null);
-  const [pdfAmpliado, setPdfAmpliado] = useState<string | null>(null);
-  const [docFormData, setDocFormData] = useState({
-    nome: '',
-    categoria: 'CAR',
-    propriedade_id: '',
-    arquivo_url: ''
-  });
-
-  const sampleEvidenceSVG = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><rect width="800" height="600" fill="%230f172a"/><rect x="40" y="40" width="720" height="520" rx="16" fill="%231e293b" stroke="%23334155" stroke-width="2"/><circle cx="400" cy="240" r="80" fill="%2310b981" opacity="0.2"/><path d="M400 180 L440 220 L420 220 L420 280 L380 280 L380 220 L360 220 Z" fill="%2310b981"/><text x="400" y="360" font-family="sans-serif" font-size="24" font-weight="bold" fill="%23f8fafc" text-anchor="middle">Evidência de Campo RTRS</text><text x="400" y="400" font-family="sans-serif" font-size="16" fill="%2394a3b8" text-anchor="middle">Comprovante de Conformidade Ambiental e Social</text><rect x="250" y="450" width="300" height="44" rx="22" fill="%2310b981"/><text x="400" y="478" font-family="sans-serif" font-size="14" font-weight="bold" fill="%23ffffff" text-anchor="middle">Documento Verificado ✓</text></svg>`;
-
-  const handleOpenEvidencia = (url?: string | null) => {
-    const cleanUrl = cleanEvidenceUrl(url);
-    if (!cleanUrl) {
-      setFotoAmpliada(sampleEvidenceSVG);
-      return;
-    }
-
-    if (isPdfEvidence(cleanUrl)) {
-      setPdfAmpliado(cleanUrl);
-    } else {
-      setFotoAmpliada(cleanUrl);
-    }
-  };
-
   useEffect(() => {
     fetchFarmsAndPendencias();
-  }, []);
+  }, [authContextUser?.id]);
 
   useEffect(() => {
-    if (activeTab === 'documentacao') {
-      fetchDocuments();
+    if (activeTab === 'documentacao' && properties.length > 0) {
+      fetchDocuments(properties.map(p => p.id));
     }
   }, [activeTab]);
 
-  const fetchDocuments = async () => {
+  const fetchDocuments = async (overridePropIds?: string[]) => {
+    const propIds = overridePropIds || properties.map(p => p.id);
+    if (propIds.length === 0) {
+      setDocumentos([]);
+      return;
+    }
+
     setLoadingDocs(true);
     try {
-      const propIds = properties.map(p => p.id);
-      if (propIds.length === 0) {
-        setDocumentos([]);
-        setLoadingDocs(false);
-        return;
-      }
-
-      // 1. Buscar documentos gerais do banco pertencentes às fazendas do produtor
-      const { data: genDocs } = await supabase
-        .from('documentos_propriedade')
-        .select('*')
-        .in('propriedade_id', propIds)
-        .order('created_at', { ascending: false });
-
-      // 2. Buscar respostas da autoavaliação com evidências APENAS das fazendas do produtor
-      const { data: respData } = await supabase
-        .from('respostas_auditoria')
-        .select(`
-          id,
-          evidencia_url,
-          created_at,
-          auditorias!inner (
-            propriedade_id,
-            status
-          ),
-          perguntas_rtrs (
-            numero_criterio,
-            secao
-          )
-        `)
-        .in('auditorias.propriedade_id', propIds)
-        .not('evidencia_url', 'is', null);
-
-      // 3. Buscar pendências com evidências APENAS das fazendas do produtor
-      const { data: pendsData } = await supabase
-        .from('pendencias')
-        .select('id, propriedade_id, titulo, evidencia_url, status, created_at')
-        .in('propriedade_id', propIds)
-        .not('evidencia_url', 'is', null);
+      const [genRes, respRes, pendsRes] = await Promise.all([
+        supabase
+          .from('documentos_propriedade')
+          .select('*')
+          .in('propriedade_id', propIds)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('respostas_auditoria')
+          .select(`
+            id,
+            evidencia_url,
+            created_at,
+            auditorias!inner (
+              propriedade_id,
+              status
+            ),
+            perguntas_rtrs (
+              numero_criterio,
+              secao
+            )
+          `)
+          .in('auditorias.propriedade_id', propIds)
+          .not('evidencia_url', 'is', null),
+        supabase
+          .from('pendencias')
+          .select('id, propriedade_id, titulo, evidencia_url, status, created_at')
+          .in('propriedade_id', propIds)
+          .not('evidencia_url', 'is', null)
+      ]);
 
       const mergedList: any[] = [];
 
-      if (genDocs) {
-        genDocs.forEach((d: any) => {
+      if (genRes.data) {
+        genRes.data.forEach((d: any) => {
           mergedList.push({
             id: d.id,
             nome: d.nome,
@@ -359,8 +419,8 @@ export default function DashboardProdutor() {
         });
       }
 
-      if (respData) {
-        respData.forEach((r: any) => {
+      if (respRes.data) {
+        respRes.data.forEach((r: any) => {
           mergedList.push({
             id: r.id,
             nome: `${(r.perguntas_rtrs as any)?.secao || 'Geral'} - Critério ${(r.perguntas_rtrs as any)?.numero_criterio || 'N/A'}`,
@@ -374,8 +434,8 @@ export default function DashboardProdutor() {
         });
       }
 
-      if (pendsData) {
-        pendsData.forEach((p: any) => {
+      if (pendsRes.data) {
+        pendsRes.data.forEach((p: any) => {
           mergedList.push({
             id: p.id,
             nome: p.titulo,
@@ -452,7 +512,7 @@ export default function DashboardProdutor() {
     }
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = await resolveCurrentUser();
       const payload = {
         propriedade_id: docFormData.propriedade_id,
         nome: docFormData.nome,
@@ -497,8 +557,7 @@ export default function DashboardProdutor() {
   async function fetchFarmsAndPendencias() {
     setLoading(true);
     try {
-      // 1. Resolver usuário autenticado e perfil de produtor
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = await resolveCurrentUser();
 
       if (!user) {
         setProperties([]);
@@ -508,9 +567,38 @@ export default function DashboardProdutor() {
         return;
       }
 
-      // Verificar Onboarding Obrigatorio de Primeiro Acesso
-      const fullName = user?.user_metadata?.full_name || user?.email || 'Produtor Rural';
-      setProducerName(fullName);
+      let resolvedName = user?.user_metadata?.full_name || user?.email || 'Produtor Rural';
+      setProducerName(resolvedName);
+
+      // Reconciliar perfil e propriedades pré-cadastradas pelo Técnico/Gestor
+      let producerProfileId = user.id;
+      try {
+        const { data: recData, error: recErr } = await supabase.rpc('reconciliar_perfil_produtor', {
+          p_auth_id: user.id || null,
+          p_email: user.email || null,
+          p_nome: user.user_metadata?.full_name || null,
+          p_role: 'produtor'
+        });
+        if (!recErr && recData?.id) {
+          producerProfileId = recData.id;
+          if (recData.nome) {
+            resolvedName = recData.nome;
+            setProducerName(recData.nome);
+          }
+        }
+      } catch (e) {}
+
+      // Carregar respostas salvas do diagnóstico inicial se existirem no localStorage
+      if (user?.id) {
+        try {
+          const savedOnb = localStorage.getItem(`ms_onboarding_${user.id}`);
+          if (savedOnb) {
+            const parsed = JSON.parse(savedOnb);
+            if (parsed?.answers) setOnboardingAnswers(parsed.answers);
+            if (Array.isArray(parsed?.alerts)) setOnboardingAlerts(parsed.alerts);
+          }
+        } catch (e) {}
+      }
 
       const isCompletedLocally = localStorage.getItem('ms_onboarding_completed') === 'true' || (user?.id && !!localStorage.getItem(`ms_onboarding_${user.id}`));
       const isCompletedMetadata = !!user?.user_metadata?.onboarding_concluido;
@@ -519,42 +607,48 @@ export default function DashboardProdutor() {
         try {
           const { data: profData } = await supabase
             .from('perfis')
-            .select('onboarding_concluido')
-            .eq('id', user.id)
+            .select('onboarding_concluido, onboarding_respostas, onboarding_alertas')
+            .eq('id', producerProfileId)
             .maybeSingle();
 
           if (profData && (profData as any).onboarding_concluido) {
             localStorage.setItem('ms_onboarding_completed', 'true');
-            if (user?.id) localStorage.setItem(`ms_onboarding_${user.id}`, JSON.stringify({ completedAt: new Date().toISOString() }));
+            if ((profData as any).onboarding_respostas) setOnboardingAnswers((profData as any).onboarding_respostas);
+            if (Array.isArray((profData as any).onboarding_alertas)) setOnboardingAlerts((profData as any).onboarding_alertas);
+            if (user?.id) localStorage.setItem(`ms_onboarding_${user.id}`, JSON.stringify({ answers: (profData as any).onboarding_respostas, alerts: (profData as any).onboarding_alertas, completedAt: new Date().toISOString() }));
             setShowOnboardingModal(false);
           } else {
+            setIsManualOnboardingReview(false);
             setShowOnboardingModal(true);
           }
         } catch (e) {
           setShowOnboardingModal(false);
         }
-      } else {
-        setShowOnboardingModal(false);
       }
 
-      // Resolver perfil para obter ID de perfil correspondente se houver
-      let producerProfileId = user.id;
+      // Resolver perfil por e-mail caso necessário
       if (user.email) {
         const { data: perf } = await supabase
           .from('perfis')
-          .select('id')
+          .select('id, nome')
           .ilike('email', user.email)
           .maybeSingle();
 
         if (perf?.id) {
           producerProfileId = perf.id;
+          if (perf.nome) {
+            resolvedName = perf.nome;
+            setProducerName(perf.nome);
+          }
         }
       }
 
-      // 2. Buscar APENAS as propriedades pertencentes ao produtor logado
       let queryFilter = `produtor_id.eq.${user.id}`;
       if (producerProfileId && producerProfileId !== user.id) {
         queryFilter += `,produtor_id.eq.${producerProfileId}`;
+      }
+      if (resolvedName && resolvedName !== 'Produtor Rural' && !resolvedName.includes('@')) {
+        queryFilter += `,nome_produtor.ilike.${resolvedName.replace(/,/g, '')}`;
       }
 
       const { data: props, error: propsError } = await supabase
@@ -565,41 +659,138 @@ export default function DashboardProdutor() {
 
       if (propsError) throw propsError;
 
-      // 3. Buscar pendências apenas dessas propriedades
-      let pends: any[] = [];
-      if (props && props.length > 0) {
-        const propIds = props.map((p: any) => p.id);
-        const { data: pendsData, error: pendsError } = await supabase
-          .from('pendencias')
-          .select('*')
-          .in('propriedade_id', propIds)
-          .order('created_at', { ascending: false });
-        if (!pendsError && pendsData) {
-          pends = pendsData;
+      const safeProps = props || [];
+      // Auto-reconciliar produtor_id caso alguma fazenda tenha sido encontrada apenas pelo nome_produtor
+      for (const fp of safeProps) {
+        if (!fp.produtor_id && producerProfileId) {
+          fp.produtor_id = producerProfileId;
+          supabase.from('propriedades').update({ produtor_id: producerProfileId }).eq('id', fp.id).then(() => {});
         }
       }
+      setProperties(safeProps);
 
-      setProperties(props || []);
-      setPendencias(pends);
-      
-      // Carregar contagem de documentos de imediato para KPI
-      if (props && props.length > 0) {
-        supabase
-          .from('documentos_propriedade')
-          .select('id, propriedade_id, categoria, nome, arquivo_url, created_at')
-          .in('propriedade_id', props.map((p: any) => p.id))
-          .then(({ data: docsData }) => {
-            if (docsData) setDocumentos(docsData);
-          }).catch(() => {});
+      // Selecionar automaticamente a primeira fazenda ativa se nenhuma estiver selecionada
+      if (safeProps.length > 0) {
+        setSelectedFarmId(prev => {
+          if (prev && safeProps.some((p: any) => p.id === prev)) return prev;
+          return safeProps[0].id;
+        });
       }
 
-      // 4. Gerar FeatureCollection para o mapa EXCLUSIVAMENTE dos imóveis do produtor logado
-      if (props && props.length > 0) {
+      const propIds = safeProps.map((p: any) => p.id);
+
+      // Buscar pendências, auditorias, respostas RTRS, técnicos e documentos em paralelo
+      let pends: any[] = [];
+      const newMetricsMap: Record<string, FarmAuditMetrics> = {};
+
+      if (propIds.length > 0) {
+        const [pendsRes, auditsRes, techsRes] = await Promise.all([
+          supabase
+            .from('pendencias')
+            .select('*')
+            .in('propriedade_id', propIds)
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('auditorias')
+            .select('id, propriedade_id, status, etapa, data_agendamento, tecnico_responsavel_id, created_at')
+            .in('propriedade_id', propIds)
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('perfis')
+            .select('id, nome, email, telefone, regiao')
+            .eq('role', 'tecnico')
+        ]);
+
+        if (!pendsRes.error && pendsRes.data) {
+          pends = pendsRes.data;
+        }
+
+        const allAudits = auditsRes.data || [];
+        const techMap = new Map<string, any>();
+        (techsRes.data || []).forEach((t: any) => techMap.set(t.id, t));
+
+        // Buscar respostas_auditoria de todas as auditorias dessas propriedades
+        const allAuditIds = allAudits.map((a: any) => a.id);
+        let allResps: any[] = [];
+        if (allAuditIds.length > 0) {
+          const { data: respsData } = await supabase
+            .from('respostas_auditoria')
+            .select('auditoria_id, pergunta_id, conforme, nao_se_aplica')
+            .in('auditoria_id', allAuditIds);
+          if (respsData) allResps = respsData;
+        }
+
+        // Mapear auditoria_id -> propriedade_id
+        const auditToProp = new Map<string, string>();
+        allAudits.forEach((a: any) => auditToProp.set(a.id, a.propriedade_id));
+
+        // Agrupar respostas únicas por propriedade_id (pergunta_id mais recente)
+        const propRespsMap = new Map<string, Map<string, any>>();
+        allResps.forEach((r: any) => {
+          const pId = auditToProp.get(r.auditoria_id);
+          if (!pId) return;
+          if (!propRespsMap.has(pId)) propRespsMap.set(pId, new Map());
+          propRespsMap.get(pId)!.set(r.pergunta_id, r);
+        });
+
+        // Montar métricas por fazenda
+        safeProps.forEach((p: any) => {
+          const propAudits = allAudits.filter((a: any) => a.propriedade_id === p.id);
+          const latestAudit = propAudits[0] || null;
+          const tecId = p.tecnico_id || latestAudit?.tecnico_responsavel_id || null;
+          const tec = tecId ? techMap.get(tecId) : null;
+
+          const respsForProp = propRespsMap.get(p.id) ? Array.from(propRespsMap.get(p.id)!.values()) : [];
+          const respondidos = respsForProp.length;
+          const conformes = respsForProp.filter(r => r.conforme === true && !r.nao_se_aplica).length;
+          const naoConformes = respsForProp.filter(r => r.conforme === false && !r.nao_se_aplica).length;
+          const naoSeAplica = respsForProp.filter(r => r.nao_se_aplica === true).length;
+          const aplicaveis = conformes + naoConformes;
+          const scoreRtrs = aplicaveis > 0 ? Math.round((conformes / aplicaveis) * 100) : null;
+
+          const statusAuditoria = latestAudit?.status || 'Autoavaliação';
+          const isSubmittedByTech =
+            statusAuditoria === 'Aguardando Aprovação' ||
+            statusAuditoria === 'Certificada' ||
+            statusAuditoria === 'Em Análise';
+
+          const etapaResolved = resolveFarmEtapa(
+            p.id,
+            p.etapa,
+            latestAudit?.etapa || (isSubmittedByTech ? 'Auditoria Oficial' : null)
+          );
+
+          newMetricsMap[p.id] = {
+            auditoriaId: latestAudit?.id || null,
+            statusAuditoria,
+            etapa: statusAuditoria === 'Certificada' ? 'Certificada' : etapaResolved,
+            dataVisita: latestAudit?.data_agendamento || null,
+            tecnicoNome: tec?.nome || 'Equipe Técnica Aprosoja-MS',
+            tecnicoEmail: tec?.email || null,
+            tecnicoTelefone: tec?.telefone || null,
+            respondidos,
+            conformes,
+            naoConformes,
+            naoSeAplica,
+            aplicaveis,
+            scoreRtrs,
+            isSubmittedByTech
+          };
+        });
+
+        // Carregar documentos completos em background para que o KPI Documentação Vigente esteja 100% correto desde o início
+        fetchDocuments(propIds);
+      }
+
+      setPendencias(pends);
+      setFarmMetricsMap(newMetricsMap);
+
+      // Gerar FeatureCollection para o mapa EXCLUSIVAMENTE dos imóveis do produtor logado
+      if (safeProps.length > 0) {
         const features = await Promise.all(
-          props.map(async (p: any, index: number) => {
+          safeProps.map(async (p: any, index: number) => {
             let geom = p.geom;
 
-            // --- BLINDAGEM DE GEOMETRIA ---
             if (typeof geom === 'string') {
               try {
                 const trimmed = geom.trim();
@@ -609,7 +800,6 @@ export default function DashboardProdutor() {
                   geom = null;
                 }
               } catch (e) {
-                console.warn(`Geom parse fallback para propriedade ${p.id}:`, e);
                 geom = null;
               }
             }
@@ -651,9 +841,7 @@ export default function DashboardProdutor() {
                     geom = typeof data.geom === 'string' && data.geom.trim().startsWith('{') ? JSON.parse(data.geom) : data.geom;
                   }
                 }
-              } catch (e) {
-                console.warn('Erro ao restaurar geometria do imóvel:', e);
-              }
+              } catch (e) {}
             }
 
             if (geom && geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
@@ -673,13 +861,17 @@ export default function DashboardProdutor() {
             }
 
             const openPendsCount = pends.filter((x: any) => x.propriedade_id === p.id && x.status === 'Pendente').length;
+            const resolvedMunicipio = resolveMunicipioFromCarOrName(p.codigo_car, p.nome_fazenda, p.municipio);
+
             return {
               type: 'Feature' as const,
-              properties: { 
-                id: p.id, 
-                name: p.nome_fazenda, 
-                municipio: p.municipio || '',
-                status: openPendsCount > 0 ? `${openPendsCount} Pendência(s)` : 'Regularizada' 
+              properties: {
+                id: p.id,
+                name: p.nome_fazenda,
+                municipio: resolvedMunicipio,
+                codigo_car: p.codigo_car || p.codigo_sigef || null,
+                area_soja_ha: p.area_soja_ha || null,
+                status: openPendsCount > 0 ? `${openPendsCount} Pendência(s)` : 'Regularizada'
               },
               geometry: geom
             };
@@ -688,13 +880,13 @@ export default function DashboardProdutor() {
 
         setFarmsData({
           type: 'FeatureCollection',
-          features: features
+          features
         });
       } else {
         setFarmsData({ type: 'FeatureCollection', features: [] });
       }
-    } catch (error) {
-      console.error('Erro ao buscar dados do produtor:', error);
+    } catch (err) {
+      console.error('Erro ao buscar dados do produtor:', err);
       setProperties([]);
       setPendencias([]);
       setFarmsData({ type: 'FeatureCollection', features: [] });
@@ -703,23 +895,14 @@ export default function DashboardProdutor() {
     }
   }
 
-
-  const runRiskAnalysis = () => {
-    setIsSimulating(true);
-    setTimeout(() => {
-      setShowRisk(true);
-      setIsSimulating(false);
-    }, 1500);
-  };
-
   const handleCreateCodeFarm = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!codeFarmData) return;
 
     if (codeFarmData.origem === 'CAR') {
-      const CAR_REGEX = /^[A-Z]{2}-\d{7}-[0-9A-Z]+$/;
+      const CAR_REGEX = /^[A-Z]{2}-\d{7}-[0-9A-Z.]+$/;
       if (!CAR_REGEX.test(codeFarmData.codigo_car)) {
-        warning('Formato de CAR inválido. Use o padrão UF-1234567-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX');
+        warning('Formato de CAR inválido. Use o padrão UF-1234567-XXXX...');
         return;
       }
     } else if (codeFarmData.origem === 'SIGEF' && !codeFarmData.codigo_sigef) {
@@ -732,7 +915,7 @@ export default function DashboardProdutor() {
 
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = await resolveCurrentUser();
       if (!user) throw new Error('Usuário não autenticado no Supabase.');
 
       const validProducerId = await ensureProducerProfile(user);
@@ -741,7 +924,7 @@ export default function DashboardProdutor() {
         produtor_id: validProducerId,
         nome_fazenda: codeFarmData.nome_fazenda,
         etapa: 'Prospecção',
-        nome_produtor: user.user_metadata?.full_name || 'Produtor',
+        nome_produtor: user.user_metadata?.full_name || producerName || 'Produtor',
         area_soja_ha: codeFarmData.area_soja_ha ? parseFloat(codeFarmData.area_soja_ha) : null,
         codigo_car: codeFarmData.origem === 'CAR' ? codeFarmData.codigo_car : null,
         codigo_sigef: codeFarmData.origem === 'SIGEF' ? codeFarmData.codigo_sigef : null,
@@ -765,6 +948,7 @@ export default function DashboardProdutor() {
           etapa: 'Prospecção',
           data_agendamento: nowIso
         }]);
+        setSelectedFarmId(insertedProp.id);
       }
 
       await fetchFarmsAndPendencias();
@@ -779,94 +963,79 @@ export default function DashboardProdutor() {
     }
   };
 
-  const handleMapClick = async (lng: number, lat: number) => {
-    if (showNewFarmModal && newFarmName) {
-      setLoading(true);
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) throw new Error('Usuário não autenticado no Supabase.');
-
-        const geom = {
-          type: 'Polygon',
-          coordinates: [[[lng - 0.03, lat + 0.03], [lng + 0.03, lat + 0.03], [lng + 0.03, lat - 0.03], [lng - 0.03, lat - 0.03], [lng - 0.03, lat + 0.03]]]
-        };
-
-        const validProducerId = await ensureProducerProfile(user);
-        const nowIso = new Date().toISOString();
-        const newProp = {
-          produtor_id: validProducerId,
-          nome_fazenda: newFarmName,
-          etapa: 'Prospecção',
-          nome_produtor: user.user_metadata?.full_name || 'Produtor',
-          codigo_car: `MS-${Math.floor(1000000 + Math.random() * 9000000)}-ABCD.EFGH.IJKL.MNOP`,
-          geom: geom,
-          created_at: nowIso,
-          updated_at: nowIso
-        };
-
-        const { data: insertedProp, error: err } = await supabase
-          .from('propriedades')
-          .insert([newProp])
-          .select()
-          .single();
-        if (err) throw err;
-
-        if (insertedProp?.id) {
-          await supabase.from('auditorias').insert([{
-            propriedade_id: insertedProp.id,
-            status: 'Autoavaliação',
-            etapa: 'Prospecção',
-            data_agendamento: nowIso
-          }]);
-        }
-
-        await fetchFarmsAndPendencias();
-        setShowNewFarmModal(false);
-        setNewFarmName('');
-        success('Propriedade cadastrada com sucesso!');
-      } catch (err: any) {
-        console.error('Erro ao salvar propriedade:', err);
-        error('Erro ao salvar propriedade: ' + err.message);
-      } finally {
-        setLoading(false);
-      }
-    }
-  };
-
-  const handleFinishAutoavaliacao = (id: string | number) => {
-    if (typeof id === 'number') {
-      const updatedFeatures = farmsData.features.map(f => {
-        if (f.properties?.id === id) {
-          return { ...f, properties: { ...f.properties, status: 'Em Análise' } };
-        }
-        return f;
-      });
-      setFarmsData({ ...farmsData, features: updatedFeatures });
-    } else {
-      fetchFarmsAndPendencias();
-      fetchDocuments();
-    }
+  const handleFinishAutoavaliacao = () => {
+    fetchFarmsAndPendencias();
     setShowQuestionario(null);
   };
 
-  const handleGenerateAIPlan = async () => {
-    if (!pendingIssues.trim()) return;
-    setIsAiLoading(true);
-    setHasGeneratedPlan(true);
-    const plan = await aiService.generateCorrectiveActions(pendingIssues);
-    setAiActionPlan(plan);
-    setIsAiLoading(false);
+  // IA Nível 1: Gerar orientação contextual instantânea para UMA pendência específica
+  const handleToggleItemAIPlan = async (pend: any) => {
+    const existing = itemAiPlans[pend.id];
+    if (existing && existing.plan) {
+      setItemAiPlans(prev => ({
+        ...prev,
+        [pend.id]: { ...prev[pend.id], open: !prev[pend.id].open }
+      }));
+      return;
+    }
+
+    const farmName = properties.find(p => p.id === pend.propriedade_id)?.nome_fazenda || 'Propriedade Rural';
+    setItemAiPlans(prev => ({
+      ...prev,
+      [pend.id]: { loading: true, plan: '', open: true }
+    }));
+
+    try {
+      const prompt = `Fazenda: ${farmName}\nPendência RTRS: ${pend.titulo}\nExigência/Observação Técnica: ${pend.descricao}\nInstrução: Forneça um passo a passo objetivo e prático (em até 4 tópicos curtos) de como o produtor rural deve regularizar esta pendência e qual documento/foto anexar como evidência para aprovação na certificação RTRS.`;
+      const plan = await aiService.generateCorrectiveActions(prompt);
+      setItemAiPlans(prev => ({
+        ...prev,
+        [pend.id]: { loading: false, plan, open: true }
+      }));
+    } catch (e) {
+      setItemAiPlans(prev => ({
+        ...prev,
+        [pend.id]: { loading: false, plan: 'Não foi possível gerar a recomendação neste momento.', open: true }
+      }));
+    }
   };
 
-  const handleAIPlanForPendency = (pend: any) => {
-    const farmName = properties.find(p => p.id === pend.propriedade_id)?.nome_fazenda || 'Propriedade';
-    setPendingIssues(`Fazenda: ${farmName}\nPendência: ${pend.titulo}\nDescrição/Exigência: ${pend.descricao}\nInstrução: Me dê um plano de ação imediato para regularizar essa pendência com foco nas regras da certificação RTRS.`);
-    setActiveTab('ia');
+  // IA Nível 2: Gerar Plano Geral de Adequação para todas as pendências abertas da fazenda ativa
+  const handleGenerateGeneralAIPlan = async () => {
+    const targetFarmId = pendFilterFarmId !== 'todas' ? pendFilterFarmId : selectedFarmId;
+    const targetFarm = properties.find(p => p.id === targetFarmId);
+    const openPends = pendencias.filter(
+      p => p.status === 'Pendente' && (!targetFarmId || p.propriedade_id === targetFarmId)
+    );
+
+    if (openPends.length === 0) {
+      warning('Não há pendências em aberto para gerar o plano de adequação.');
+      return;
+    }
+
+    setIsAiLoading(true);
+    setShowGeneralAiPlan(true);
+
+    const summaryLines = openPends
+      .slice(0, 20)
+      .map((p, idx) => `${idx + 1}. ${p.titulo}: ${p.descricao}`)
+      .join('\n');
+
+    const prompt = `Fazenda: ${targetFarm?.nome_fazenda || 'Propriedades do Produtor'}\nTotal de Pendências Abertas: ${openPends.length}\nPrincipais Não-Conformidades RTRS:\n${summaryLines}\n\nInstrução: Crie um Plano Executivo de Adequação RTRS priorizado por urgência (Curto Prazo / Ação Imediata, Médio Prazo e Documentação Comprobatória) para que o produtor regularize sua fazenda com eficiência.`;
+
+    try {
+      const plan = await aiService.generateCorrectiveActions(prompt);
+      setAiActionPlan(plan);
+    } catch (e) {
+      setAiActionPlan('Não foi possível gerar o plano geral no momento.');
+    } finally {
+      setIsAiLoading(false);
+    }
   };
 
   const handleUploadEvidenceFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !selectedPendency) return;
     setUploadingFile(true);
     try {
       const rawExt = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -922,7 +1091,7 @@ export default function DashboardProdutor() {
     if (!selectedPendency) return;
     setIsSubmittingResolution(true);
     try {
-      const { error } = await supabase
+      const { error: upErr } = await supabase
         .from('pendencias')
         .update({
           status: 'Em Análise',
@@ -932,9 +1101,9 @@ export default function DashboardProdutor() {
         })
         .eq('id', selectedPendency.id);
 
-      if (error) throw error;
+      if (upErr) throw upErr;
 
-      success('Resolução enviada com sucesso! A pendência agora está sob revisão do Gestor.');
+      success('Resolução enviada com sucesso! A pendência agora está sob revisão técnica.');
       setSelectedPendency(null);
       setResolucaoTexto('');
       setEvidenciaUrl('');
@@ -947,9 +1116,76 @@ export default function DashboardProdutor() {
     }
   };
 
-  const filteredFarms = farmsData.features.filter(f => 
+  // Fazenda Ativa e Métricas Consolidadas
+  const activeFarm = useMemo(() => {
+    return properties.find(p => p.id === selectedFarmId) || properties[0] || null;
+  }, [properties, selectedFarmId]);
+
+  const activeFarmMetrics: FarmAuditMetrics | null = useMemo(() => {
+    if (!activeFarm) return null;
+    return farmMetricsMap[activeFarm.id] || null;
+  }, [activeFarm, farmMetricsMap]);
+
+  const activeEtapaName = activeFarmMetrics?.etapa || (activeFarm ? resolveFarmEtapa(activeFarm.id, activeFarm.etapa, null) : 'Prospecção');
+
+  const activeFarmOpenPendenciasCount = useMemo(() => {
+    if (!activeFarm) return pendencias.filter(p => p.status === 'Pendente').length;
+    return pendencias.filter(p => p.propriedade_id === activeFarm.id && p.status === 'Pendente').length;
+  }, [pendencias, activeFarm]);
+
+  const totalOpenPendenciasCount = useMemo(() => {
+    return pendencias.filter(p => p.status === 'Pendente').length;
+  }, [pendencias]);
+
+  // Filtros aplicados na Aba 2 (Pendências & Adequação)
+  const filteredPendencias = useMemo(() => {
+    return pendencias.filter(pend => {
+      if (pendFilterFarmId !== 'todas' && pend.propriedade_id !== pendFilterFarmId) return false;
+      if (pendFilterStatus !== 'todas') {
+        if (pendFilterStatus === 'Resolvida') {
+          if (pend.status !== 'Resolvida' && pend.status !== 'Resolvido') return false;
+        } else if (pend.status !== pendFilterStatus) {
+          return false;
+        }
+      }
+      if (pendFilterPrincipio !== 'todos') {
+        const pNum = extractPrincipioFromPendency(pend.titulo, pend.descricao);
+        if (String(pNum) !== pendFilterPrincipio) return false;
+      }
+      if (pendSearchText.trim()) {
+        const q = pendSearchText.toLowerCase();
+        const matchTitle = (pend.titulo || '').toLowerCase().includes(q);
+        const matchDesc = (pend.descricao || '').toLowerCase().includes(q);
+        if (!matchTitle && !matchDesc) return false;
+      }
+      return true;
+    });
+  }, [pendencias, pendFilterFarmId, pendFilterStatus, pendFilterPrincipio, pendSearchText]);
+
+  // Contadores das Pílulas de Status na Aba de Pendências (respeitando filtro de fazenda)
+  const pendencyStatusCounts = useMemo(() => {
+    const base = pendFilterFarmId === 'todas'
+      ? pendencias
+      : pendencias.filter(p => p.propriedade_id === pendFilterFarmId);
+    return {
+      todas: base.length,
+      pendentes: base.filter(p => p.status === 'Pendente').length,
+      emAnalise: base.filter(p => p.status === 'Em Análise').length,
+      resolvidas: base.filter(p => p.status === 'Resolvida' || p.status === 'Resolvido').length
+    };
+  }, [pendencias, pendFilterFarmId]);
+
+  const filteredFarms = farmsData.features.filter(f =>
     (f.properties?.name || '').toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  // Índice da etapa atual na Linha do Tempo RTRS (1 a 4)
+  const currentJourneyIndex = useMemo(() => {
+    if (activeFarmMetrics?.statusAuditoria === 'Certificada' || activeEtapaName === 'Certificada') return 4;
+    if (activeEtapaName === 'Auditoria Oficial') return 3;
+    if (activeEtapaName === 'Auditoria Prévia') return 2;
+    return 1;
+  }, [activeEtapaName, activeFarmMetrics]);
 
   if (loading && properties.length === 0) {
     return (
@@ -966,103 +1202,131 @@ export default function DashboardProdutor() {
     );
   }
 
-  const selectedFarmObj = properties.find(p => p.id === selectedFarmId);
-  const activeEtapaName = selectedFarmObj ? resolveFarmEtapa(selectedFarmObj.id, selectedFarmObj.etapa, null) : 'Prospecção';
-
   return (
     <div className="space-y-6 animate-fade-in-up max-w-7xl mx-auto pb-8">
-      {/* Header Executivo do Produtor com Motion e Tipografia Fluida */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 sm:p-6 rounded-2xl sm:rounded-3xl border border-slate-200/80 shadow-xs">
-        <div>
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-2">
-            <div className="inline-flex items-center gap-1.5 sm:gap-2 bg-[#1B7547]/10 text-[#1B7547] px-2.5 sm:px-3 py-1 rounded-full text-[11px] sm:text-xs font-extrabold uppercase tracking-wider">
+      {/* Header Executivo do Produtor com Seletor de Fazenda Ativa e 3 Abas Principais */}
+      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 bg-white p-4 sm:p-6 rounded-2xl sm:rounded-3xl border border-slate-200/80 shadow-xs">
+        <div className="space-y-2 w-full lg:w-auto">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex items-center gap-1.5 bg-[#1B7547]/10 text-[#1B7547] px-2.5 sm:px-3 py-1 rounded-full text-[11px] sm:text-xs font-extrabold uppercase tracking-wider">
               <MapPin className="w-3.5 h-3.5" />
-              <span>Painel do Produtor Rural</span>
+              <span>Portal do Produtor Rural</span>
             </div>
             <span className="px-2.5 sm:px-3 py-1 bg-emerald-50 border border-emerald-200/80 text-emerald-800 rounded-full text-[11px] sm:text-xs font-extrabold uppercase tracking-wider flex items-center gap-1.5 shadow-2xs">
               <span className="w-2 h-2 rounded-full bg-[#1B7547] animate-pulse"></span>
-              Etapa Atual: {activeEtapaName}
+              Etapa: {activeEtapaName}
             </span>
+            <button
+              type="button"
+              onClick={() => {
+                setIsManualOnboardingReview(true);
+                setShowOnboardingModal(true);
+              }}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200/80 transition-colors cursor-pointer"
+              title="Consultar ou atualizar as 7 respostas do Diagnóstico Socioambiental de Primeiro Acesso"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-[#1B7547]" />
+              <span>Rever Diagnóstico Inicial</span>
+            </button>
           </div>
-          <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">{content.titulo}</h1>
-          <p className="text-slate-500 mt-1 text-xs sm:text-sm font-medium">{content.subtitulo}</p>
+
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+            <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight">
+              {content.titulo}
+            </h1>
+
+            {/* Seletor Rápido de Fazenda Ativa */}
+            {properties.length > 0 && (
+              <div className="inline-flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl">
+                <Building2 className="w-4 h-4 text-[#1B7547] shrink-0" />
+                <span className="text-[11px] font-bold text-slate-500 uppercase">Fazenda Ativa:</span>
+                <select
+                  value={activeFarm?.id || ''}
+                  onChange={(e) => {
+                    const newId = e.target.value;
+                    setSelectedFarmId(newId);
+                    if (pendFilterFarmId !== 'todas') {
+                      setPendFilterFarmId(newId);
+                    }
+                  }}
+                  className="text-xs font-extrabold text-slate-900 bg-transparent focus:outline-none cursor-pointer pr-1"
+                >
+                  {properties.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.nome_fazenda}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+          <p className="text-slate-500 text-xs sm:text-sm font-medium">{content.subtitulo}</p>
         </div>
-        
-        {/* Tab Navigation: Grid 2x2 no Mobile (100% visível, zero corte) e Segmented Bar no Desktop */}
-        <div className="w-full md:w-auto bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 grid grid-cols-2 sm:flex sm:flex-wrap md:inline-flex gap-1.5 sm:gap-2 shadow-2xs shrink-0">
+
+        {/* Navegação Principal em 3 Abas */}
+        <div className="w-full lg:w-auto bg-slate-100 p-1.5 rounded-2xl border border-slate-200/80 grid grid-cols-3 sm:inline-flex gap-1.5 shadow-2xs shrink-0">
           <button
             type="button"
             onClick={() => setActiveTab('mapa')}
-            className={`px-3 py-2 sm:px-5 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
-              activeTab === 'mapa' 
-                ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
+            className={`px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center justify-center gap-1.5 cursor-pointer shrink-0 min-h-[40px] ${
+              activeTab === 'mapa'
+                ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
             }`}
           >
             <MapPin className="w-4 h-4 shrink-0" />
-            <span className="truncate">{content.aba_mapa}</span>
+            <span className="truncate sm:hidden">Fazendas</span>
+            <span className="hidden sm:inline">Minha Fazenda & Mapa</span>
           </button>
-          
+
           <button
             type="button"
             onClick={() => setActiveTab('pendencias')}
-            className={`px-3 py-2 sm:px-5 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
-              activeTab === 'pendencias' 
-                ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
+            className={`px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center justify-center gap-1.5 cursor-pointer shrink-0 min-h-[40px] ${
+              activeTab === 'pendencias'
+                ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
             }`}
           >
             <ClipboardList className="w-4 h-4 shrink-0" />
             <span className="truncate sm:hidden">Pendências</span>
-            <span className="hidden sm:inline">Checklist de Pendências</span>
-            {pendencias.filter(p => p.status === 'Pendente').length > 0 && (
+            <span className="hidden sm:inline">Pendências & Adequação</span>
+            <Sparkles className={`w-3.5 h-3.5 shrink-0 hidden sm:inline ${activeTab === 'pendencias' ? 'text-[#C59B27]' : 'text-indigo-500'}`} />
+            {totalOpenPendenciasCount > 0 && (
               <span className="bg-[#C59B27] text-white text-[10px] font-extrabold px-1.5 py-0.5 rounded-full shrink-0 shadow-2xs">
-                {pendencias.filter(p => p.status === 'Pendente').length}
+                {totalOpenPendenciasCount}
               </span>
             )}
           </button>
 
           <button
             type="button"
-            onClick={() => setActiveTab('ia')}
-            className={`px-3 py-2 sm:px-5 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
-              activeTab === 'ia' 
-                ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-600/20 scale-102' 
-                : 'text-slate-600 hover:text-indigo-600 hover:bg-white/60'
-            }`}
-          >
-            <Sparkles className="w-4 h-4 shrink-0" />
-            <span className="truncate">{content.aba_ia}</span>
-          </button>
-
-          <button
-            type="button"
             onClick={() => setActiveTab('documentacao')}
-            className={`px-3 py-2 sm:px-5 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center justify-center gap-1.5 sm:gap-2 cursor-pointer shrink-0 min-h-[40px] sm:min-h-0 ${
-              activeTab === 'documentacao' 
-                ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20 scale-102' 
+            className={`px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl font-extrabold text-xs transition-all duration-300 flex items-center justify-center gap-1.5 cursor-pointer shrink-0 min-h-[40px] ${
+              activeTab === 'documentacao'
+                ? 'bg-[#1B7547] text-white shadow-md shadow-[#1B7547]/20'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
             }`}
           >
             <FolderOpen className="w-4 h-4 shrink-0" />
-            <span className="truncate sm:hidden">Evidências</span>
+            <span className="truncate sm:hidden">Documentos</span>
             <span className="hidden sm:inline">Documentação & Evidências</span>
           </button>
         </div>
       </div>
 
-      {/* Grid de Estatísticas e Conformidade RTRS Responsivo */}
+      {/* Grid de 4 KPIs Reais baseados na Fazenda Ativa e no Banco */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Card 1: Fazendas */}
         <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs hover:shadow-sm transition-all flex items-center justify-between">
-          <div className="space-y-1">
+          <div className="space-y-1 min-w-0">
             <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">Propriedades Ativas</span>
             <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
-              {properties.length || farmsData.features.length}
+              {properties.length}
             </p>
-            <span className="text-[11px] text-emerald-700 font-bold flex items-center gap-1">
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-              Cadastradas no Programa
+            <span className="text-[11px] text-emerald-700 font-bold flex items-center gap-1 truncate">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span className="truncate">{activeFarm ? `Ativa: ${activeFarm.nome_fazenda}` : 'Cadastradas no Programa'}</span>
             </span>
           </div>
           <div className="p-3 bg-emerald-50 text-emerald-700 rounded-xl shrink-0">
@@ -1070,35 +1334,51 @@ export default function DashboardProdutor() {
           </div>
         </div>
 
-        {/* Card 2: Score de Conformidade */}
-        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs hover:shadow-sm transition-all flex items-center justify-between">
+        {/* Card 2: Score Real de Conformidade RTRS (baseado em respostas_auditoria) */}
+        <div
+          onClick={() => activeFarm && handleOpenPanorama(activeFarm.id)}
+          className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs hover:shadow-md hover:border-emerald-300 transition-all flex items-center justify-between cursor-pointer group"
+          title="Clique para abrir o Panorama Executivo & Score RTRS detalhado"
+        >
           <div className="space-y-1">
-            <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">Conformidade RTRS</span>
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+              Score RTRS ({activeFarm ? 'Fazenda Ativa' : 'Geral'})
+            </span>
             <p className="text-2xl sm:text-3xl font-black text-[#1B7547] tracking-tight">
-              {(() => {
-                const total = pendencias.length;
-                if (total === 0) return '100%';
-                const res = pendencias.filter(p => p.status === 'Resolvida' || p.status === 'Resolvido').length;
-                return `${Math.round((res / total) * 100)}%`;
-              })()}
+              {activeFarmMetrics && activeFarmMetrics.scoreRtrs !== null
+                ? `${activeFarmMetrics.scoreRtrs}%`
+                : 'Em Diagnóstico'}
             </p>
-            <span className="text-[11px] text-slate-500 font-medium">Adequação socioambiental</span>
+            <span className="text-[11px] text-slate-500 font-medium flex items-center gap-1">
+              {activeFarmMetrics && activeFarmMetrics.respondidos > 0
+                ? `${activeFarmMetrics.conformes}/${activeFarmMetrics.aplicaveis} conformes (${activeFarmMetrics.respondidos}/115)`
+                : 'Inicie o checklist RTRS'}
+            </span>
           </div>
-          <div className="p-3 bg-emerald-50 text-[#1B7547] rounded-xl shrink-0">
-            <ShieldCheck className="w-6 h-6" />
+          <div className="p-3 bg-emerald-50 text-[#1B7547] group-hover:bg-[#1B7547] group-hover:text-white transition-colors rounded-xl shrink-0">
+            <Award className="w-6 h-6" />
           </div>
         </div>
 
         {/* Card 3: Pendências em Aberto */}
-        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs hover:shadow-sm transition-all flex items-center justify-between">
+        <div
+          onClick={() => {
+            if (activeFarm) setPendFilterFarmId(activeFarm.id);
+            setPendFilterStatus('Pendente');
+            setActiveTab('pendencias');
+          }}
+          className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs hover:shadow-md hover:border-amber-300 transition-all flex items-center justify-between cursor-pointer"
+        >
           <div className="space-y-1">
-            <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">Pendências Abertas</span>
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">Pendências da Fazenda</span>
             <p className="text-2xl sm:text-3xl font-black text-amber-600 tracking-tight">
-              {pendencias.filter(p => p.status === 'Pendente').length}
+              {activeFarmOpenPendenciasCount}
             </p>
             <span className="text-[11px] text-amber-700 font-medium flex items-center gap-1">
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
-              Requerem ação do produtor
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              {totalOpenPendenciasCount > activeFarmOpenPendenciasCount
+                ? `${totalOpenPendenciasCount} no total em todas as fazendas`
+                : 'Requerem ação do produtor'}
             </span>
           </div>
           <div className="p-3 bg-amber-50 text-amber-700 rounded-xl shrink-0">
@@ -1107,7 +1387,10 @@ export default function DashboardProdutor() {
         </div>
 
         {/* Card 4: Documentos & Evidências */}
-        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs hover:shadow-sm transition-all flex items-center justify-between">
+        <div
+          onClick={() => setActiveTab('documentacao')}
+          className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs hover:shadow-md transition-all flex items-center justify-between cursor-pointer"
+        >
           <div className="space-y-1">
             <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">Documentação Vigente</span>
             <p className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">
@@ -1121,187 +1404,407 @@ export default function DashboardProdutor() {
         </div>
       </div>
 
-      {activeTab === 'mapa' && (
-        <div key={`prod-mapa-${activeTab}`} className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-fade-in-up duration-300">
-          {/* Painel Esquerdo: Lista de Fazendas */}
-          <div className="lg:col-span-1 space-y-4">
-            <div className="flex flex-col gap-3 w-full mb-6">
-              <button 
-                onClick={runRiskAnalysis}
-                disabled={isSimulating}
-                className="group/btn relative flex items-center justify-center gap-2 bg-amber-50 hover:bg-amber-100 text-amber-800 px-5 py-3 rounded-2xl font-extrabold text-xs border border-amber-200/80 transition-all duration-300 hover:scale-105 active:scale-95 shadow-2xs cursor-pointer"
-              >
-                {isSimulating ? <Loader2 className="w-4 h-4 animate-spin text-amber-700" /> : <ShieldAlert className="w-4 h-4 text-amber-600 transition-transform group-hover/btn:scale-110" />}
-                <span>{showRisk ? 'Atualizar Risco' : content.botao_analise_risco}</span>
-              </button>
-              <button 
-                onClick={() => setShowNewFarmModal(true)}
-                className="group relative flex items-center justify-center gap-2 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white px-5 py-3 rounded-2xl font-extrabold text-xs shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-300 cursor-pointer overflow-hidden"
-              >
-                <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
-                <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
-                <span>{content.botao_nova_propriedade}</span>
-              </button>
-              <button 
-                onClick={() => setShowCodeFarmModal(true)}
-                className="group relative flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white px-5 py-3 rounded-2xl font-extrabold text-xs shadow-md shadow-emerald-600/20 hover:shadow-xl hover:scale-105 active:scale-95 transition-all duration-300 cursor-pointer overflow-hidden"
-              >
-                <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
-                <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
-                <span>Cadastrar via Código (CAR/SIGEF/KML)</span>
-              </button>
+      {/* Painel Executivo da Fazenda Ativa: Linha do Tempo da Jornada RTRS + Card do Técnico Responsável */}
+      {activeFarm && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Linha do Tempo da Jornada RTRS (2/3) */}
+          <div className="lg:col-span-2 bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs flex flex-col justify-between space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Award className="w-5 h-5 text-[#1B7547]" />
+                <h2 className="text-sm sm:text-base font-extrabold text-slate-900">
+                  Jornada de Certificação RTRS — <span className="text-[#1B7547]">{activeFarm.nome_fazenda}</span>
+                </h2>
+              </div>
+              <span className="text-[11px] font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">
+                {activeFarmMetrics ? `${activeFarmMetrics.respondidos} de 115 critérios avaliados` : '0 de 115 critérios'}
+              </span>
             </div>
 
+            {/* Stepper de 4 Etapas */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              {[
+                { step: 1, title: '1. Prospecção', desc: 'Cadastro & Autoavaliação' },
+                { step: 2, title: '2. Auditoria Prévia', desc: 'Diagnóstico & Adequação' },
+                { step: 3, title: '3. Auditoria Oficial', desc: 'Vistoria Final & Revisão' },
+                { step: 4, title: '4. Certificada RTRS', desc: 'Selo Socioambiental' }
+              ].map((item) => {
+                const isDone = currentJourneyIndex > item.step || (item.step === 4 && currentJourneyIndex === 4);
+                const isCurrent = currentJourneyIndex === item.step;
+                return (
+                  <div
+                    key={item.step}
+                    className={`p-3 rounded-xl border transition-all ${
+                      isCurrent
+                        ? 'bg-emerald-50/80 border-[#1B7547] ring-2 ring-[#1B7547]/15'
+                        : isDone
+                        ? 'bg-slate-50 border-emerald-200'
+                        : 'bg-slate-50/50 border-slate-200/70 opacity-60'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span
+                        className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                          isCurrent
+                            ? 'bg-[#1B7547] text-white'
+                            : isDone
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-slate-200 text-slate-600'
+                        }`}
+                      >
+                        {isDone ? '✓ Concluída' : isCurrent ? 'Etapa Atual' : 'Futura'}
+                      </span>
+                    </div>
+                    <p className="text-xs font-extrabold text-slate-900 mt-1">{item.title}</p>
+                    <p className="text-[11px] text-slate-500 font-medium">{item.desc}</p>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Banner de Próximo Passo Recomendado para a Fazenda Ativa */}
+            <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start sm:items-center gap-2.5 text-xs text-slate-700 font-medium">
+                <Sparkles className="w-4 h-4 text-[#1B7547] shrink-0 mt-0.5 sm:mt-0" />
+                <span>
+                  {activeFarmMetrics?.statusAuditoria === 'Certificada' ? (
+                    <>Parabéns! Sua propriedade está <strong>Certificada no Padrão RTRS</strong>. Mantenha a documentação vigente atualizada.</>
+                  ) : activeFarmOpenPendenciasCount > 0 ? (
+                    <>Próximo passo: Você possui <strong>{activeFarmOpenPendenciasCount} pendência(s) aberta(s)</strong> nesta fazenda. Envie as evidências com ajuda da IA para aprovação.</>
+                  ) : activeFarmMetrics?.statusAuditoria === 'Aguardando Aprovação' ? (
+                    <>Vistoria técnica 100% preenchida! Sua auditoria está <strong>Aguardando Deliberação Final do Gestor</strong>.</>
+                  ) : (
+                    <>Próximo passo: Avance no preenchimento da <strong>Autoavaliação RTRS</strong> ({activeFarmMetrics?.respondidos || 0}/115 critérios) para preparar a vistoria técnica.</>
+                  )}
+                </span>
+              </div>
+
+              {activeFarmOpenPendenciasCount > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPendFilterFarmId(activeFarm.id);
+                    setPendFilterStatus('Pendente');
+                    setActiveTab('pendencias');
+                  }}
+                  className="px-3.5 py-1.5 bg-[#1B7547] hover:bg-[#15613a] text-white text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
+                >
+                  <span>Regularizar Pendências</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              ) : !activeFarmMetrics?.isSubmittedByTech ? (
+                <button
+                  type="button"
+                  onClick={() => setShowQuestionario(activeFarm.id)}
+                  className="px-3.5 py-1.5 bg-[#1B7547] hover:bg-[#15613a] text-white text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
+                >
+                  <span>Abrir Autoavaliação</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => handleOpenPanorama(activeFarm.id)}
+                  className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
+                >
+                  <span>Ver Panorama RTRS</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Card de Vistoria & Técnico de Campo Responsável (1/3) */}
+          <div className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-2xs flex flex-col justify-between space-y-4">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                  <UserCheck className="w-4 h-4 text-[#1B7547]" />
+                  Técnico & Vistoria de Campo
+                </span>
+                <span
+                  className={`text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full border ${
+                    activeFarmMetrics?.statusAuditoria === 'Certificada'
+                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                      : activeFarmMetrics?.statusAuditoria === 'Aguardando Aprovação'
+                      ? 'bg-amber-100 text-amber-800 border-amber-300'
+                      : 'bg-blue-50 text-blue-800 border-blue-200'
+                  }`}
+                >
+                  {activeFarmMetrics?.statusAuditoria || 'Em Andamento'}
+                </span>
+              </div>
+
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/70 space-y-2">
+                <div>
+                  <p className="text-[11px] text-slate-500 font-medium">Técnico Responsável Designado:</p>
+                  <p className="text-sm font-extrabold text-slate-900">{activeFarmMetrics?.tecnicoNome || 'Equipe Técnica Aprosoja-MS'}</p>
+                </div>
+
+                <div className="flex items-center gap-2 text-xs text-slate-700 pt-1 border-t border-slate-200/60">
+                  <Calendar className="w-3.5 h-3.5 text-[#1B7547] shrink-0" />
+                  <span>Visita Técnica:</span>
+                  <strong className="text-slate-900">
+                    {activeFarmMetrics?.dataVisita
+                      ? new Date(activeFarmMetrics.dataVisita).toLocaleDateString('pt-BR')
+                      : 'A agendar'}
+                  </strong>
+                </div>
+              </div>
+            </div>
+
+            {/* Botões de Contato Rápido com o Técnico e Panorama */}
+            <div className="flex flex-col gap-2">
+              <div className="flex gap-2">
+                {activeFarmMetrics?.tecnicoTelefone && (
+                  <a
+                    href={`https://wa.me/55${activeFarmMetrics.tecnicoTelefone.replace(/\D/g, '')}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 py-2 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <Phone className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>WhatsApp</span>
+                  </a>
+                )}
+                {activeFarmMetrics?.tecnicoEmail && (
+                  <a
+                    href={`mailto:${activeFarmMetrics.tecnicoEmail}?subject=Vistoria RTRS - ${encodeURIComponent(activeFarm.nome_fazenda)}`}
+                    className="flex-1 py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <Mail className="w-3.5 h-3.5 text-slate-600" />
+                    <span>Contatar Técnico</span>
+                  </a>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleOpenPanorama(activeFarm.id)}
+                className="w-full py-2 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-xl text-xs font-extrabold transition-all shadow-2xs flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Award className="w-4 h-4 text-[#C59B27]" />
+                <span>Ver Panorama & Score RTRS</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ABA 1: MINHA FAZENDA & MAPA */}
+      {activeTab === 'mapa' && (
+        <div key={`prod-mapa-${activeTab}`} className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-fade-in-up duration-300">
+          {/* Painel Esquerdo: Cadastro Único + Lista de Fazendas com Dados Reais */}
+          <div className="lg:col-span-1 space-y-4">
+            <button
+              type="button"
+              onClick={() => {
+                setCadastroMetodo('codigo');
+                setShowCodeFarmModal(true);
+              }}
+              className="w-full group relative flex items-center justify-center gap-2 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white px-5 py-3.5 rounded-2xl font-extrabold text-xs shadow-md shadow-[#1B7547]/20 hover:shadow-xl hover:scale-[1.01] active:scale-95 transition-all duration-300 cursor-pointer overflow-hidden"
+            >
+              <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
+              <Plus className="w-4 h-4 transition-transform group-hover:rotate-90 duration-300" />
+              <span>+ Cadastrar Nova Fazenda (CAR / SIGEF / KML / GPS)</span>
+            </button>
+
+            {/* Alertas do Diagnóstico Inicial de Primeiro Acesso (se houver) */}
+            {onboardingAlerts.length > 0 && (
+              <div className="bg-amber-50/90 border border-amber-200 rounded-2xl p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-extrabold uppercase tracking-wider text-amber-900 flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    Alertas do Diagnóstico Inicial
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsManualOnboardingReview(true);
+                      setShowOnboardingModal(true);
+                    }}
+                    className="text-[11px] font-bold text-amber-800 underline hover:text-amber-950 cursor-pointer"
+                  >
+                    Editar
+                  </button>
+                </div>
+                <ul className="space-y-1 text-xs text-amber-950 font-medium">
+                  {onboardingAlerts.map((al, idx) => (
+                    <li key={idx} className="leading-snug">{al}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             <div className="bg-card p-5 rounded-2xl shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] border border-slate-100">
-              <div className="relative mb-5">
+              <div className="relative mb-4">
                 <Search className="w-4 h-4 text-muted-foreground absolute left-3 top-3" />
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   placeholder={content.busca_placeholder}
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
                   className="w-full pl-9 pr-3 py-2 bg-background border border-input rounded-xl focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent transition-all shadow-sm text-sm"
                 />
               </div>
-              
-              <div className="space-y-3">
-                {filteredFarms.map((feature, i) => {
-                  const farmId = feature.properties?.id;
-                  const isSelected = selectedFarmId === farmId;
-                  const isMock = typeof farmId === 'number' && farmId < 10;
-                  return (
-                    <div 
-                      key={i} 
-                      onClick={() => setSelectedFarmId(farmId)}
-                      className={`group relative overflow-hidden border rounded-xl p-4 hover:-translate-y-1 transition-all duration-300 ease-out animate-fade-in-up cursor-pointer ${
-                        isSelected 
-                          ? 'bg-emerald-50/40 border-emerald-500 shadow-md ring-2 ring-emerald-500/20' 
-                          : 'bg-background border-border hover:border-primary/50 hover:shadow-lg'
-                      }`}
-                      style={{ animationDelay: `${i * 100}ms` }}
-                    >
-                      <div className={`absolute top-0 left-0 w-1.5 h-full transition-colors ${isSelected ? 'bg-emerald-600' : 'bg-primary/0 group-hover:bg-primary'}`}></div>
-                      
-                      <div className="flex justify-between items-start mb-2">
-                        <h3 className="font-bold text-foreground text-sm group-hover:text-primary transition-colors pr-2">
-                          {feature.properties?.name}
-                        </h3>
-                        {feature.properties?.status === 'Certificada' || feature.properties?.status === 'Regularizada' ? (
-                          <span className="flex items-center gap-1 text-[9px] font-bold text-emerald-800 bg-emerald-100/80 px-2 py-0.5 rounded-md uppercase tracking-wider border border-emerald-200">
-                            <CheckCircle2 className="w-3 h-3" /> Regular
-                          </span>
-                        ) : (
-                          <span className="flex items-center gap-1 text-[9px] font-bold text-amber-800 bg-amber-100/80 px-2 py-0.5 rounded-md uppercase tracking-wider border border-amber-200">
-                            <AlertTriangle className="w-3 h-3" /> {feature.properties?.status}
-                          </span>
-                        )}
-                      </div>
-                      
-                      <div className="space-y-1 mb-3">
-                        <p className="text-xs text-foreground font-medium flex items-center gap-1.5">
-                          <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                          <span className="font-semibold text-slate-700">Município:</span> 
-                          <span className="text-emerald-900 font-bold">{feature.properties?.municipio || 'Água Clara, MS'}</span>
-                        </p>
-                        <p className="text-[11px] text-muted-foreground pl-5 font-mono">
-                          Centroide: {(() => {
-                            const g = feature.geometry;
-                            if (!g || !g.coordinates) return '-';
-                            let c: any = g.coordinates;
-                            while (Array.isArray(c[0])) c = c[0];
-                            return typeof c[1] === 'number' && typeof c[0] === 'number' ? `${c[1].toFixed(2)}, ${c[0].toFixed(2)}` : '-';
-                          })()}
-                        </p>
-                      </div>
 
-                      <div className="flex flex-col gap-2">
-                        <div className="flex gap-2">
+              {filteredFarms.length === 0 ? (
+                <div className="text-center py-8 px-4 border border-dashed border-slate-200 rounded-xl space-y-2">
+                  <p className="text-xs text-slate-500 font-medium">
+                    Nenhuma propriedade encontrada. Clique em "+ Cadastrar Nova Fazenda" acima para iniciar.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {filteredFarms.map((feature, i) => {
+                    const farmId = String(feature.properties?.id || '');
+                    const isSelected = selectedFarmId === farmId;
+                    const metrics = farmMetricsMap[farmId];
+                    const openPendsCount = pendencias.filter(p => p.propriedade_id === farmId && p.status === 'Pendente').length;
+                    const progressPct = metrics ? Math.min(100, Math.round((metrics.respondidos / 115) * 100)) : 0;
+
+                    return (
+                      <div
+                        key={farmId || i}
+                        onClick={() => setSelectedFarmId(farmId)}
+                        className={`group relative overflow-hidden border rounded-xl p-4 transition-all duration-300 ease-out cursor-pointer ${
+                          isSelected
+                            ? 'bg-emerald-50/40 border-emerald-500 shadow-md ring-2 ring-emerald-500/20'
+                            : 'bg-background border-border hover:border-primary/50 hover:shadow-md'
+                        }`}
+                      >
+                        <div className={`absolute top-0 left-0 w-1.5 h-full transition-colors ${isSelected ? 'bg-emerald-600' : 'bg-primary/0 group-hover:bg-primary'}`}></div>
+
+                        <div className="flex justify-between items-start gap-2 mb-2">
+                          <h3 className="font-extrabold text-foreground text-sm group-hover:text-primary transition-colors">
+                            {feature.properties?.name}
+                          </h3>
+                          {openPendsCount === 0 ? (
+                            <span className="flex items-center gap-1 text-[9px] font-bold text-emerald-800 bg-emerald-100/80 px-2 py-0.5 rounded-md uppercase tracking-wider border border-emerald-200 shrink-0">
+                              <CheckCircle2 className="w-3 h-3" /> Regular
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1 text-[9px] font-bold text-amber-800 bg-amber-100/80 px-2 py-0.5 rounded-md uppercase tracking-wider border border-amber-200 shrink-0">
+                              <AlertTriangle className="w-3 h-3" /> {openPendsCount} Pendência(s)
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Dados Reais da Propriedade */}
+                        <div className="space-y-1 mb-3 text-xs">
+                          <p className="text-foreground font-medium flex items-center gap-1.5">
+                            <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                            <span className="font-semibold text-slate-600">Município:</span>
+                            <span className="text-emerald-950 font-bold">{feature.properties?.municipio || 'Mato Grosso do Sul'}</span>
+                          </p>
+                          {feature.properties?.codigo_car && (
+                            <p className="text-[11px] text-slate-600 pl-5 truncate" title={feature.properties.codigo_car}>
+                              <span className="font-semibold">CAR/SIGEF:</span>{' '}
+                              <span className="font-mono text-slate-800">{feature.properties.codigo_car}</span>
+                            </p>
+                          )}
+                          {feature.properties?.area_soja_ha && (
+                            <p className="text-[11px] text-slate-600 pl-5">
+                              <span className="font-semibold">Área de Soja:</span>{' '}
+                              <strong className="text-slate-800">{feature.properties.area_soja_ha} ha</strong>
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Barra de Progresso RTRS no Card */}
+                        <div className="mb-3 p-2.5 bg-slate-50 rounded-xl border border-slate-200/70 space-y-1.5">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="font-bold text-slate-700">
+                              Checklist RTRS: {metrics?.respondidos || 0}/115
+                            </span>
+                            <span className="font-extrabold text-[#1B7547]">
+                              {metrics?.scoreRtrs !== null && metrics?.scoreRtrs !== undefined
+                                ? `${metrics.scoreRtrs}% Conf.`
+                                : `${progressPct}% preenchido`}
+                            </span>
+                          </div>
+                          <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-[#1B7547] rounded-full transition-all duration-500"
+                              style={{ width: `${progressPct}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Botões de Ação com Regra de Negócio: Autoavaliação vs. Vistoria Oficial Submetida */}
+                        <div className="flex flex-col gap-2">
+                          {metrics?.isSubmittedByTech ? (
+                            <>
+                              <div className="px-2.5 py-1.5 bg-amber-50/90 border border-amber-200 rounded-lg flex items-center gap-1.5 text-[10px] font-bold text-amber-900">
+                                <Lock className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                                <span>Vistoria Oficial Submetida ({metrics.statusAuditoria})</span>
+                              </div>
+                              <div className="flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setPendFilterFarmId(farmId);
+                                    setActiveTab('pendencias');
+                                  }}
+                                  className="flex-1 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[11px] font-bold transition-all shadow-xs cursor-pointer text-center"
+                                >
+                                  Regularizar Pendências ({openPendsCount})
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setShowQuestionario(farmId);
+                                }}
+                                className="flex-1 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg text-[11px] font-bold transition-all border border-emerald-200 shadow-2xs cursor-pointer text-center"
+                              >
+                                Autoavaliação ({metrics?.respondidos || 0}/115)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPendFilterFarmId(farmId);
+                                  setActiveTab('pendencias');
+                                }}
+                                className="flex-1 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-lg text-[11px] font-bold transition-all border border-slate-200 shadow-2xs cursor-pointer text-center"
+                              >
+                                Pendências ({openPendsCount})
+                              </button>
+                            </div>
+                          )}
+
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setShowQuestionario(feature.properties?.id);
+                              handleOpenPanorama(farmId);
                             }}
-                            className="flex-1 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg text-[11px] font-bold transition-all border border-emerald-200 shadow-sm cursor-pointer text-center"
+                            className="w-full py-1.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-lg text-[11px] font-extrabold transition-all shadow-2xs flex items-center justify-center gap-1.5 cursor-pointer text-center"
                           >
-                            Autoavaliação RTRS
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setActiveTab('pendencias');
-                            }}
-                            className="flex-1 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-lg text-[11px] font-bold transition-all border border-slate-200 shadow-sm cursor-pointer text-center"
-                          >
-                            Pendências
+                            <Award className="w-3.5 h-3.5 text-[#C59B27]" />
+                            <span>Ver Panorama & Score RTRS</span>
                           </button>
                         </div>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenPanorama(feature.properties?.id);
-                          }}
-                          className="w-full py-1.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-lg text-[11px] font-extrabold transition-all shadow-2xs flex items-center justify-center gap-1.5 cursor-pointer text-center"
-                        >
-                          <Award className="w-3.5 h-3.5 text-[#C59B27]" />
-                          <span>Ver Panorama & Score RTRS</span>
-                        </button>
                       </div>
-                      
-                      {showRisk && i === 0 && (
-                        <div className="mt-4 text-[11px] font-semibold bg-destructive/5 text-destructive p-2.5 rounded-lg flex gap-2 items-start border border-destructive/20">
-                          <ShieldAlert className="w-4 h-4 shrink-0" />
-                          <span>Atenção: Área com possível embargo IBAMA sobreposta.</span>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Painel Direito: Mapa Geoespacial */}
+          {/* Painel Direito: Mapa Geoespacial Real */}
           <div className="lg:col-span-2 relative">
-            {showNewFarmModal && (
-              <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 bg-card p-6 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-slate-100 w-80 animate-zoom-in">
-                <h4 className="font-bold text-foreground mb-4">{content.modal_nova_titulo}</h4>
-                <input 
-                  type="text" 
-                  placeholder={content.modal_nova_placeholder}
-                  value={newFarmName}
-                  onChange={(e) => setNewFarmName(e.target.value)}
-                  className="w-full px-3 py-2 bg-background border border-input rounded-xl mb-4 text-sm focus:outline-none focus:ring-2 focus:ring-ring shadow-sm"
-                />
-                <p className="text-xs text-muted-foreground mb-3 flex items-center gap-2 leading-relaxed font-medium">
-                  <MapPin className="w-5 h-5 shrink-0 text-primary" />
-                  {content.modal_nova_instrucao}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setShowLocationModal(true)}
-                  className="w-full py-2 mb-3 bg-[#1B7547] hover:bg-[#16633b] text-white text-xs font-extrabold rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <Compass className="w-4 h-4 text-[#C59B27]" />
-                  <span>Localizar Sede no Mapa (GPS Pop-up)</span>
-                </button>
-                <button 
-                  onClick={() => setShowNewFarmModal(false)}
-                  className="w-full py-2 text-sm text-foreground bg-secondary hover:bg-secondary/80 rounded-xl font-medium transition-colors"
-                >
-                  Cancelar
-                </button>
-              </div>
-            )}
-
             <div className="h-[600px] w-full rounded-2xl overflow-hidden border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] relative">
-              <MapView 
-                farms={farmsData} 
+              <MapView
+                farms={farmsData}
                 selectedFarmId={selectedFarmId}
-                embargoes={showRisk ? MOCK_EMBARGOES : undefined} 
-                onMapClick={handleMapClick}
                 interactive={true}
               />
             </div>
@@ -1309,256 +1812,452 @@ export default function DashboardProdutor() {
         </div>
       )}
 
-      {/* Modal Cadastrar Fazenda por Código (Produtor) */}
+      {/* Modal Unificado: Cadastrar Nova Fazenda (CAR / SIGEF / KML ou GPS no Mapa) */}
       {showCodeFarmModal && (
         <Modal
           isOpen={true}
           onClose={() => setShowCodeFarmModal(false)}
           title="Cadastrar Nova Fazenda"
         >
-          <form onSubmit={handleCreateCodeFarm} className="space-y-4">
-            <PropertyCodeInput
-              onChange={(data) => setCodeFarmData(prev => ({ ...data, area_soja_ha: prev?.area_soja_ha || '' }))}
-            />
-
-            <div className="space-y-1">
-              <label className="text-xs font-extrabold text-slate-700 uppercase">Área Plantada de Soja da Fazenda (ha)</label>
-              <input
-                type="number"
-                step="0.1"
-                required
-                placeholder="Ex: 1200 (hectares)"
-                value={codeFarmData?.area_soja_ha || ''}
-                onChange={e => setCodeFarmData(prev => prev ? { ...prev, area_soja_ha: e.target.value } : null)}
-                className="w-full px-3 py-2 bg-background border border-input rounded-xl text-sm focus:ring-2 focus:ring-primary focus:border-transparent focus:outline-none text-foreground font-medium"
-              />
-            </div>
-            <div className="flex justify-end gap-2 pt-4 border-t border-border mt-6">
+          <div className="space-y-4">
+            {/* Seletor de Método de Cadastro */}
+            <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-xl border border-slate-200">
               <button
                 type="button"
-                onClick={() => setShowCodeFarmModal(false)}
-                className="px-4 py-2 text-sm font-bold rounded-xl bg-secondary text-secondary-foreground hover:bg-secondary/80 cursor-pointer"
+                onClick={() => setCadastroMetodo('codigo')}
+                className={`py-2 px-3 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                  cadastroMetodo === 'codigo'
+                    ? 'bg-[#1B7547] text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
               >
-                Cancelar
+                Código CAR / SIGEF / KML
               </button>
               <button
-                type="submit"
-                disabled={loading}
-                className="px-5 py-2 text-sm font-black rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+                type="button"
+                onClick={() => setCadastroMetodo('gps')}
+                className={`py-2 px-3 rounded-lg text-xs font-extrabold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  cadastroMetodo === 'gps'
+                    ? 'bg-[#1B7547] text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
               >
-                {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-                Confirmar Cadastro
+                <Compass className="w-3.5 h-3.5" />
+                <span>Localizar Sede no Mapa (GPS)</span>
               </button>
             </div>
-          </form>
+
+            {cadastroMetodo === 'codigo' ? (
+              <form onSubmit={handleCreateCodeFarm} className="space-y-4">
+                <PropertyCodeInput
+                  onChange={(data) => setCodeFarmData(prev => ({ ...data, area_soja_ha: prev?.area_soja_ha || '' }))}
+                />
+
+                <div className="space-y-1">
+                  <label className="text-xs font-extrabold text-slate-700 uppercase">Área Plantada de Soja da Fazenda (ha)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    required
+                    placeholder="Ex: 1200 (hectares)"
+                    value={codeFarmData?.area_soja_ha || ''}
+                    onChange={e => setCodeFarmData(prev => prev ? { ...prev, area_soja_ha: e.target.value } : null)}
+                    className="w-full px-3 py-2 bg-background border border-input rounded-xl text-sm focus:ring-2 focus:ring-primary focus:border-transparent focus:outline-none text-foreground font-medium"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 pt-4 border-t border-border mt-6">
+                  <button
+                    type="button"
+                    onClick={() => setShowCodeFarmModal(false)}
+                    className="px-4 py-2 text-sm font-bold rounded-xl bg-secondary text-secondary-foreground hover:bg-secondary/80 cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="px-5 py-2 text-sm font-black rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+                    Confirmar Cadastro
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-extrabold text-slate-700 uppercase">Nome da Propriedade Rural</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Fazenda Santa Maria"
+                    value={newFarmName}
+                    onChange={(e) => setNewFarmName(e.target.value)}
+                    className="w-full px-3 py-2 bg-background border border-input rounded-xl text-sm focus:ring-2 focus:ring-primary focus:outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-extrabold text-slate-700 uppercase">Área Plantada de Soja (ha - opcional)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    placeholder="Ex: 850"
+                    value={newFarmAreaHa}
+                    onChange={(e) => setNewFarmAreaHa(e.target.value)}
+                    className="w-full px-3 py-2 bg-background border border-input rounded-xl text-sm focus:ring-2 focus:ring-primary focus:outline-none"
+                  />
+                </div>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Ao clicar no botão abaixo, você poderá buscar seu município ou usar o GPS para posicionar o marcador exatamente sobre a sede da fazenda.
+                </p>
+                <div className="flex justify-end gap-2 pt-4 border-t border-border">
+                  <button
+                    type="button"
+                    onClick={() => setShowCodeFarmModal(false)}
+                    className="px-4 py-2 text-sm font-bold rounded-xl bg-secondary text-secondary-foreground hover:bg-secondary/80 cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowLocationModal(true)}
+                    className="px-5 py-2 text-sm font-black rounded-xl bg-[#1B7547] text-white hover:bg-[#15613a] cursor-pointer flex items-center gap-2"
+                  >
+                    <Compass className="w-4 h-4 text-[#C59B27]" />
+                    <span>Abrir Mapa GPS da Sede</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </Modal>
       )}
 
+      {/* ABA 2: PENDÊNCIAS & ADEQUAÇÃO COM IA INTEGRADA EM 2 NÍVEIS */}
       {activeTab === 'pendencias' && (
-        <div key={`prod-pends-${activeTab}`} className="space-y-6 animate-fade-in-up duration-300 max-w-4xl mx-auto">
-          <div className="bg-card p-6 lg:p-8 rounded-2xl border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)]">
-            <h2 className="text-2xl font-bold text-foreground mb-2 flex items-center gap-2">
-              <ClipboardList className="w-6 h-6 text-primary" />
-              Checklist de Pendências & Plano de Ação
-            </h2>
-            <p className="text-muted-foreground mb-6">
-              Monitore e regularize pendências enviadas pelos técnicos de campo e gestores para atingir a certificação RTRS.
-            </p>
+        <div key={`prod-pends-${activeTab}`} className="space-y-6 animate-fade-in-up duration-300 max-w-5xl mx-auto">
+          {/* Card Nível 2 IA: Gerador de Plano Geral Priorizado da Fazenda */}
+          <div className="bg-gradient-to-r from-indigo-950 via-indigo-900 to-slate-900 text-white p-5 sm:p-6 rounded-2xl shadow-md border border-indigo-800/60 space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-500/20 text-indigo-200 border border-indigo-400/30">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Assistente Inteligente de Adequação RTRS</span>
+                </div>
+                <h3 className="text-lg sm:text-xl font-extrabold text-white">
+                  Plano de Ação & Regularização Assistida por IA
+                </h3>
+                <p className="text-xs text-indigo-200/90 font-medium">
+                  Gere um roteiro priorizado para todas as pendências abertas da fazenda ou clique em <strong>"Como Resolver (IA)"</strong> em qualquer item abaixo para orientação imediata.
+                </p>
+              </div>
 
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleGenerateGeneralAIPlan}
+                  disabled={isAiLoading || pendencyStatusCounts.pendentes === 0}
+                  className="px-4 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 font-black text-xs rounded-xl shadow-md transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                >
+                  {isAiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                  <span>
+                    {isAiLoading
+                      ? 'Analisando Pendências...'
+                      : `Gerar Plano Geral da Fazenda (${pendencyStatusCounts.pendentes})`}
+                  </span>
+                </button>
+                {showGeneralAiPlan && (
+                  <button
+                    type="button"
+                    onClick={() => setShowGeneralAiPlan(false)}
+                    className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold cursor-pointer"
+                    title="Ocultar Plano Geral"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {showGeneralAiPlan && (
+              <div className="pt-2">
+                <AIInsightsPanel
+                  title={content.ia_painel_titulo}
+                  insights={aiActionPlan}
+                  isLoading={isAiLoading}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Painel de Filtros Rápidos e Listagem de Pendências */}
+          <div className="bg-card p-5 sm:p-6 rounded-2xl border border-slate-200/80 shadow-xs space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+              <div>
+                <h2 className="text-xl font-extrabold text-foreground flex items-center gap-2">
+                  <ClipboardList className="w-5 h-5 text-[#1B7547]" />
+                  <span>Checklist de Pendências & Adequação</span>
+                </h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Filtre por status ou Princípio RTRS, consulte o passo a passo da IA e anexe suas evidências para revisão do técnico.
+                </p>
+              </div>
+
+              {/* Filtro por Fazenda */}
+              {properties.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <Filter className="w-4 h-4 text-slate-400" />
+                  <select
+                    value={pendFilterFarmId}
+                    onChange={(e) => setPendFilterFarmId(e.target.value)}
+                    className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-extrabold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#1B7547]"
+                  >
+                    <option value="todas">Todas as Fazendas ({properties.length})</option>
+                    {properties.map(p => (
+                      <option key={p.id} value={p.id}>{p.nome_fazenda}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {/* Barra de Filtros: Pílulas de Status + Filtro de Princípio RTRS + Busca */}
+            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+              {/* Pílulas de Status */}
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { id: 'todas', label: `Todas (${pendencyStatusCounts.todas})` },
+                  { id: 'Pendente', label: `Pendentes (${pendencyStatusCounts.pendentes})` },
+                  { id: 'Em Análise', label: `Em Análise (${pendencyStatusCounts.emAnalise})` },
+                  { id: 'Resolvida', label: `Resolvidas (${pendencyStatusCounts.resolvidas})` }
+                ].map(tab => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setPendFilterStatus(tab.id as any)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                      pendFilterStatus === tab.id
+                        ? 'bg-[#1B7547] text-white shadow-2xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Filtro por Princípio RTRS e Busca Textual */}
+              <div className="flex flex-col sm:flex-row gap-2">
+                <select
+                  value={pendFilterPrincipio}
+                  onChange={(e) => setPendFilterPrincipio(e.target.value)}
+                  className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#1B7547]"
+                >
+                  <option value="todos">Todos os 5 Princípios RTRS</option>
+                  <option value="1">Princípio 1: Legislação & Negócios</option>
+                  <option value="2">Princípio 2: Condições Trabalhistas</option>
+                  <option value="3">Princípio 3: Relações Comunitárias</option>
+                  <option value="4">Princípio 4: Meio Ambiente</option>
+                  <option value="5">Princípio 5: Boas Práticas Agrícolas</option>
+                </select>
+
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    placeholder="Buscar critério ou termo..."
+                    value={pendSearchText}
+                    onChange={(e) => setPendSearchText(e.target.value)}
+                    className="w-full sm:w-52 pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-[#1B7547]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Listagem Agrupada por Fazenda */}
             {properties.length === 0 ? (
               <div className="text-center py-12 border border-dashed border-border rounded-xl">
-                <p className="text-muted-foreground">Nenhuma propriedade cadastrada no seu perfil. Cadastre sua fazenda no mapa para iniciar.</p>
+                <p className="text-muted-foreground text-sm">
+                  Nenhuma propriedade cadastrada no seu perfil. Cadastre sua fazenda na aba "Minha Fazenda & Mapa".
+                </p>
+              </div>
+            ) : filteredPendencias.length === 0 ? (
+              <div className="text-center py-10 border border-dashed border-slate-200 rounded-xl space-y-2">
+                <p className="text-sm font-bold text-slate-700">Nenhuma pendência encontrada para os filtros selecionados.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPendFilterStatus('todas');
+                    setPendFilterPrincipio('todos');
+                    setPendSearchText('');
+                  }}
+                  className="text-xs font-extrabold text-[#1B7547] underline cursor-pointer"
+                >
+                  Limpar filtros
+                </button>
               </div>
             ) : (
-              <div className="space-y-8">
-                {properties.map(prop => {
-                  const propPends = pendencias.filter(p => p.propriedade_id === prop.id);
-                  return (
-                    <div key={prop.id} className="border border-border rounded-xl overflow-hidden bg-background shadow-sm hover:shadow-md transition-shadow duration-300">
-                      <div className="px-5 py-3 bg-muted/40 border-b border-border flex justify-between items-center">
-                        <h3 className="font-bold text-foreground text-sm flex items-center gap-2">
-                          <MapPin className="w-4 h-4 text-muted-foreground" />
-                          {prop.nome_fazenda}
-                        </h3>
-                        <span className="text-xs font-semibold text-muted-foreground">
-                          {propPends.length} pendência(s)
-                        </span>
-                      </div>
-                      
-                      <div className="divide-y divide-border">
-                        {propPends.length === 0 ? (
-                          <div className="p-8 text-center text-muted-foreground text-xs font-medium">
-                            Nenhuma pendência associada a esta fazenda! Sua propriedade está em conformidade. 🎉
-                          </div>
-                        ) : (
-                          <>
-                            {/* Padrão Adaptativo Mobile: Cards Empilhados com Botões Confortáveis */}
-                            <div className="block md:hidden divide-y divide-border">
-                              {propPends.map(pend => (
-                                <div key={`mob-${pend.id}`} className="p-4 space-y-3">
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded uppercase tracking-wider border ${
-                                      pend.status === 'Pendente' ? 'bg-amber-100/50 text-amber-800 border-amber-200' :
-                                      pend.status === 'Em Análise' ? 'bg-indigo-100/50 text-indigo-800 border-indigo-200' :
-                                      'bg-emerald-100/50 text-emerald-800 border-emerald-200'
-                                    }`}>
-                                      {pend.status}
-                                    </span>
-                                    {pend.prazo && (
-                                      <span className="text-xs text-muted-foreground flex items-center gap-1 font-medium">
-                                        <Clock className="w-3.5 h-3.5" /> Prazo: {new Date(pend.prazo).toLocaleDateString('pt-BR')}
+              <div className="space-y-6">
+                {properties
+                  .filter(prop => pendFilterFarmId === 'todas' || prop.id === pendFilterFarmId)
+                  .map(prop => {
+                    const propPends = filteredPendencias.filter(p => p.propriedade_id === prop.id);
+                    if (propPends.length === 0) return null;
+
+                    return (
+                      <div key={prop.id} className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-2xs">
+                        <div className="px-5 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap justify-between items-center gap-2">
+                          <h3 className="font-extrabold text-slate-900 text-sm flex items-center gap-2">
+                            <MapPin className="w-4 h-4 text-[#1B7547]" />
+                            <span>{prop.nome_fazenda}</span>
+                          </h3>
+                          <span className="text-xs font-bold text-slate-600 bg-white px-2.5 py-0.5 rounded-full border border-slate-200">
+                            {propPends.length} item(ns) exibido(s)
+                          </span>
+                        </div>
+
+                        <div className="divide-y divide-slate-100">
+                          {propPends.map(pend => {
+                            const aiItem = itemAiPlans[pend.id];
+                            const principioNum = extractPrincipioFromPendency(pend.titulo, pend.descricao);
+                            const remaining = getRemainingTimeLabel(pend.prazo, pend.status);
+
+                            return (
+                              <div key={pend.id} className="p-4 sm:p-5 hover:bg-slate-50/40 transition-colors space-y-3">
+                                <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                                  <div className="space-y-1.5 flex-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span
+                                        className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-wider border ${
+                                          pend.status === 'Pendente'
+                                            ? 'bg-amber-100/70 text-amber-800 border-amber-200'
+                                            : pend.status === 'Em Análise'
+                                            ? 'bg-indigo-100/70 text-indigo-800 border-indigo-200'
+                                            : 'bg-emerald-100/70 text-emerald-800 border-emerald-200'
+                                        }`}
+                                      >
+                                        {pend.status}
                                       </span>
+
+                                      {principioNum && (
+                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                                          Princípio {principioNum}
+                                        </span>
+                                      )}
+
+                                      {pend.prazo && (
+                                        <span className={`text-[10px] px-2 py-0.5 rounded-full border flex items-center gap-1 ${remaining.className}`}>
+                                          <Clock className="w-3 h-3" />
+                                          <span>Prazo: {new Date(pend.prazo).toLocaleDateString('pt-BR')} ({remaining.text})</span>
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    <h4 className="font-extrabold text-slate-900 text-sm">{pend.titulo}</h4>
+                                    <p className="text-xs text-slate-600 leading-relaxed">{pend.descricao}</p>
+
+                                    {pend.motivo_rejeicao && pend.status === 'Pendente' && (
+                                      <div className="mt-2 p-3 bg-amber-50/90 rounded-xl border border-amber-200 text-xs text-amber-950">
+                                        <span className="font-extrabold text-amber-900">Ajustes Solicitados pelo Técnico: </span>
+                                        "{pend.motivo_rejeicao}"
+                                      </div>
+                                    )}
+
+                                    {(pend.status === 'Em Análise' || pend.status === 'Resolvida' || pend.status === 'Resolvido') && (
+                                      <div className="mt-2 p-3 bg-emerald-50/50 rounded-xl border border-emerald-200/70 text-xs text-emerald-950 flex flex-wrap items-center justify-between gap-2">
+                                        <div>
+                                          <span className="font-bold">Resolução Enviada: </span>
+                                          <span className="italic">"{pend.resolucao_descricao || 'Comprovante anexado'}"</span>
+                                        </div>
+                                        {pend.evidencia_url && (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleOpenEvidencia(pend.evidencia_url)}
+                                            className="px-3 py-1 bg-white border border-emerald-300 text-emerald-800 rounded-lg font-bold hover:bg-emerald-50 flex items-center gap-1.5 cursor-pointer"
+                                          >
+                                            <Eye className="w-3.5 h-3.5 text-emerald-600" />
+                                            <span>Ver Evidência</span>
+                                          </button>
+                                        )}
+                                      </div>
                                     )}
                                   </div>
 
-                                  <div>
-                                    <h4 className="font-bold text-foreground text-sm tracking-tight">{pend.titulo}</h4>
-                                    <p className="text-xs text-muted-foreground leading-relaxed mt-1">{pend.descricao}</p>
-                                  </div>
-
-                                  {pend.motivo_rejeicao && pend.status === 'Pendente' && (
-                                    <div className="p-3 bg-amber-50/90 rounded-xl border border-amber-200 text-xs text-amber-950 space-y-1">
-                                      <div className="font-bold text-amber-900 flex items-center gap-1.5 text-xs">
-                                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                                        Ajustes Solicitados pelo Técnico:
-                                      </div>
-                                      <div className="italic text-amber-950 font-medium bg-amber-100/50 p-2 rounded-lg border border-amber-200/50">
-                                        "{pend.motivo_rejeicao}"
-                                      </div>
-                                    </div>
-                                  )}
-
-                                  {(pend.status === 'Em Análise' || pend.status === 'Resolvida' || pend.status === 'Resolvido') && (
-                                    <div className="p-3 bg-indigo-50/50 rounded-lg border border-indigo-100 text-xs text-indigo-900 space-y-1">
-                                      <div className="font-semibold">Resolução Enviada:</div>
-                                      <div className="italic">"{pend.resolucao_descricao}"</div>
-                                      {pend.evidencia_url && (
-                                        <button
-                                          type="button"
-                                          onClick={() => handleOpenEvidencia(pend.evidencia_url)}
-                                          className="text-indigo-700 underline font-semibold hover:text-indigo-950 flex items-center gap-1.5 cursor-pointer mt-1"
-                                        >
-                                          <Eye className="w-4 h-4 text-indigo-600 shrink-0" />
-                                          <span>Ver Evidência Anexada</span>
-                                        </button>
-                                      )}
-                                    </div>
-                                  )}
-
-                                  {/* Botões Mobile com Largura Total e Altura Confortável (min-h-[44px]) */}
-                                  <div className="flex flex-col gap-2 pt-2 border-t border-border/40">
+                                  {/* Botões de Ação da Pendência */}
+                                  <div className="flex sm:flex-row md:flex-col gap-2 shrink-0 md:w-48">
                                     {pend.status === 'Pendente' && (
                                       <button
                                         type="button"
                                         onClick={() => handleOpenResolutionModal(pend)}
-                                        className="w-full min-h-[44px] px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-all shadow-sm active:scale-[0.98] cursor-pointer flex items-center justify-center gap-1.5"
+                                        className="flex-1 py-2 px-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl transition-all shadow-xs cursor-pointer flex items-center justify-center gap-1.5"
                                       >
                                         <CheckCircle2 className="w-4 h-4" />
-                                        <span>Resolver Pendência (Anexar Evidência)</span>
+                                        <span>Resolver Pendência</span>
                                       </button>
                                     )}
+
                                     <button
                                       type="button"
-                                      onClick={() => handleAIPlanForPendency(pend)}
-                                      className="w-full min-h-[44px] px-3.5 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs rounded-xl transition-all shadow-2xs active:scale-[0.98] cursor-pointer flex items-center justify-center gap-1.5"
+                                      onClick={() => handleToggleItemAIPlan(pend)}
+                                      className="flex-1 py-2 px-3.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-extrabold text-xs rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
                                     >
-                                      <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                                      <span>Gerar Plano de Ação IA</span>
+                                      {aiItem?.loading ? (
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+                                      ) : (
+                                        <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                                      )}
+                                      <span>Como Resolver (IA)</span>
+                                      {aiItem?.plan && (
+                                        aiItem.open ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />
+                                      )}
                                     </button>
                                   </div>
                                 </div>
-                              ))}
-                            </div>
 
-                            {/* Padrão Adaptativo Desktop: Tabela Estruturada */}
-                            <div className="hidden md:block overflow-x-auto">
-                              <table className="w-full text-left text-xs border-collapse">
-                                <thead className="bg-slate-50 border-b border-border text-slate-600 font-extrabold uppercase tracking-wider text-[11px]">
-                                  <tr>
-                                    <th className="px-5 py-3.5">Status & Prazo</th>
-                                    <th className="px-5 py-3.5">Exigência / Descrição</th>
-                                    <th className="px-5 py-3.5 text-right">Ações de Resolução</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-border bg-white">
-                                  {propPends.map(pend => (
-                                    <tr key={`desk-${pend.id}`} className="hover:bg-slate-50/50 transition-colors">
-                                      <td className="px-5 py-4 align-top w-48">
-                                        <div className="space-y-1.5">
-                                          <span className={`inline-block text-[10px] font-bold px-2.5 py-0.5 rounded uppercase tracking-wider border ${
-                                            pend.status === 'Pendente' ? 'bg-amber-100/50 text-amber-800 border-amber-200' :
-                                            pend.status === 'Em Análise' ? 'bg-indigo-100/50 text-indigo-800 border-indigo-200' :
-                                            'bg-emerald-100/50 text-emerald-800 border-emerald-200'
-                                          }`}>
-                                            {pend.status}
-                                          </span>
-                                          {pend.prazo && (
-                                            <p className="text-[11px] text-muted-foreground flex items-center gap-1 font-medium">
-                                              <Clock className="w-3.5 h-3.5" /> {new Date(pend.prazo).toLocaleDateString('pt-BR')}
-                                            </p>
-                                          )}
-                                        </div>
-                                      </td>
-                                      <td className="px-5 py-4 align-top">
-                                        <h4 className="font-bold text-foreground text-sm tracking-tight">{pend.titulo}</h4>
-                                        <p className="text-xs text-muted-foreground leading-relaxed mt-1">{pend.descricao}</p>
-                                        {pend.motivo_rejeicao && pend.status === 'Pendente' && (
-                                          <div className="mt-2 p-2.5 bg-amber-50/90 rounded-lg border border-amber-200 text-xs text-amber-950">
-                                            <span className="font-bold">Ajustes Solicitados: </span>"{pend.motivo_rejeicao}"
-                                          </div>
-                                        )}
-                                        {(pend.status === 'Em Análise' || pend.status === 'Resolvida' || pend.status === 'Resolvido') && (
-                                          <div className="mt-2 p-2.5 bg-indigo-50/50 rounded-lg border border-indigo-100 text-xs text-indigo-900">
-                                            <span className="font-semibold">Resolução: </span>"{pend.resolucao_descricao}"
-                                            {pend.evidencia_url && (
-                                              <button
-                                                type="button"
-                                                onClick={() => handleOpenEvidencia(pend.evidencia_url)}
-                                                className="text-indigo-700 underline font-semibold hover:text-indigo-950 flex items-center gap-1 cursor-pointer mt-1"
-                                              >
-                                                <Eye className="w-3.5 h-3.5 text-indigo-600" />
-                                                <span>Ver Evidência</span>
-                                              </button>
-                                            )}
-                                          </div>
-                                        )}
-                                      </td>
-                                      <td className="px-5 py-4 align-top text-right w-56">
-                                        <div className="flex flex-col items-end gap-2">
-                                          {pend.status === 'Pendente' && (
-                                            <button
-                                              type="button"
-                                              onClick={() => handleOpenResolutionModal(pend)}
-                                              className="w-full px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-all shadow-sm active:scale-[0.98] cursor-pointer flex items-center justify-center gap-1.5"
-                                            >
-                                              <CheckCircle2 className="w-4 h-4" />
-                                              <span>Resolver</span>
-                                            </button>
-                                          )}
-                                          <button
-                                            type="button"
-                                            onClick={() => handleAIPlanForPendency(pend)}
-                                            className="w-full px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs rounded-xl transition-all shadow-2xs active:scale-[0.98] cursor-pointer flex items-center justify-center gap-1.5"
-                                          >
-                                            <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                                            <span>Plano IA</span>
-                                          </button>
-                                        </div>
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </>
-                        )}
+                                {/* Painel Expansível IA Nível 1 (Direto na Pendência) */}
+                                {aiItem?.open && (
+                                  <div className="mt-2 p-4 bg-indigo-950/5 border border-indigo-200 rounded-xl space-y-2 animate-fade-in">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-[11px] font-extrabold uppercase tracking-wider text-indigo-800 flex items-center gap-1.5">
+                                        <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                                        Orientação Prática RTRS (IA)
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setItemAiPlans(prev => ({
+                                            ...prev,
+                                            [pend.id]: { ...prev[pend.id], open: false }
+                                          }))
+                                        }
+                                        className="text-xs text-slate-400 hover:text-slate-600 cursor-pointer"
+                                      >
+                                        <X className="w-4 h-4" />
+                                      </button>
+                                    </div>
+                                    {aiItem.loading ? (
+                                      <div className="flex items-center gap-2 text-xs text-indigo-700 py-2">
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                        <span>Consultando diretrizes RTRS para este critério...</span>
+                                      </div>
+                                    ) : (
+                                      <div className="text-xs text-slate-800 whitespace-pre-line leading-relaxed font-medium">
+                                        {aiItem.plan}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
               </div>
             )}
-          {/* Modal de envio de resolução */}
+          </div>
+
+          {/* Modal de Envio de Resolução com IA Integrada */}
           {selectedPendency && (
             <Modal
               isOpen={!!selectedPendency}
@@ -1566,9 +2265,27 @@ export default function DashboardProdutor() {
               title={`Resolver Pendência: ${selectedPendency.titulo}`}
             >
               <form onSubmit={handleSubmitResolution} className="space-y-4">
-                <p className="text-sm text-muted-foreground font-medium leading-relaxed mb-4">
-                  {selectedPendency.descricao}
-                </p>
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                  <p className="text-xs text-slate-700 font-medium leading-relaxed">
+                    {selectedPendency.descricao}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleItemAIPlan(selectedPendency)}
+                    className="inline-flex items-center gap-1.5 text-xs font-extrabold text-indigo-700 hover:text-indigo-900 cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>{itemAiPlans[selectedPendency.id]?.open ? 'Ocultar dica da IA' : 'Ver orientação passo a passo (IA)'}</span>
+                  </button>
+                  {itemAiPlans[selectedPendency.id]?.open && (
+                    <div className="p-3 bg-indigo-50/80 border border-indigo-200 rounded-lg text-xs text-slate-800 whitespace-pre-line leading-relaxed">
+                      {itemAiPlans[selectedPendency.id]?.loading
+                        ? 'Gerando recomendação RTRS...'
+                        : itemAiPlans[selectedPendency.id]?.plan}
+                    </div>
+                  )}
+                </div>
+
                 <div className="space-y-2">
                   <label className="text-sm font-semibold text-foreground">Descrição da Resolução</label>
                   <textarea
@@ -1576,13 +2293,14 @@ export default function DashboardProdutor() {
                     rows={4}
                     value={resolucaoTexto}
                     onChange={e => setResolucaoTexto(e.target.value)}
-                    placeholder="Descreva as ações que você tomou para resolver esta pendência..."
-                    className="w-full px-3 py-2 bg-background border border-input rounded-md focus:ring-2 focus:ring-primary focus:border-transparent text-sm resize-none"
+                    placeholder="Descreva as ações que você tomou para regularizar este item..."
+                    className="w-full px-3 py-2 bg-background border border-input rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent text-sm resize-none"
                   />
                 </div>
-                 <div className="space-y-2">
-                  <label className="text-sm font-semibold text-foreground block">Arquivo de Evidência (Imagem ou PDF)</label>
-                  <div className="flex gap-2">
+
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-foreground block">Arquivo de Evidência (Foto ou PDF)</label>
+                  <div className="flex items-center gap-2">
                     <input
                       type="file"
                       id="evidence-file-upload"
@@ -1594,96 +2312,45 @@ export default function DashboardProdutor() {
                       type="button"
                       onClick={() => document.getElementById('evidence-file-upload')?.click()}
                       disabled={uploadingFile}
-                      className="px-4 py-2 border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-md shadow-sm transition-all cursor-pointer flex items-center gap-1.5"
+                      className="px-4 py-2 border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-xl shadow-2xs transition-all cursor-pointer flex items-center gap-1.5"
                     >
                       {uploadingFile ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImageIcon className="w-3.5 h-3.5 text-primary" />}
-                      {uploadingFile ? 'Carregando...' : 'Selecionar Arquivo'}
+                      {uploadingFile ? 'Carregando...' : 'Anexar Foto / PDF'}
                     </button>
                     {evidenciaUrl && (
-                      <span className="text-xs text-emerald-700 font-bold self-center truncate max-w-[200px]" title={evidenciaUrl}>
-                        ✓ Arquivo Carregado
+                      <span className="text-xs text-emerald-700 font-bold truncate max-w-[220px]" title={evidenciaUrl}>
+                        ✓ Arquivo Anexado
                       </span>
                     )}
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <label className="text-sm font-semibold text-foreground">Ou insira o Link da Evidência manualmente</label>
-                  <input
-                    type="url"
-                    value={evidenciaUrl}
-                    onChange={e => setEvidenciaUrl(e.target.value)}
-                    placeholder="https://exemplo.com/comprovante.pdf"
-                    className="w-full px-3 py-2 bg-background border border-input rounded-md focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
-                  />
-                </div>
                 <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-border">
                   <button
                     type="button"
                     onClick={() => setSelectedPendency(null)}
-                    className="px-4 py-2 font-medium text-sm rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors"
+                    className="px-4 py-2 font-bold text-xs rounded-xl bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer"
                   >
                     Cancelar
                   </button>
                   <button
                     type="submit"
                     disabled={isSubmittingResolution}
-                    className="px-4 py-2 font-medium text-sm rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors flex items-center gap-2 cursor-pointer"
+                    className="px-5 py-2 font-extrabold text-xs rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 transition-colors flex items-center gap-2 cursor-pointer"
                   >
                     {isSubmittingResolution && <Loader2 className="w-4 h-4 animate-spin" />}
-                    Enviar para Revisão
+                    Enviar para Revisão Técnica
                   </button>
                 </div>
               </form>
             </Modal>
           )}
         </div>
-      </div>
       )}
 
-      {activeTab === 'ia' && (
-        <div key={`prod-ia-${activeTab}`} className="max-w-4xl mx-auto space-y-6 animate-fade-in-up duration-300">
-          <div className="bg-card p-8 rounded-2xl border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)]">
-            <h2 className="text-2xl font-bold text-foreground mb-2 flex items-center gap-2">
-              <Sparkles className="w-6 h-6 text-indigo-500" />
-              {content.ia_titulo}
-            </h2>
-            <p className="text-muted-foreground mb-6">
-              {content.ia_descricao}
-            </p>
-            
-            <div className="space-y-4">
-              <textarea 
-                value={pendingIssues}
-                onChange={(e) => setPendingIssues(e.target.value)}
-                placeholder={content.ia_placeholder}
-                rows={5}
-                className="w-full p-4 bg-background border border-input rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all shadow-sm text-sm resize-none"
-              />
-              <button 
-                onClick={handleGenerateAIPlan}
-                disabled={isAiLoading || !pendingIssues.trim()}
-                className="w-full flex items-center justify-center gap-2 bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-3 rounded-xl font-semibold transition-all shadow-sm hover:shadow-md active:scale-[0.98]"
-              >
-                {isAiLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />}
-                {isAiLoading ? content.ia_botao_carregando : content.ia_botao_gerar}
-              </button>
-            </div>
-          </div>
-
-          {hasGeneratedPlan && (
-            <AIInsightsPanel 
-              title={content.ia_painel_titulo} 
-              insights={aiActionPlan} 
-              isLoading={isAiLoading} 
-            />
-          )}
-        </div>
-      )}
-
+      {/* ABA 3: DOCUMENTAÇÃO & EVIDÊNCIAS */}
       {activeTab === 'documentacao' && (
         <div className="space-y-6 animate-fade-in-up max-w-6xl mx-auto">
-          {/* Cabeçalho */}
           <div className="bg-card p-4 sm:p-6 rounded-2xl border border-slate-100 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
               <h2 className="text-xl sm:text-2xl font-bold text-foreground flex items-center gap-2">
@@ -1701,7 +2368,7 @@ export default function DashboardProdutor() {
                   warning('Você precisa ter pelo menos uma propriedade cadastrada para anexar documentos.');
                   return;
                 }
-                setDocFormData(prev => ({ ...prev, propriedade_id: properties[0].id }));
+                setDocFormData(prev => ({ ...prev, propriedade_id: activeFarm?.id || properties[0].id }));
                 setShowUploadDocModal(true);
               }}
               className="w-full md:w-auto min-h-[44px] flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all shadow-sm cursor-pointer shrink-0"
@@ -1717,7 +2384,7 @@ export default function DashboardProdutor() {
             </div>
           ) : (
             <div className="space-y-6">
-              {/* SEÇÃO 1: DOCUMENTOS GERAIS DA FAZENDA (PADRÃO ADAPTATIVO: CARDS NO MOBILE / TABELA NO DESKTOP) */}
+              {/* SEÇÃO 1: DOCUMENTOS GERAIS DA FAZENDA */}
               <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-3 gap-2">
                   <h3 className="text-sm sm:text-base font-extrabold text-slate-900 flex items-center gap-2">
@@ -1732,9 +2399,9 @@ export default function DashboardProdutor() {
                 {(() => {
                   const genMap = new Map<string, any>();
                   documentos
-                    .filter(d => ['CAR', 'LAU', 'EPI', 'Outros', 'Armazenamento Geral'].includes(d.categoria) || d.origem === 'Armazenamento Geral')
+                    .filter(d => ['CAR', 'LAU', 'EPI', 'Contrato', 'Outros', 'Armazenamento Geral'].includes(d.categoria) || d.origem === 'Armazenamento Geral')
                     .forEach(d => {
-                      const key = d.categoria;
+                      const key = `${d.propriedade_id}_${d.categoria}_${d.nome}`;
                       const existing = genMap.get(key);
                       if (!existing || new Date(d.data).getTime() > new Date(existing.data).getTime()) {
                         genMap.set(key, d);
@@ -1752,7 +2419,6 @@ export default function DashboardProdutor() {
 
                   return (
                     <>
-                      {/* Mobile: Cards Empilhados com Botões Confortáveis */}
                       <div className="block md:hidden space-y-3">
                         {latestGenDocs.map((doc) => (
                           <div key={`mob-gen-${doc.id}`} className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
@@ -1795,7 +2461,6 @@ export default function DashboardProdutor() {
                         ))}
                       </div>
 
-                      {/* Desktop: Tabela Estruturada */}
                       <div className="hidden md:block overflow-x-auto">
                         <table className="w-full text-left text-xs border-collapse">
                           <thead className="bg-slate-50 border-b border-border text-slate-600 font-extrabold uppercase tracking-wider text-[11px]">
@@ -1854,7 +2519,7 @@ export default function DashboardProdutor() {
                 })()}
               </div>
 
-              {/* SEÇÃO 2: EVIDÊNCIAS ORGANIZADAS PELOS 5 PRINCÍPIOS RTRS (PADRÃO ADAPTATIVO: CARDS NO MOBILE / TABELA NO DESKTOP) */}
+              {/* SEÇÃO 2: EVIDÊNCIAS ORGANIZADAS PELOS 5 PRINCÍPIOS RTRS */}
               <div className="space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
                   <h3 className="text-base sm:text-lg font-extrabold text-slate-900 flex items-center gap-2">
@@ -1874,7 +2539,13 @@ export default function DashboardProdutor() {
                   const mapCrit = new Map<string, any>();
 
                   documentos.forEach(doc => {
-                    if (doc.nome.includes(`Princípio ${principio.num}`) || (principio.num === 1 && doc.categoria === 'Checklist RTRS' && !doc.nome.includes('Princípio'))) {
+                    const pExtracted = extractPrincipioFromPendency(doc.nome, '');
+                    const matchesPrincipio =
+                      doc.nome.includes(`Princípio ${principio.num}`) ||
+                      pExtracted === principio.num ||
+                      (principio.num === 1 && doc.categoria === 'Checklist RTRS' && !doc.nome.includes('Princípio') && !pExtracted);
+
+                    if (matchesPrincipio) {
                       const key = doc.nome;
                       const existing = mapCrit.get(key);
                       if (!existing || new Date(doc.data).getTime() > new Date(existing.data).getTime()) {
@@ -1906,7 +2577,6 @@ export default function DashboardProdutor() {
                           </div>
                         ) : (
                           <>
-                            {/* Mobile: Cards Empilhados com Botão Confortável min-h-[44px] */}
                             <div className="block md:hidden space-y-3">
                               {principioDocs.map((doc) => (
                                 <div key={`mob-p-${doc.id}`} className="p-3.5 bg-slate-50/70 rounded-xl border border-slate-200 space-y-2.5">
@@ -1934,7 +2604,6 @@ export default function DashboardProdutor() {
                               ))}
                             </div>
 
-                            {/* Desktop: Tabela de Evidências */}
                             <div className="hidden md:block overflow-x-auto">
                               <table className="w-full text-left text-xs border-collapse">
                                 <thead className="bg-slate-50 border-b border-border text-slate-600 font-extrabold uppercase tracking-wider text-[11px]">
@@ -1992,7 +2661,7 @@ export default function DashboardProdutor() {
                     <X className="w-4 h-4" />
                   </button>
                 </div>
-                
+
                 <form onSubmit={handleSaveDoc} className="p-6 space-y-4">
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-gray-600 uppercase">Propriedade Vinculada</label>
@@ -2110,15 +2779,18 @@ export default function DashboardProdutor() {
         </div>
       )}
 
-      {/* Modal de Questionário RTRS */}
+      {/* Modal de Questionário RTRS (Autoavaliação) */}
       {showQuestionario && (
-        <QuestionarioRTRS 
-          modo="autoavaliacao"
-          propriedadeNome={farmsData.features.find(f => f.properties?.id === showQuestionario)?.properties?.name || 'Fazenda'}
-          onClose={() => setShowQuestionario(null)}
-          onComplete={() => handleFinishAutoavaliacao(showQuestionario)}
-          propriedadeId={showQuestionario.toString()}
-        />
+        <ModalErrorBoundary onClose={() => setShowQuestionario(null)}>
+          <QuestionarioRTRS
+            modo="autoavaliacao"
+            propriedadeNome={properties.find(p => p.id === showQuestionario)?.nome_fazenda || 'Fazenda'}
+            onClose={() => setShowQuestionario(null)}
+            onComplete={() => handleFinishAutoavaliacao()}
+            propriedadeId={showQuestionario.toString()}
+            auditoriaId={farmMetricsMap[showQuestionario.toString()]?.auditoriaId || undefined}
+          />
+        </ModalErrorBoundary>
       )}
 
       {/* Confirmação de Exclusão de Documento */}
@@ -2207,35 +2879,43 @@ export default function DashboardProdutor() {
             ) : (
               <PanoramaScoreRTRS
                 propriedadeNome={panoramaModalFarm.nome_fazenda}
-                municipio={panoramaModalFarm.municipio || 'Mato Grosso do Sul'}
+                municipio={resolveMunicipioFromCarOrName(panoramaModalFarm.codigo_car, panoramaModalFarm.nome_fazenda, panoramaModalFarm.municipio)}
                 produtorNome={panoramaModalFarm.nome_produtor}
                 criterios={panoramaCriteriosList}
                 readOnly={true}
-                etapa={resolveFarmEtapa(panoramaModalFarm.id, panoramaModalFarm.etapa, null)}
+                etapa={farmMetricsMap[panoramaModalFarm.id]?.etapa || resolveFarmEtapa(panoramaModalFarm.id, panoramaModalFarm.etapa, null)}
                 onClose={() => setPanoramaModalFarm(null)}
-                onBackToQuestions={() => {
-                  const fId = panoramaModalFarm.id;
-                  setPanoramaModalFarm(null);
-                  setShowQuestionario(fId);
-                }}
+                onBackToQuestions={
+                  farmMetricsMap[panoramaModalFarm.id]?.isSubmittedByTech
+                    ? undefined
+                    : () => {
+                        const fId = panoramaModalFarm.id;
+                        setPanoramaModalFarm(null);
+                        setShowQuestionario(fId);
+                      }
+                }
               />
             )}
           </div>
         </Modal>
       )}
 
-      {/* Modal Obrigatorio de Onboarding de Primeiro Acesso */}
-      <OnboardingQuestionarioModal
-        isOpen={showOnboardingModal}
-        producerName={producerName}
-        onComplete={(answers, alerts) => {
-          setShowOnboardingModal(false);
-          setOnboardingAnswers(answers);
-          fetchFarmsAndPendencias();
-        }}
-      />
-
-
+      {/* Modal de Onboarding / Revisão do Diagnóstico Inicial */}
+      <ModalErrorBoundary onClose={() => setShowOnboardingModal(false)}>
+        <OnboardingQuestionarioModal
+          isOpen={showOnboardingModal}
+          producerName={producerName}
+          initialAnswers={onboardingAnswers}
+          onClose={isManualOnboardingReview ? () => setShowOnboardingModal(false) : undefined}
+          onComplete={(answers, alerts) => {
+            setShowOnboardingModal(false);
+            setIsManualOnboardingReview(false);
+            setOnboardingAnswers(answers);
+            setOnboardingAlerts(alerts);
+            fetchFarmsAndPendencias();
+          }}
+        />
+      </ModalErrorBoundary>
     </div>
   );
 }

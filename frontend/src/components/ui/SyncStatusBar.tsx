@@ -88,7 +88,7 @@ export default function SyncStatusBar() {
     !isSyncing &&
     pendingCounts.total === 0 &&
     isOnline &&
-    connectionState !== 'OFFLINE' &&
+    (connectionState as string) !== 'OFFLINE' &&
     (pendingCounts.deadLetter || 0) === 0;
 
   const renderContent = () => {

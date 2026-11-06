@@ -210,7 +210,7 @@ export async function resolveEvidenceUrlAsync(params: EvidenceResolutionParams):
 
       if (!listErr && storageFiles && storageFiles.length > 0) {
         // Ordena pelo mais recente
-        storageFiles.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        storageFiles.sort((a: any, b: any) => (b.created_at || '').localeCompare(a.created_at || ''));
         const targetFile = storageFiles[0];
 
         const { data: pubData } = supabase.storage

@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { ShieldAlert, CheckCircle2, AlertTriangle, HelpCircle, Users, Building2, Award, ChevronRight, ChevronLeft, Sparkles, FileText, Check, ArrowRight, ShieldCheck, Leaf } from 'lucide-react';
+import { ShieldAlert, CheckCircle2, AlertTriangle, HelpCircle, Users, Building2, Award, ChevronRight, ChevronLeft, Sparkles, FileText, Check, ArrowRight, ShieldCheck, Leaf, X, Loader2 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../context/ToastContext';
+import { useAuth } from '../../context/AuthContext';
 
 export interface OnboardingAnswers {
   q1_conversao_vegetacao: string; // 'nao' | 'sim_autorizado' | 'sim_sem_licenca' | 'nao_certeza'
@@ -19,11 +20,14 @@ export interface OnboardingAnswers {
 interface Props {
   isOpen: boolean;
   onComplete: (answers: OnboardingAnswers, generatedAlerts: string[]) => void;
+  onClose?: () => void;
+  initialAnswers?: OnboardingAnswers | null;
   producerName?: string;
 }
 
-export default function OnboardingQuestionarioModal({ isOpen, onComplete, producerName = 'Produtor Rural' }: Props) {
+export default function OnboardingQuestionarioModal({ isOpen, onComplete, onClose, initialAnswers, producerName = 'Produtor Rural' }: Props) {
   const { success, warning, error: toastError } = useToast();
+  const { user: authContextUser } = useAuth();
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3 | 4>(1);
   const [submitting, setSubmitting] = useState(false);
 
@@ -39,6 +43,12 @@ export default function OnboardingQuestionarioModal({ isOpen, onComplete, produc
     q7_outras_certificacoes: '',
     q7_quais_certificacoes: ''
   });
+
+  useEffect(() => {
+    if (isOpen && initialAnswers) {
+      setAnswers(initialAnswers);
+    }
+  }, [isOpen, initialAnswers]);
 
   if (!isOpen) return null;
 
@@ -98,8 +108,14 @@ export default function OnboardingQuestionarioModal({ isOpen, onComplete, produc
     localStorage.setItem('ms_onboarding_completed', 'true');
 
     try {
-      const authRes = await supabase.auth.getUser();
-      const user = authRes?.data?.user;
+      let user: any = null;
+      try {
+        const authRes = await supabase.auth.getUser();
+        user = authRes?.data?.user;
+      } catch (e) {}
+      if (!user) {
+        user = authContextUser;
+      }
       const nowIso = new Date().toISOString();
 
       if (user?.id) {
@@ -114,17 +130,19 @@ export default function OnboardingQuestionarioModal({ isOpen, onComplete, produc
           console.warn('Aviso auth updateUser:', e);
         }
 
-        // 3. Atualizar tabela perfis se a estrutura existir
+        // 3. Atualizar tabela perfis com .update() (evita violação de NOT NULL em nome/email no upsert)
         try {
-          await supabase.from('perfis').upsert([{
-            id: user.id,
-            onboarding_concluido: true,
-            onboarding_respostas: answers,
-            onboarding_alertas: alerts,
-            updated_at: nowIso
-          }]);
+          await supabase
+            .from('perfis')
+            .update({
+              onboarding_concluido: true,
+              onboarding_respostas: answers,
+              onboarding_alertas: alerts,
+              updated_at: nowIso
+            })
+            .eq('id', user.id);
         } catch (e) {
-          console.warn('Aviso perfis upsert:', e);
+          console.warn('Aviso perfis update:', e);
         }
 
         // 4. Se houver alertas críticos (como EPI parcial ou depósito), criar pendências automáticas no sistema
@@ -193,9 +211,21 @@ export default function OnboardingQuestionarioModal({ isOpen, onComplete, produc
               </p>
             </div>
 
-            <div className="bg-white/10 px-3 py-1.5 rounded-2xl border border-white/20 text-right shrink-0">
-              <span className="text-[10px] font-bold text-emerald-200 uppercase block">Etapa</span>
-              <span className="text-sm font-black text-white">{currentStep} de 4</span>
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="bg-white/10 px-3 py-1.5 rounded-2xl border border-white/20 text-right">
+                <span className="text-[10px] font-bold text-emerald-200 uppercase block">Etapa</span>
+                <span className="text-sm font-black text-white">{currentStep} de 4</span>
+              </div>
+              {onClose && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+                  title="Fechar"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              )}
             </div>
           </div>
 

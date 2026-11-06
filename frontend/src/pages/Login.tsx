@@ -29,12 +29,12 @@ export default function Login() {
   };
 
   const TEST_USERS: Record<string, { name: string; role: string; id?: string }> = {
-    'gestor@ms.gov.br': { name: 'Gestor MS', role: 'gestor', id: '7e2b1611-f95a-4fac-b75a-487af55d35ee' },
-    'tecnico@ms.gov.br': { name: 'Técnico MS', role: 'tecnico', id: 'bb03c918-ed79-479c-87bf-c8f65a95ac2c' },
-    'produtor@ms.gov.br': { name: 'Produtor MS', role: 'produtor', id: '97f9304a-ff10-4cc4-8ce0-9ea1a57e7206' },
+    'gestor@ms.gov.br': { name: 'Gestor Teste MS', role: 'gestor', id: 'b223fcd1-62b1-4ff2-8673-238f688771a0' },
+    'tecnico@ms.gov.br': { name: 'Técnico Teste MS', role: 'tecnico', id: '3fd88694-dbb3-4b43-9d5f-55d5e4381229' },
+    'produtor@ms.gov.br': { name: 'Produtor Teste MS', role: 'produtor', id: '1c51f48f-ddb9-43f2-a7dc-f2fd364b91fc' },
     'analistacampo1@aprosojams.org.br': { name: 'Patrícia Vilela Soares', role: 'tecnico', id: 'b02f1f87-b998-4f4f-a66b-e169b28c0df5' },
     'analistacampo2@aprosojams.org.br': { name: 'Alexandre Santos Soares', role: 'tecnico', id: 'cf4ebd0f-f933-4853-8adc-3a65da55ec6d' },
-    'edward.produtor@aprosojams.org.br': { name: 'Edward Produtor', role: 'produtor', id: '7a31930a-3065-4769-a71e-2eb2de0dc82c' }
+    'edward.produtor@aprosojams.org.br': { name: 'Edward Produtor', role: 'produtor', id: '3882714e-398b-4ce3-b10c-272b3fe59f92' }
   };
 
   const inferRole = (cleanEmail: string): string => {
@@ -57,6 +57,13 @@ export default function Login() {
           const { data: prof } = await supabase.from('perfis').select('role').eq('id', data.user.id).maybeSingle();
           role = prof?.role || inferRole(cleanEmail);
         }
+        if (role === 'produtor') {
+          supabase.rpc('reconciliar_perfil_produtor', {
+            p_auth_id: data.user.id,
+            p_email: cleanEmail,
+            p_role: 'produtor'
+          }).then(() => {});
+        }
         setFallbackSession(data.user, role);
         redirectByRole(role);
         return true;
@@ -73,10 +80,36 @@ export default function Login() {
         .ilike('email', cleanEmail)
         .maybeSingle();
 
+      if (profile) {
+        try {
+          await supabase.rpc('reconciliar_perfil_produtor', {
+            p_auth_id: profile.id,
+            p_email: cleanEmail,
+            p_nome: profile.nome,
+            p_telefone: profile.telefone,
+            p_regiao: profile.regiao,
+            p_role: profile.role || 'produtor'
+          });
+          // Tenta novamente login real no Supabase Auth após reconciliar a conta Auth
+          const { data: retryAuth, error: retryErr } = await supabase.auth.signInWithPassword({
+            email: cleanEmail,
+            password: pass || 'Senha@123'
+          });
+          if (!retryErr && retryAuth?.user) {
+            const role = profile.role || retryAuth.user.user_metadata?.role || inferRole(cleanEmail);
+            setFallbackSession(retryAuth.user, role);
+            redirectByRole(role);
+            return true;
+          }
+        } catch (recErr) {
+          console.warn('Aviso ao reconciliar conta no login:', recErr);
+        }
+      }
+
       const knownInfo = TEST_USERS[cleanEmail];
       const userName = profile?.nome || knownInfo?.name || 'Usuário MS Sustentável';
       const userRole = profile?.role || knownInfo?.role || inferRole(cleanEmail);
-      const userId = profile?.id || knownInfo?.id || 'b02f1f87-b998-4f4f-a66b-e169b28c0df5';
+      const userId = profile?.id || knownInfo?.id || '1c51f48f-ddb9-43f2-a7dc-f2fd364b91fc';
 
       if (profile || knownInfo || cleanEmail.endsWith('@ms.gov.br') || cleanEmail.endsWith('@aprosojams.org.br')) {
         const fallbackUser = {
@@ -113,8 +146,6 @@ export default function Login() {
     }
     setLoading(false);
   };
-
-
 
   return (
     <div className="min-h-[80vh] flex flex-col justify-center py-12 sm:px-6 lg:px-8">
@@ -212,8 +243,6 @@ export default function Login() {
             </div>
           </div>
         </div>
-
-
       </div>
     </div>
   );

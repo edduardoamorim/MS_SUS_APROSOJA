@@ -9,7 +9,10 @@ import { useToast } from '../../context/ToastContext';
 import { getRemainingTimeLabel } from '../../lib/dateUtils';
 import PropertyCodeInput from '../../components/form/PropertyCodeInput';
 import type { PropertyOrigin } from '../../components/form/PropertyCodeInput';
+import ProducerInput from '../../components/form/ProducerInput';
 import { TableRowSkeleton } from '../../components/ui/Skeleton';
+import AuditDetailModal from '../../components/auditoria/AuditDetailModal';
+import { syncPendencyStatusWithRtrsAnswer } from '../../lib/pendenciaService';
 
 import { resolveFarmEtapa, persistFarmEtapa } from '../../lib/etapaUtils';
 import { cleanEvidenceUrl, isPdfEvidence } from '../../lib/evidenceService';
@@ -46,7 +49,10 @@ export default function GestorPropriedades() {
   const [itemToDelete, setItemToDelete] = useState<any>(null);
 
   // Form State
+  const [producers, setProducers] = useState<any[]>([]);
+  const [produtorMode, setProdutorMode] = useState<'existente' | 'novo'>('existente');
   const [formData, setFormData] = useState({ 
+    produtor_id: '',
     nome_fazenda: '', 
     nome_produtor: '', 
     email_produtor: '',
@@ -67,6 +73,7 @@ export default function GestorPropriedades() {
   const [newPendData, setNewPendData] = useState({ titulo: '', descricao: '', prazo: '', tecnico_responsavel_id: '' });
   const [technicians, setTechnicians] = useState<any[]>([]);
   const [deletePendConfirmId, setDeletePendConfirmId] = useState<string | null>(null);
+  const [selectedAuditForModal, setSelectedAuditForModal] = useState<any | null>(null);
 
   useEffect(() => {
     fetchPropriedades();
@@ -114,13 +121,30 @@ export default function GestorPropriedades() {
     setLoading(true);
     try {
       const techList = await fetchTechnicians();
-      const { data: propsData, error: propsErr } = await supabase.from('propriedades').select('*').order('created_at', { ascending: false });
-      const { data: auditsData } = await supabase.from('auditorias').select('id, propriedade_id, tecnico_responsavel_id, status, etapa').order('created_at', { ascending: false });
-      const { data: pendsData } = await supabase.from('pendencias').select('propriedade_id, tecnico_responsavel_id');
+      const [propsRes, auditsRes, pendsRes, prodsRes] = await Promise.all([
+        supabase.from('propriedades').select('*').order('created_at', { ascending: false }),
+        supabase.from('auditorias').select('id, propriedade_id, tecnico_responsavel_id, status, etapa').order('created_at', { ascending: false }),
+        supabase.from('pendencias').select('propriedade_id, tecnico_responsavel_id'),
+        supabase.from('perfis').select('id, nome, email, telefone, regiao').eq('role', 'produtor').order('nome', { ascending: true })
+      ]);
+
+      const propsData = propsRes.data;
+      const propsErr = propsRes.error;
+      const auditsData = auditsRes.data;
+      const pendsData = pendsRes.data;
+      const prodsList = prodsRes.data || [];
+      setProducers(prodsList);
+
+      const prodById = new Map<string, any>();
+      const prodByName = new Map<string, any>();
+      prodsList.forEach((pr: any) => {
+        if (pr.id) prodById.set(pr.id, pr);
+        if (pr.nome) prodByName.set(pr.nome.trim().toLowerCase(), pr);
+      });
 
       if (!propsErr && propsData) {
         const auditMap = new Map();
-        (auditsData || []).forEach(a => {
+        (auditsData || []).forEach((a: any) => {
           if (a.propriedade_id) {
             const existing = auditMap.get(a.propriedade_id);
             if (!existing || (!existing.tecnico_responsavel_id && a.tecnico_responsavel_id)) {
@@ -130,7 +154,7 @@ export default function GestorPropriedades() {
         });
 
         const pendTechMap = new Map();
-        (pendsData || []).forEach(p => {
+        (pendsData || []).forEach((p: any) => {
           if (p.propriedade_id && p.tecnico_responsavel_id) {
             pendTechMap.set(p.propriedade_id, p.tecnico_responsavel_id);
           }
@@ -140,8 +164,9 @@ export default function GestorPropriedades() {
         const alexandre = techList.find(t => t.nome?.toLowerCase().includes('alexandre') || t.email?.includes('analistacampo2'));
         const vistoriador = techList.find(t => t.nome?.toLowerCase().includes('vistoriador') || t.email?.includes('tecnico@ms'));
 
-        const merged = propsData.map(p => {
+        const merged = propsData.map((p: any) => {
           const audit = auditMap.get(p.id);
+          const linkedProd = (p.produtor_id && prodById.get(p.produtor_id)) || (p.nome_produtor && prodByName.get(p.nome_produtor.trim().toLowerCase())) || null;
           
           let resolvedTecId = p.tecnico_id || p.tecnico_responsavel_id || audit?.tecnico_responsavel_id || pendTechMap.get(p.id) || null;
 
@@ -160,6 +185,10 @@ export default function GestorPropriedades() {
 
           return {
             ...p,
+            produtor_id: p.produtor_id || linkedProd?.id || null,
+            nome_produtor: p.nome_produtor || linkedProd?.nome || 'Produtor Rural',
+            email_produtor: p.email_produtor || linkedProd?.email || '',
+            telefone_produtor: p.telefone_produtor || linkedProd?.telefone || '',
             etapa: e,
             auditId: audit?.id || null,
             tecnico_id: resolvedTecId,
@@ -221,6 +250,9 @@ export default function GestorPropriedades() {
       // Atualizar também na tabela de propriedades
       try {
         await supabase.from('propriedades').update({ tecnico_id: newTechId || null }).eq('id', propId);
+      try {
+        await supabase.from('pendencias').update({ tecnico_responsavel_id: newTechId || null }).eq('propriedade_id', propId);
+      } catch (e) {}
       } catch (e) {}
       try {
         await supabase.from('propriedades').update({ tecnico_responsavel_id: newTechId || null }).eq('id', propId);
@@ -243,9 +275,14 @@ export default function GestorPropriedades() {
 
   const handleOpenCreate = () => {
     setEditingProp(null);
+    setProdutorMode('existente');
     setFormData({ 
+      produtor_id: '',
       nome_fazenda: '', 
       nome_produtor: '', 
+      email_produtor: '',
+      telefone_produtor: '',
+      area_soja_ha: '',
       codigo_car: '', 
       codigo_sigef: '', 
       origem_cadastro: 'CAR', 
@@ -256,13 +293,21 @@ export default function GestorPropriedades() {
 
   const handleOpenEdit = (prop: any) => {
     setEditingProp(prop);
+    const matchedProd = producers.find(
+      pr => pr.id === prop.produtor_id || (prop.nome_produtor && pr.nome?.trim().toLowerCase() === prop.nome_produtor.trim().toLowerCase())
+    );
+    setProdutorMode(matchedProd ? 'existente' : 'novo');
     setFormData({ 
-      nome_fazenda: prop.nome_fazenda, 
-      nome_produtor: prop.nome_produtor, 
+      produtor_id: matchedProd?.id || prop.produtor_id || '',
+      nome_fazenda: prop.nome_fazenda || '', 
+      nome_produtor: matchedProd?.nome || prop.nome_produtor || '', 
       codigo_car: prop.codigo_car || '',
       codigo_sigef: prop.codigo_sigef || '',
       origem_cadastro: prop.origem_cadastro || 'CAR',
-      geom: prop.geom || null
+      geom: prop.geom || null,
+      area_soja_ha: prop.area_soja_ha ? String(prop.area_soja_ha) : '',
+      email_produtor: prop.email_produtor || matchedProd?.email || '',
+      telefone_produtor: prop.telefone_produtor || matchedProd?.telefone || ''
     });
     setIsFormOpen(true);
   };
@@ -274,6 +319,16 @@ export default function GestorPropriedades() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (produtorMode === 'existente' && !formData.produtor_id && !formData.nome_produtor.trim()) {
+      warning('Selecione um produtor cadastrado na lista ou mude para "Cadastrar Novo Produtor".');
+      return;
+    }
+    if (!formData.nome_produtor.trim()) {
+      warning('Informe o nome completo do produtor rural.');
+      return;
+    }
+
     setIsSubmitting(true);
 
     if (formData.origem_cadastro === 'CAR' && formData.codigo_car) {
@@ -294,27 +349,108 @@ export default function GestorPropriedades() {
     }
     
     try {
+      // 1. Reconciliar/criar conta Auth + Perfil do Produtor de forma atômica
+      let resolvedProdutorId: string | null = formData.produtor_id || editingProp?.produtor_id || null;
+      let resolvedProdutorNome: string = formData.nome_produtor.trim();
+      const emailFilter = formData.email_produtor?.trim() || null;
+      const telefoneFilter = formData.telefone_produtor?.trim() || null;
+
+      try {
+        const { data: recData, error: recErr } = await supabase.rpc('reconciliar_perfil_produtor', {
+          p_auth_id: resolvedProdutorId || null,
+          p_email: emailFilter,
+          p_nome: resolvedProdutorNome,
+          p_telefone: telefoneFilter,
+          p_regiao: null,
+          p_role: 'produtor'
+        });
+        if (!recErr && recData?.id) {
+          resolvedProdutorId = recData.id;
+          resolvedProdutorNome = recData.nome || resolvedProdutorNome;
+        }
+      } catch (e) {
+        console.warn('Aviso ao chamar reconciliar_perfil_produtor:', e);
+      }
+
+      // Fallback direto caso a RPC não tenha retornado o ID
+      if (!resolvedProdutorId && (emailFilter || resolvedProdutorNome)) {
+        let query = supabase.from('perfis').select('id, nome, email').eq('role', 'produtor');
+        if (emailFilter) {
+          query = query.ilike('email', emailFilter);
+        } else {
+          query = query.ilike('nome', resolvedProdutorNome);
+        }
+        const { data: matchedProfiles } = await query.limit(1);
+        if (matchedProfiles && matchedProfiles.length > 0) {
+          resolvedProdutorId = matchedProfiles[0].id;
+          if (telefoneFilter) {
+            await supabase.from('perfis').update({ telefone: telefoneFilter, nome: resolvedProdutorNome }).eq('id', resolvedProdutorId);
+          }
+        } else {
+          const newProfPayload: any = {
+            nome: resolvedProdutorNome,
+            email: emailFilter || `${resolvedProdutorNome.toLowerCase().replace(/[^a-z0-9]+/g, '')}@produtor.ms.gov.br`,
+            role: 'produtor',
+            telefone: telefoneFilter,
+            status: 'Ativo'
+          };
+          const { data: newProf } = await supabase.from('perfis').insert([newProfPayload]).select('id').single();
+          if (newProf?.id) {
+            resolvedProdutorId = newProf.id;
+          }
+        }
+      }
+
+      // 2. Sanitizar payload com as colunas válidas da tabela propriedades
+      const cleanPayload: any = {
+        nome_fazenda: formData.nome_fazenda?.trim() || `Fazenda ${formData.codigo_car || formData.codigo_sigef || 'MS'}`,
+        nome_produtor: resolvedProdutorNome,
+        codigo_car: formData.codigo_car || null,
+        codigo_sigef: formData.codigo_sigef || null,
+        origem_cadastro: formData.origem_cadastro || 'CAR',
+        geom: formData.geom || null,
+        area_soja_ha: formData.area_soja_ha ? parseFloat(formData.area_soja_ha) : null
+      };
+      if (resolvedProdutorId) {
+        cleanPayload.produtor_id = resolvedProdutorId;
+      }
+
       if (editingProp) {
         // Update
-        const { error } = await supabase.from('propriedades').update(formData).eq('id', editingProp.id);
-        if (error) throw error;
-        setPropriedades(propriedades.map(p => p.id === editingProp.id ? { ...p, ...formData } : p));
+        const { error: updErr } = await supabase.from('propriedades').update(cleanPayload).eq('id', editingProp.id);
+        if (updErr) throw updErr;
       } else {
         // Create
-        // Pegar o ID do produtor logado ou associar a um produtor teste
-        const { data: { user } } = await supabase.auth.getUser();
+        cleanPayload.etapa = 'Prospecção';
+        const { data: newFarm, error: farmErr } = await supabase.from('propriedades').insert([cleanPayload]).select().single();
+        if (farmErr) throw farmErr;
         
-        const payload = {
-          ...formData,
-          etapa: 'Prospecção',
-          produtor_id: user?.id || null
-        };
-        const { data, error } = await supabase.from('propriedades').insert([payload]).select().single();
-        if (error) throw error;
-        if (data) setPropriedades([...propriedades, data]);
+        if (newFarm) {
+          // Criar auditoria inicial de prospecção vinculada
+          try {
+            await supabase.from('auditorias').insert([{
+              propriedade_id: newFarm.id,
+              status: 'Em Andamento',
+              etapa: 'Prospecção',
+              data_agendamento: new Date().toISOString()
+            }]);
+          } catch (e) {}
+        }
       }
+
+      // 3. Recalcular fazendas_vinculadas do produtor
+      if (resolvedProdutorId) {
+        try {
+          await supabase.rpc('reconciliar_perfil_produtor', {
+            p_auth_id: resolvedProdutorId,
+            p_role: 'produtor'
+          });
+        } catch (e) {}
+      }
+
+      await fetchPropriedades();
       setIsFormOpen(false);
-      success('Propriedade salva com sucesso!');
+      success('Propriedade e vínculo do produtor salvos com sucesso!');
     } catch (err: any) {
       console.error('Erro ao salvar no Supabase:', err);
       error('Erro ao salvar no banco de dados: ' + err.message);
@@ -443,6 +579,11 @@ export default function GestorPropriedades() {
         .eq('id', id);
       if (err) throw err;
 
+      const targetPend = propPendencias.find(p => p.id === id);
+      if (targetPend) {
+        await syncPendencyStatusWithRtrsAnswer(targetPend, 'Pendente');
+      }
+
       setPropPendencias(propPendencias.map(p => p.id === id ? { ...p, ...payload } : p));
       setRejectingPendId(null);
       setMotivoRejeicaoText('');
@@ -460,6 +601,11 @@ export default function GestorPropriedades() {
         .update({ status: newStatus })
         .eq('id', id);
       if (err) throw err;
+
+      const targetPend = propPendencias.find(p => p.id === id);
+      if (targetPend) {
+        await syncPendencyStatusWithRtrsAnswer(targetPend, newStatus);
+      }
 
       setPropPendencias(propPendencias.map(p => p.id === id ? { ...p, status: newStatus } : p));
       success('Status da pendência atualizado!');
@@ -687,6 +833,21 @@ export default function GestorPropriedades() {
                       {/* Botões de Ação */}
                       <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
                         <button 
+                          onClick={() => setSelectedAuditForModal({
+                            id: prop.auditId || `audit-${prop.id}`,
+                            propriedade_id: prop.id,
+                            status: prop.audit_status || 'Autoavaliação',
+                            etapa: prop.etapa || 'Prospecção',
+                            propriedades: prop
+                          })}
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 text-[#1B7547] font-extrabold text-xs bg-[#1B7547]/10 hover:bg-[#1B7547]/20 border border-[#1B7547]/20 px-3 py-2 rounded-xl transition-all active:scale-95 cursor-pointer shadow-2xs"
+                          title="Visualizar Ficha Técnica & Panorama RTRS"
+                        >
+                          <Eye className="w-3.5 h-3.5" /> 
+                          <span>Panorama</span>
+                        </button>
+
+                        <button 
                           onClick={() => handleOpenPendencias(prop)}
                           className="flex-1 inline-flex items-center justify-center gap-1.5 text-amber-800 font-extrabold text-xs bg-amber-50 hover:bg-amber-100 border border-amber-200 px-3 py-2 rounded-xl transition-all active:scale-95 cursor-pointer shadow-2xs"
                         >
@@ -782,6 +943,21 @@ export default function GestorPropriedades() {
                         <td className="px-5 py-3 text-right">
                           <div className="flex items-center justify-end gap-2">
                             <button 
+                              onClick={() => setSelectedAuditForModal({
+                                id: prop.auditId || `audit-${prop.id}`,
+                                propriedade_id: prop.id,
+                                status: prop.audit_status || 'Autoavaliação',
+                                etapa: prop.etapa || 'Prospecção',
+                                propriedades: prop
+                              })}
+                              className="group/btn text-[#1B7547] hover:text-[#15613a] font-extrabold text-xs bg-[#1B7547]/10 hover:bg-[#1B7547]/20 px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all duration-300 hover:scale-105 active:scale-95 border border-[#1B7547]/20 shadow-2xs cursor-pointer"
+                              title="Visualizar Ficha Técnica & Panorama RTRS"
+                            >
+                              <Eye className="w-3.5 h-3.5 transition-transform group-hover/btn:scale-110 duration-300" /> 
+                              <span>Panorama</span>
+                            </button>
+
+                            <button 
                               onClick={() => handleOpenPendencias(prop)}
                               className="group/btn text-amber-800 hover:text-amber-900 font-extrabold text-xs bg-amber-100/80 hover:bg-amber-200/80 px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all duration-300 hover:scale-105 active:scale-95 border border-amber-200/80 shadow-2xs cursor-pointer"
                             >
@@ -828,37 +1004,143 @@ export default function GestorPropriedades() {
         title={editingProp ? "Editar Propriedade" : "Nova Propriedade"}
       >
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="space-y-1">
-              <label className="text-xs font-bold text-slate-700 uppercase">Nome Completo do Produtor</label>
-              <input 
-                required
-                placeholder="Ex: João da Silva"
-                value={formData.nome_produtor}
-                onChange={e => setFormData({...formData, nome_produtor: e.target.value})}
-                className="w-full px-3 py-2 bg-background border border-input rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent text-sm font-medium"
-              />
+          <div className="p-3.5 bg-slate-50 border border-slate-200/80 rounded-xl space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wider">
+                Produtor Rural Responsável
+              </span>
             </div>
-            <div className="space-y-1">
-              <label className="text-xs font-bold text-slate-700 uppercase">E-mail de Contato</label>
-              <input 
-                type="email"
-                placeholder="produtor@email.com"
-                value={formData.email_produtor || ''}
-                onChange={e => setFormData({...formData, email_produtor: e.target.value})}
-                className="w-full px-3 py-2 bg-background border border-input rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent text-sm font-medium"
-              />
+
+            <div className="flex p-1 bg-slate-200/70 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setProdutorMode('existente')}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  produtorMode === 'existente'
+                    ? 'bg-white text-slate-800 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                Produtor Já Cadastrado
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setProdutorMode('novo');
+                  setFormData(prev => ({ ...prev, produtor_id: '' }));
+                }}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  produtorMode === 'novo'
+                    ? 'bg-white text-slate-800 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                Cadastrar Novo Produtor
+              </button>
             </div>
-            <div className="space-y-1">
-              <label className="text-xs font-bold text-slate-700 uppercase">Telefone / WhatsApp</label>
-              <input 
-                type="tel"
-                placeholder="(67) 99999-9999"
-                value={formData.telefone_produtor || ''}
-                onChange={e => setFormData({...formData, telefone_produtor: e.target.value})}
-                className="w-full px-3 py-2 bg-background border border-input rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent text-sm font-medium"
-              />
-            </div>
+
+            {produtorMode === 'existente' ? (
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-600 uppercase">Buscar Produtor Cadastrado</label>
+                  <ProducerInput
+                    producers={producers}
+                    selectedId={formData.produtor_id}
+                    onChange={(selectedId) => {
+                      const prod = producers.find(p => p.id === selectedId);
+                      if (prod) {
+                        setFormData(prev => ({
+                          ...prev,
+                          produtor_id: prod.id,
+                          nome_produtor: prod.nome || '',
+                          email_produtor: prod.email || '',
+                          telefone_produtor: prod.telefone || ''
+                        }));
+                      } else {
+                        setFormData(prev => ({
+                          ...prev,
+                          produtor_id: '',
+                          nome_produtor: '',
+                          email_produtor: '',
+                          telefone_produtor: ''
+                        }));
+                      }
+                    }}
+                    onCreateNew={(typedName) => {
+                      setProdutorMode('novo');
+                      setFormData(prev => ({
+                        ...prev,
+                        produtor_id: '',
+                        nome_produtor: typedName,
+                        email_produtor: '',
+                        telefone_produtor: ''
+                      }));
+                    }}
+                    placeholder="Digite o nome, e-mail ou telefone do produtor..."
+                    required
+                  />
+                </div>
+
+                {formData.produtor_id && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-600 uppercase">E-mail de Contato</label>
+                      <input 
+                        type="email"
+                        placeholder="produtor@email.com"
+                        value={formData.email_produtor || ''}
+                        onChange={e => setFormData({...formData, email_produtor: e.target.value})}
+                        className="w-full px-3 py-2 bg-background border border-input rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent text-xs font-medium"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-600 uppercase">Telefone / WhatsApp</label>
+                      <input 
+                        type="tel"
+                        placeholder="(67) 99999-9999"
+                        value={formData.telefone_produtor || ''}
+                        onChange={e => setFormData({...formData, telefone_produtor: e.target.value})}
+                        className="w-full px-3 py-2 bg-background border border-input rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent text-xs font-medium"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-700 uppercase">Nome Completo do Produtor</label>
+                  <input 
+                    required
+                    placeholder="Ex: João da Silva"
+                    value={formData.nome_produtor}
+                    onChange={e => setFormData({...formData, nome_produtor: e.target.value})}
+                    className="w-full px-3 py-2 bg-background border border-input rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent text-sm font-medium"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-700 uppercase">E-mail de Contato</label>
+                  <input 
+                    required
+                    type="email"
+                    placeholder="produtor@email.com"
+                    value={formData.email_produtor || ''}
+                    onChange={e => setFormData({...formData, email_produtor: e.target.value})}
+                    className="w-full px-3 py-2 bg-background border border-input rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent text-sm font-medium"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-700 uppercase">Telefone / WhatsApp</label>
+                  <input 
+                    type="tel"
+                    placeholder="(67) 99999-9999"
+                    value={formData.telefone_produtor || ''}
+                    onChange={e => setFormData({...formData, telefone_produtor: e.target.value})}
+                    className="w-full px-3 py-2 bg-background border border-input rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent text-sm font-medium"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="space-y-1">
@@ -1048,6 +1330,18 @@ export default function GestorPropriedades() {
                             </span>
                           </div>
                         )}
+                        {pend.status === 'Pendente' && (
+                          <div className="pt-1 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => handleUpdatePendencyStatus(pend.id, 'Resolvida')}
+                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold rounded shadow-sm transition-all cursor-pointer"
+                            >
+                              Resolver Manualmente (In Loco)
+                            </button>
+                          </div>
+                        )}
+
                         {pend.motivo_rejeicao && pend.status === 'Pendente' && (
                           <div className="p-2.5 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-950 space-y-0.5 mt-2">
                             <span className="font-bold text-amber-900 text-[11px] flex items-center gap-1">
@@ -1067,7 +1361,7 @@ export default function GestorPropriedades() {
                       </button>
                     </div>
 
-                    {pend.status === 'Em Análise' && (
+                    {(pend.status === 'Em Análise' || pend.status === 'Resolvida') && (
                       <div className="p-3 bg-indigo-50/50 rounded-lg border border-indigo-100 space-y-2">
                         <div className="text-[11px] font-bold text-indigo-950 uppercase tracking-wider">Solução Enviada pelo Produtor:</div>
                         <p className="text-xs text-indigo-900 font-medium italic">"{pend.resolucao_descricao}"</p>
@@ -1205,6 +1499,22 @@ export default function GestorPropriedades() {
           </div>
         </div>,
         document.body
+      )}
+
+      {selectedAuditForModal && (
+        <AuditDetailModal
+          isOpen={!!selectedAuditForModal}
+          onClose={() => setSelectedAuditForModal(null)}
+          auditoria={selectedAuditForModal}
+          onStartVisita={() => {
+            setSelectedAuditForModal(null);
+            window.location.href = '/app/gestor/auditorias';
+          }}
+          onOpenPendencias={(p) => {
+            setSelectedAuditForModal(null);
+            handleOpenPendencias(p || selectedAuditForModal.propriedades);
+          }}
+        />
       )}
 
       {/* Modal Viewer de PDF em Portal z-[9999] */}

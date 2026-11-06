@@ -72,6 +72,7 @@ class SyncEngine {
   private _currentSession: any | null = null;
   private _consecutiveNetworkErrors: number = 0;
   private _hasPendingResync: boolean = false;
+  private _activeSyncPromise: Promise<{ success: boolean; drained: number; errors: number }> | null = null;
   private _progress: SyncProgressInfo = {
     phase: typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'idle',
     totalItems: 0,
@@ -439,19 +440,22 @@ class SyncEngine {
    */
   public async syncNow(forceAll = false): Promise<{ success: boolean; drained: number; errors: number }> {
     // 1. INVESTIGAÇÃO DE DEADLOCK / MUTEX TRAVADO E RE-EXECUÇÃO AUTOMÁTICA:
-    // Se já houver sincronização em andamento e o tempo for menor que 15s, agenda uma nova rodada assim que a atual terminar.
-    if (this._isSyncing) {
+    // Se já houver sincronização em andamento, aguarda a Promise ativa ou destrava por watchdog (>25s)
+    if (this._isSyncing && this._activeSyncPromise) {
       const elapsed = this._syncStartTime > 0 ? Date.now() - this._syncStartTime : 0;
-      if (elapsed > 15000) {
-        console.warn(`[SyncEngine] Mutex destravado por watchdog (${elapsed}ms). Forçando execução.`);
+      if (elapsed <= 25000) {
+        console.log('[SyncEngine] Sincronização em andamento. Aguardando a conclusão da Promise ativa...');
+        this._hasPendingResync = true;
+        return await this._activeSyncPromise;
+      } else {
+        console.warn(`[SyncEngine] Mutex destravado por watchdog (${elapsed}ms). Forçando nova execução.`);
         this._isSyncing = false;
         this._syncStartTime = 0;
-      } else {
-        console.log('[SyncEngine] Sincronização em andamento. Agendando nova rodada imediata (_hasPendingResync = true).');
-        this._hasPendingResync = true;
-        return { success: true, drained: 0, errors: 0 };
+        this._activeSyncPromise = null;
       }
     }
+
+    const executeSync = async (): Promise<{ success: boolean; drained: number; errors: number }> => {
 
     // Cancelar backoff ou debounce pendente em clique forçado e reabilitar itens falhos
     if (forceAll) {
@@ -626,7 +630,7 @@ class SyncEngine {
         const expiresAt = session.expires_at || 0;
         const nowSeconds = Math.floor(Date.now() / 1000);
         if (expiresAt - nowSeconds < 300) {
-          await supabase.auth.refreshSession().catch(e => console.warn('[SyncEngine] Erro ao renovar token preventivamente:', e));
+          await supabase.auth.refreshSession().catch((e: any) => console.warn('[SyncEngine] Erro ao renovar token preventivamente:', e));
         }
       }
     } catch (authErr) {
@@ -656,15 +660,141 @@ class SyncEngine {
 
     try {
       // =========================================================================
-      // ETAPA 2: MOTOR DE SINCRONIZAÇÃO LINEAR E TWO-PHASE COMMIT (sync_journal)
+      // ETAPA 2A: FAST BATCH UPSERT PARA RESPOSTAS DE TEXTO / SEM MÍDIA
+      // Agrupa e transmite todas as respostas sem foto em um único HTTP POST para o Supabase
+      // =========================================================================
+      const textJournalItems: SyncJournalItem[] = [];
+      const mediaJournalItems: SyncJournalItem[] = [];
+
+      for (const item of eligibleJournal) {
+        const hasMedia = item.file_blob || (item.evidencia_url && item.evidencia_url.startsWith('data:'));
+        if (!hasMedia) {
+          textJournalItems.push(item);
+        } else {
+          mediaJournalItems.push(item);
+        }
+      }
+
+      if (textJournalItems.length > 0 && (typeof navigator === 'undefined' || navigator.onLine)) {
+        console.log(`[SYNC ENGINE] Otimização: Enviando ${textJournalItems.length} respostas textuais em lote atômico...`);
+        const groups = new Map<string, SyncJournalItem[]>();
+        for (const item of textJournalItems) {
+          const list = groups.get(item.auditoria_id) || [];
+          list.push(item);
+          groups.set(item.auditoria_id, list);
+        }
+
+        for (const [audId, items] of groups.entries()) {
+          if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            hadPhysicalNetworkFailure = true;
+            break;
+          }
+
+          let targetAudId = audId;
+          if (targetAudId && (targetAudId.startsWith('mock-') || targetAudId.startsWith('assigned-pend-') || targetAudId.startsWith('temp-'))) {
+            try {
+              const cachedAud = await db.cached_auditorias.get(targetAudId);
+              const targetPropId = cachedAud?.propriedade_id;
+              if (targetPropId && !targetPropId.startsWith('mock-')) {
+                const { data: realAudit } = await supabase
+                  .from('auditorias')
+                  .select('id')
+                  .eq('propriedade_id', targetPropId)
+                  .order('created_at', { ascending: false })
+                  .limit(1)
+                  .maybeSingle();
+
+                if (realAudit?.id) {
+                  targetAudId = realAudit.id;
+                }
+              }
+            } catch (rErr) {
+              console.warn('[SYNC ENGINE] Reconciliação em lote:', rErr);
+            }
+          }
+
+          const nowIso = new Date().toISOString();
+          const batchPayload = items.map(item => {
+            const canonicalId = normalizePerguntaId(item.pergunta_id);
+            const isExplicitDelete = item.is_explicit_delete === true || item.evidencia_url === null;
+            return {
+              auditoria_id: targetAudId,
+              pergunta_id: canonicalId,
+              conforme: item.conforme ?? false,
+              nao_se_aplica: item.nao_se_aplica ?? false,
+              observacoes: item.observacoes || '',
+              evidencia_url: isExplicitDelete ? null : (item.evidencia_url && !item.evidencia_url.startsWith('blob:') ? item.evidencia_url : null),
+              updated_at: nowIso
+            };
+          });
+
+          try {
+            let { error: batchErr } = await supabase
+              .from('respostas_auditoria')
+              .upsert(batchPayload, { onConflict: 'auditoria_id,pergunta_id' });
+
+            if (batchErr && ((batchErr as any).code === '401' || batchErr.message?.toLowerCase().includes('jwt'))) {
+              const { data: refData } = await supabase.auth.refreshSession();
+              if (refData?.session) {
+                const retry = await supabase
+                  .from('respostas_auditoria')
+                  .upsert(batchPayload, { onConflict: 'auditoria_id,pergunta_id' });
+                batchErr = retry.error;
+              }
+            }
+
+            if (!batchErr) {
+              // Atualiza cache local
+              const cacheUpdates = batchPayload.map(p => ({
+                auditoria_id: p.auditoria_id,
+                pergunta_id: p.pergunta_id,
+                conforme: p.conforme,
+                nao_se_aplica: p.nao_se_aplica,
+                observacoes: p.observacoes,
+                evidencia_url: p.evidencia_url,
+                updated_at: nowIso,
+                data_envio: nowIso
+              }));
+              await db.cached_respostas.bulkPut(cacheUpdates);
+
+              // Remove do journal
+              const journalIdsToDelete = items.map(i => i.id).filter(Boolean) as number[];
+              if (journalIdsToDelete.length > 0) {
+                await db.sync_journal.bulkDelete(journalIdsToDelete);
+              }
+              for (const it of items) {
+                await removeJournalItem(it.auditoria_id, it.pergunta_id);
+              }
+
+              drainedCount += items.length;
+              console.log(`[SYNC ENGINE] Fast Batch Upsert concluído com sucesso: ${items.length} itens gravados.`);
+            } else {
+              console.warn('[SYNC ENGINE] Fast Batch Upsert falhou com erro de validação. Processando individualmente:', batchErr.message);
+              mediaJournalItems.push(...items);
+            }
+          } catch (batchEx: any) {
+            const isNet = !navigator.onLine || batchEx.name === 'AbortError' || batchEx.message?.includes('Failed to fetch');
+            if (isNet) {
+              hadPhysicalNetworkFailure = true;
+              break;
+            } else {
+              console.warn('[SYNC ENGINE] Exceção em lote, recaindo para individual:', batchEx);
+              mediaJournalItems.push(...items);
+            }
+          }
+        }
+      }
+
+      // =========================================================================
+      // ETAPA 2B: PROCESSAMENTO INDIVIDUAL DE ITENS COM MÍDIA / FOTOS (Storage Upload)
       // Processa item a item do journal unificado atomicamente:
       // Passo A: Upload Storage (se houver file_blob)
       // Passo B: Upsert Postgres (respostas_auditoria) com conforme sanitizado
       // Passo C: Atualização do Cache Local (db.cached_respostas)
       // Passo D: Deleção Segura do Journal (após status 200/201 do Postgres)
       // =========================================================================
-      for (let j = 0; j < eligibleJournal.length; j++) {
-        const item = eligibleJournal[j];
+      for (let j = 0; j < mediaJournalItems.length; j++) {
+        const item = mediaJournalItems[j];
         if (!item.auditoria_id || !item.pergunta_id) continue;
 
         const canonicalPerguntaId = normalizePerguntaId(item.pergunta_id);
@@ -834,9 +964,9 @@ class SyncEngine {
                 supabase.storage.from('evidencias').list('evidencias', { search: prefix2 })
               ]);
               const filesToDelete: string[] = [];
-              if (res1.data) res1.data.forEach(f => filesToDelete.push(f.name));
-              if (res2.data) res2.data.forEach(f => filesToDelete.push(f.name));
-              if (res3.data) res3.data.forEach(f => filesToDelete.push(`evidencias/${f.name}`));
+              if (res1.data) res1.data.forEach((f: any) => filesToDelete.push(f.name));
+              if (res2.data) res2.data.forEach((f: any) => filesToDelete.push(f.name));
+              if (res3.data) res3.data.forEach((f: any) => filesToDelete.push(`evidencias/${f.name}`));
               if (item.storage_path) filesToDelete.push(item.storage_path);
               if (filesToDelete.length > 0) {
                 await supabase.storage.from('evidencias').remove([...new Set(filesToDelete)]);
@@ -850,7 +980,7 @@ class SyncEngine {
               const prefix = `evidencia_${item.auditoria_id}_${canonicalPerguntaId}`;
               const { data: stFiles } = await supabase.storage.from('evidencias').list('', { limit: 5, search: prefix });
               if (stFiles && stFiles.length > 0) {
-                stFiles.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+                stFiles.sort((a: any, b: any) => (b.created_at || '').localeCompare(a.created_at || ''));
                 const { data: pData } = supabase.storage.from('evidencias').getPublicUrl(stFiles[0].name);
                 if (pData?.publicUrl) remoteEvidenciaUrl = pData.publicUrl;
               }
@@ -1844,7 +1974,15 @@ class SyncEngine {
       drained: drainedCount,
       errors: errorCount
     };
+  };
+
+  this._activeSyncPromise = executeSync();
+  try {
+    return await this._activeSyncPromise;
+  } finally {
+    this._activeSyncPromise = null;
   }
+}
 }
 
 export const syncEngine = new SyncEngine();

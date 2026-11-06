@@ -15,14 +15,18 @@ import {
   ClipboardList,
   Building2,
   LayoutGrid,
-  Table
+  Table,
+  Eye,
+  Award
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { resolveFarmEtapa, persistFarmEtapa } from '../../lib/etapaUtils';
 import { TableRowSkeleton } from '../../components/ui/Skeleton';
 import RevisaoAuditoria from '../../components/auditoria/RevisaoAuditoria';
+import AuditDetailModal from '../../components/auditoria/AuditDetailModal';
 import Modal from '../../components/ui/Modal';
 import ConfirmDelete from '../../components/ui/ConfirmDelete';
+import ModalErrorBoundary from '../../components/ui/ModalErrorBoundary';
 import { useToast } from '../../context/ToastContext';
 
 export default function GestorAuditorias() {
@@ -37,7 +41,17 @@ export default function GestorAuditorias() {
   const [activeEtapaTab, setActiveEtapaTab] = useState<'Prospecção' | 'Auditoria Prévia' | 'Auditoria Oficial'>('Prospecção');
   const [viewMode, setViewMode] = useState<'auto' | 'cards' | 'table'>('auto');
 
-  const [revisaoAuditoria, setRevisaoAuditoria] = useState<{ id: string, nome: string } | null>(null);
+  const [revisaoAuditoria, setRevisaoAuditoria] = useState<{
+    id: string;
+    nome: string;
+    etapa?: 'Prospecção' | 'Auditoria Prévia' | 'Auditoria Oficial' | string;
+    status?: string;
+    propId?: string;
+  } | null>(null);
+  const [selectedAuditForModal, setSelectedAuditForModal] = useState<any | null>(null);
+
+  const isPendingApproval = (status?: string) =>
+    status === 'Aguardando Aprovação' || status === 'Em Análise';
 
   // Modal States
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -56,6 +70,21 @@ export default function GestorAuditorias() {
 
   useEffect(() => {
     fetchInitialData();
+    const handleRecheck = () => {
+      if (document.visibilityState === 'visible') {
+        fetchInitialData();
+      }
+    };
+    window.addEventListener('focus', handleRecheck);
+    document.addEventListener('visibilitychange', handleRecheck);
+    window.addEventListener('ms:sync-complete', handleRecheck);
+    window.addEventListener('ms:audit-updated', handleRecheck);
+    return () => {
+      window.removeEventListener('focus', handleRecheck);
+      document.removeEventListener('visibilitychange', handleRecheck);
+      window.removeEventListener('ms:sync-complete', handleRecheck);
+      window.removeEventListener('ms:audit-updated', handleRecheck);
+    };
   }, []);
 
   async function fetchInitialData() {
@@ -64,7 +93,7 @@ export default function GestorAuditorias() {
       // 2. Buscar propriedades
       const { data: propsData } = await supabase
         .from('propriedades')
-        .select('id, nome_fazenda, nome_produtor, tecnico_id, municipio');
+        .select('id, nome_fazenda, nome_produtor, tecnico_id, municipio, etapa, created_at');
       if (propsData) setProperties(propsData);
 
       // 3. Buscar técnicos
@@ -106,7 +135,7 @@ export default function GestorAuditorias() {
       // Resolver etapa nula por padrão (Sempre Prospecção se não definida)
       const processedAudits = rawAudits.map((a: any) => {
         const propRel = Array.isArray(a.propriedades) ? a.propriedades[0] : a.propriedades;
-        const propFound = propRel || (propsData || []).find(p => p.id === a.propriedade_id);
+        const propFound = propRel || (propsData || []).find((p: any) => p.id === a.propriedade_id);
         const propId = a.propriedade_id || propFound?.id;
         const e = resolveFarmEtapa(propId, propFound?.etapa, a.etapa);
 
@@ -118,8 +147,8 @@ export default function GestorAuditorias() {
       });
 
       // Garantir que TODAS as propriedades cadastradas no sistema estejam presentes em GestorAuditorias (fase inicial Prospecção)
-      const existingPropIds = new Set(processedAudits.map(a => a.propriedade_id).filter(Boolean));
-      (propsData || []).forEach(p => {
+      const existingPropIds = new Set(processedAudits.map((a: any) => a.propriedade_id).filter(Boolean));
+      (propsData || []).forEach((p: any) => {
         if (!existingPropIds.has(p.id)) {
           const e = resolveFarmEtapa(p.id, p.etapa, null);
           processedAudits.push({
@@ -277,17 +306,82 @@ export default function GestorAuditorias() {
     }
   };
 
-  const handleApprove = async () => {
+  const clearOldRejectionPendencias = async (propId?: string) => {
+    if (!propId) return;
+    try {
+      await supabase
+        .from('pendencias')
+        .delete()
+        .eq('propriedade_id', propId)
+        .or('titulo.ilike.%[REPROVAÇÃO GESTOR]%,titulo.ilike.%[AJUSTE GESTOR]%');
+    } catch (e) {
+      console.warn('Aviso ao limpar pendências antigas de reprovação:', e);
+    }
+  };
+
+  const handleApproveNextStage = async (
+    nextEtapa: 'Auditoria Prévia' | 'Auditoria Oficial',
+    nextStatus: string
+  ) => {
     if (!revisaoAuditoria) return;
     try {
-      const { error: err } = await supabase
-        .from('auditorias')
-        .update({ status: 'Certificada', etapa: 'Auditoria Oficial' })
-        .eq('id', revisaoAuditoria.id);
-      if (err) throw err;
+      const target = auditorias.find(a => a.id === revisaoAuditoria.id);
+      const propId = revisaoAuditoria.propId || target?.propriedade_id;
 
-      setAuditorias(auditorias.map(a => a.id === revisaoAuditoria.id ? { ...a, status: 'Certificada', etapa: 'Auditoria Oficial' } : a));
-      success('Auditoria oficial aprovada e certificada!');
+      if (propId) {
+        await persistFarmEtapa(propId, revisaoAuditoria.id, nextEtapa);
+        await clearOldRejectionPendencias(propId);
+      }
+
+      if (!revisaoAuditoria.id.startsWith('v-audit-')) {
+        const { error: err } = await supabase
+          .from('auditorias')
+          .update({ etapa: nextEtapa, status: nextStatus })
+          .eq('id', revisaoAuditoria.id);
+        if (err) throw err;
+      }
+
+      setAuditorias(prev =>
+        prev.map(a =>
+          a.id === revisaoAuditoria.id ? { ...a, etapa: nextEtapa, status: nextStatus } : a
+        )
+      );
+      setActiveEtapaTab(nextEtapa);
+      success(`Fazenda aprovada e avançada para ${nextEtapa}!`);
+    } catch (err: any) {
+      console.error(err);
+      error('Erro ao aprovar avanço de etapa: ' + err.message);
+    }
+    setRevisaoAuditoria(null);
+  };
+
+  const handleApproveCertify = async () => {
+    if (!revisaoAuditoria) return;
+    try {
+      const target = auditorias.find(a => a.id === revisaoAuditoria.id);
+      const propId = revisaoAuditoria.propId || target?.propriedade_id;
+      if (propId) {
+        await persistFarmEtapa(propId, revisaoAuditoria.id, 'Auditoria Oficial');
+        await clearOldRejectionPendencias(propId);
+      }
+
+      if (!revisaoAuditoria.id.startsWith('v-audit-')) {
+        const { error: err } = await supabase
+          .from('auditorias')
+          .update({ etapa: 'Auditoria Oficial', status: 'Certificada' })
+          .eq('id', revisaoAuditoria.id);
+        if (err) throw err;
+      }
+
+      setAuditorias(prev =>
+        prev.map(a =>
+          a.id === revisaoAuditoria.id
+            ? { ...a, status: 'Certificada', etapa: 'Auditoria Oficial' }
+            : a
+        )
+      );
+      setActiveEtapaTab('Auditoria Oficial');
+      success('Auditoria homologada e fazenda Certificada RTRS!');
     } catch (err: any) {
       console.error(err);
       error('Erro ao aprovar auditoria: ' + err.message);
@@ -295,18 +389,43 @@ export default function GestorAuditorias() {
     setRevisaoAuditoria(null);
   };
 
-  const handleReject = async () => {
+  const handleReject = async (motivoReprovacao: string) => {
     if (!revisaoAuditoria) return;
     try {
-      const { error } = await supabase
-        .from('auditorias')
-        .update({ status: 'Visita de Campo' })
-        .eq('id', revisaoAuditoria.id);
-      if (error) throw error;
+      const target = auditorias.find(a => a.id === revisaoAuditoria.id);
+      const propId = revisaoAuditoria.propId || target?.propriedade_id;
+      const etapaRef = revisaoAuditoria.etapa || target?.etapa || 'atual';
 
-      setAuditorias(auditorias.map(a => a.id === revisaoAuditoria.id ? { ...a, status: 'Visita de Campo' } : a));
+      if (!revisaoAuditoria.id.startsWith('v-audit-')) {
+        const { error: err } = await supabase
+          .from('auditorias')
+          .update({ status: 'Visita de Campo' })
+          .eq('id', revisaoAuditoria.id);
+        if (err) throw err;
+      }
+
+      if (propId) {
+        try {
+          await supabase.from('pendencias').insert([{
+            propriedade_id: propId,
+            titulo: `[AJUSTE GESTOR] Revisão solicitada na etapa ${etapaRef}: ${motivoReprovacao}`,
+            severidade: 'Alta',
+            status: 'Pendente'
+          }]);
+        } catch (pendErr) {
+          console.warn('Aviso ao inserir pendência de ajuste do gestor:', pendErr);
+        }
+      }
+
+      setAuditorias(prev =>
+        prev.map(a =>
+          a.id === revisaoAuditoria.id ? { ...a, status: 'Visita de Campo' } : a
+        )
+      );
+      success('Vistoria devolvida ao Técnico com solicitação de ajustes.');
     } catch (err: any) {
       console.error(err);
+      error('Erro ao devolver vistoria: ' + err.message);
     }
     setRevisaoAuditoria(null);
   };
@@ -345,6 +464,24 @@ export default function GestorAuditorias() {
   const countPrevia = auditorias.filter(a => a.etapa === 'Auditoria Prévia').length;
   const countOficial = auditorias.filter(a => a.etapa === 'Auditoria Oficial').length;
 
+  const pendingAudits = auditorias.filter(a => isPendingApproval(a.status));
+  const pendingProspeccao = pendingAudits.filter(a => a.etapa === 'Prospecção').length;
+  const pendingPrevia = pendingAudits.filter(a => a.etapa === 'Auditoria Prévia').length;
+  const pendingOficial = pendingAudits.filter(a => a.etapa === 'Auditoria Oficial').length;
+
+  const handleOpenDeliberacao = (auditoria: any) => {
+    if (auditoria.etapa === 'Prospecção' || auditoria.etapa === 'Auditoria Prévia' || auditoria.etapa === 'Auditoria Oficial') {
+      setActiveEtapaTab(auditoria.etapa);
+    }
+    setRevisaoAuditoria({
+      id: auditoria.id,
+      nome: getFazendaName(auditoria),
+      etapa: auditoria.etapa || 'Prospecção',
+      status: auditoria.status || 'Aguardando Aprovação',
+      propId: auditoria.propriedade_id || auditoria.propriedades?.id
+    });
+  };
+
   return (
     <div className="space-y-6 animate-fade-in-up">
       {/* Cabeçalho */}
@@ -370,6 +507,80 @@ export default function GestorAuditorias() {
         </button>
       </div>
 
+      {/* BANNER DE DELIBERAÇÕES PENDENTES DO GESTOR */}
+      {pendingAudits.length > 0 && (
+        <div className="bg-gradient-to-r from-amber-50 via-amber-50/70 to-white border-2 border-amber-300/90 rounded-3xl p-5 shadow-md space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-amber-500/15 text-amber-700 rounded-2xl border border-amber-300 shrink-0 relative">
+                <AlertTriangle className="w-6 h-6" />
+                <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-amber-500 animate-ping" />
+                <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-amber-500" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm sm:text-base font-black text-amber-950 uppercase tracking-wide">
+                    Deliberações Pendentes do Gestor
+                  </h2>
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-amber-500 text-white shadow-2xs">
+                    {pendingAudits.length} {pendingAudits.length === 1 ? 'vistoria aguardando' : 'vistorias aguardando'}
+                  </span>
+                </div>
+                <p className="text-xs text-amber-900/80 font-medium mt-0.5">
+                  Os técnicos concluíram e submeteram as vistorias abaixo. Analise as evidências para aprovar o avanço de etapa, homologar a certificação ou solicitar ajustes.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {pendingAudits.map((pendAudit) => {
+              const farmName = getFazendaName(pendAudit);
+              const techName = getTecnicoName(
+                pendAudit.tecnico_responsavel_id || pendAudit.propriedades?.tecnico_id,
+                pendAudit.propriedades
+              );
+              const etapaLabel =
+                pendAudit.etapa === 'Prospecção'
+                  ? '1. Prospecção'
+                  : pendAudit.etapa === 'Auditoria Prévia'
+                  ? '2. Auditoria Prévia'
+                  : '3. Auditoria Oficial';
+
+              return (
+                <div
+                  key={pendAudit.id}
+                  className="bg-white/95 border border-amber-200 rounded-2xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-2xs hover:shadow-md transition-all"
+                >
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-extrabold text-slate-900 text-xs sm:text-sm truncate">
+                        {farmName}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-lg text-[10px] font-extrabold uppercase bg-amber-100 text-amber-900 border border-amber-300">
+                        {etapaLabel}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-600 font-medium truncate">
+                      Técnico responsável: <strong className="text-slate-800">{techName}</strong>
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleOpenDeliberacao(pendAudit)}
+                    className="w-full sm:w-auto shrink-0 inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-gradient-to-r from-[#C59B27] to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white rounded-xl font-extrabold text-xs shadow-sm transition-all hover:scale-102 active:scale-95 cursor-pointer"
+                  >
+                    <FileSearch className="w-3.5 h-3.5" />
+                    <span>Analisar & Deliberar Vistoria</span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* ABAS DAS 3 ETAPAS DA AUDITORIA COM MOTION DESIGN */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <button
@@ -390,9 +601,20 @@ export default function GestorAuditorias() {
             </div>
             <p className="text-[11px] text-slate-500 mt-1.5 font-medium">Onboarding e cadastro de fazendas</p>
           </div>
-          <span className="text-base font-extrabold text-[#C59B27] bg-[#C59B27]/10 px-3 py-1.5 rounded-2xl border border-[#C59B27]/20 shadow-2xs">
-            {countProspeccao}
-          </span>
+          <div className="flex items-center gap-2">
+            {pendingProspeccao > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-extrabold bg-amber-500 text-white shadow-xs animate-pulse"
+                title={`${pendingProspeccao} aguardando aprovação`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
+                <span>{pendingProspeccao} pendente{pendingProspeccao > 1 ? 's' : ''}</span>
+              </span>
+            )}
+            <span className="text-base font-extrabold text-[#C59B27] bg-[#C59B27]/10 px-3 py-1.5 rounded-2xl border border-[#C59B27]/20 shadow-2xs">
+              {countProspeccao}
+            </span>
+          </div>
         </button>
 
         <button
@@ -413,9 +635,20 @@ export default function GestorAuditorias() {
             </div>
             <p className="text-[11px] text-slate-500 mt-1.5 font-medium">Diagnóstico prévio e autoavaliação</p>
           </div>
-          <span className="text-base font-extrabold text-blue-700 bg-blue-100/80 px-3 py-1.5 rounded-2xl border border-blue-200 shadow-2xs">
-            {countPrevia}
-          </span>
+          <div className="flex items-center gap-2">
+            {pendingPrevia > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-extrabold bg-amber-500 text-white shadow-xs animate-pulse"
+                title={`${pendingPrevia} aguardando aprovação`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
+                <span>{pendingPrevia} pendente{pendingPrevia > 1 ? 's' : ''}</span>
+              </span>
+            )}
+            <span className="text-base font-extrabold text-blue-700 bg-blue-100/80 px-3 py-1.5 rounded-2xl border border-blue-200 shadow-2xs">
+              {countPrevia}
+            </span>
+          </div>
         </button>
 
         <button
@@ -436,9 +669,20 @@ export default function GestorAuditorias() {
             </div>
             <p className="text-[11px] text-slate-500 mt-1.5 font-medium">Vistoria técnica final & Certificação</p>
           </div>
-          <span className="text-base font-extrabold text-[#1B7547] bg-[#1B7547]/10 px-3 py-1.5 rounded-2xl border border-[#1B7547]/20 shadow-2xs">
-            {countOficial}
-          </span>
+          <div className="flex items-center gap-2">
+            {pendingOficial > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-extrabold bg-amber-500 text-white shadow-xs animate-pulse"
+                title={`${pendingOficial} aguardando aprovação`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
+                <span>{pendingOficial} pendente{pendingOficial > 1 ? 's' : ''}</span>
+              </span>
+            )}
+            <span className="text-base font-extrabold text-[#1B7547] bg-[#1B7547]/10 px-3 py-1.5 rounded-2xl border border-[#1B7547]/20 shadow-2xs">
+              {countOficial}
+            </span>
+          </div>
         </button>
       </div>
 
@@ -530,11 +774,11 @@ export default function GestorAuditorias() {
 
                           <span className={`shrink-0 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                             auditoria.status === 'Certificada' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
-                            auditoria.status === 'Em Análise' ? 'bg-purple-100 text-purple-800 border border-purple-300' :
+                            isPendingApproval(auditoria.status) ? 'bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs animate-pulse' :
                             auditoria.status === 'Visita de Campo' ? 'bg-blue-100 text-blue-800 border border-blue-300' :
                             'bg-slate-100 text-slate-700'
                           }`}>
-                            {auditoria.status}
+                            {isPendingApproval(auditoria.status) ? 'Aguardando Aprovação' : auditoria.status}
                           </span>
                         </div>
 
@@ -588,14 +832,24 @@ export default function GestorAuditorias() {
                             </button>
                           )}
 
-                          {auditoria.status === 'Em Análise' && (
+                          <button
+                              type="button"
+                              onClick={() => setSelectedAuditForModal(auditoria)}
+                              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-100 text-[#1B7547] rounded-xl font-extrabold text-xs border border-slate-200 transition-all active:scale-95 cursor-pointer shadow-2xs"
+                              title="Visualizar Ficha e Panorama RTRS"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Panorama</span>
+                            </button>
+
+                          {isPendingApproval(auditoria.status) && (
                             <button 
                               type="button"
-                              onClick={() => setRevisaoAuditoria({ id: auditoria.id, nome: farmName })}
+                              onClick={() => handleOpenDeliberacao(auditoria)}
                               className="flex-1 inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-xl font-extrabold text-xs shadow-md transition-all active:scale-95 cursor-pointer"
                             >
                               <FileSearch className="w-3.5 h-3.5" />
-                              <span>Avaliar Certificação</span>
+                              <span>Deliberar Vistoria</span>
                             </button>
                           )}
 
@@ -657,11 +911,11 @@ export default function GestorAuditorias() {
                       <td className="px-6 py-4">
                         <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
                           auditoria.status === 'Certificada' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
-                          auditoria.status === 'Em Análise' ? 'bg-purple-100 text-purple-800 border border-purple-300' :
+                          isPendingApproval(auditoria.status) ? 'bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs animate-pulse' :
                           auditoria.status === 'Visita de Campo' ? 'bg-blue-100 text-blue-800 border border-blue-300' :
                           'bg-slate-100 text-slate-700'
                         }`}>
-                          {auditoria.status}
+                          {isPendingApproval(auditoria.status) ? 'Aguardando Aprovação' : auditoria.status}
                         </span>
                       </td>
 
@@ -705,15 +959,25 @@ export default function GestorAuditorias() {
                             </button>
                           )}
 
-                          {auditoria.status === 'Em Análise' && (
+                          <button
+                              type="button"
+                              onClick={() => setSelectedAuditForModal(auditoria)}
+                              className="group/btn inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 text-[#1B7547] rounded-xl font-extrabold text-[11px] border border-slate-200 transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer shadow-2xs"
+                              title="Visualizar Ficha e Panorama RTRS"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Panorama</span>
+                            </button>
+
+                          {isPendingApproval(auditoria.status) && (
                             <button 
                               type="button"
-                              onClick={() => setRevisaoAuditoria({ id: auditoria.id, nome: getFazendaName(auditoria) })}
+                              onClick={() => handleOpenDeliberacao(auditoria)}
                               className="group/btn relative inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-gradient-to-r from-[#1B7547] to-[#15613a] hover:from-[#15613a] hover:to-[#0B3B23] text-white rounded-xl font-extrabold text-xs shadow-md shadow-[#1B7547]/20 transition-all duration-300 hover:scale-105 active:scale-95 cursor-pointer overflow-hidden"
                             >
                               <span className="absolute inset-0 w-full h-full bg-white/20 -translate-x-full group-hover/btn:translate-x-full transition-transform duration-1000 ease-out pointer-events-none" />
                               <FileSearch className="w-3.5 h-3.5 transition-transform group-hover/btn:scale-110 duration-300" />
-                              <span>Avaliar Certificação</span>
+                              <span>Deliberar Vistoria</span>
                             </button>
                           )}
 
@@ -835,12 +1099,34 @@ export default function GestorAuditorias() {
       />
 
       {revisaoAuditoria && (
-        <RevisaoAuditoria 
-          propriedadeNome={revisaoAuditoria.nome}
-          onClose={() => setRevisaoAuditoria(null)}
-          onApprove={handleApprove}
-          onReject={handleReject}
-          auditoriaId={revisaoAuditoria.id}
+        <ModalErrorBoundary onClose={() => setRevisaoAuditoria(null)}>
+          <RevisaoAuditoria 
+            propriedadeNome={revisaoAuditoria.nome}
+            etapaAtual={revisaoAuditoria.etapa}
+            statusAtual={revisaoAuditoria.status}
+            onClose={() => setRevisaoAuditoria(null)}
+            onApproveNextStage={handleApproveNextStage}
+            onApproveCertify={handleApproveCertify}
+            onApprove={handleApproveCertify}
+            onReject={handleReject}
+            auditoriaId={revisaoAuditoria.id}
+            propriedadeId={revisaoAuditoria.propId}
+          />
+        </ModalErrorBoundary>
+      )}
+
+      {selectedAuditForModal && (
+        <AuditDetailModal
+          isOpen={!!selectedAuditForModal}
+          onClose={() => setSelectedAuditForModal(null)}
+          auditoria={selectedAuditForModal}
+          onStartVisita={() => {
+            setSelectedAuditForModal(null);
+          }}
+          onOpenPendencias={() => {
+            setSelectedAuditForModal(null);
+            window.location.href = '/app/gestor/propriedades';
+          }}
         />
       )}
     </div>

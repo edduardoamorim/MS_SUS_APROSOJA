@@ -40,11 +40,45 @@ export default function GestorUsuarios() {
 
   async function fetchUsuarios() {
     setLoading(true);
-    const { data, error } = await supabase.from('perfis').select('*').order('created_at', { ascending: false });
-    if (!error && data) {
-      setUsuarios(data);
+    try {
+      const [perfisRes, propsRes, auditsRes] = await Promise.all([
+        supabase.from('perfis').select('*').order('created_at', { ascending: false }),
+        supabase.from('propriedades').select('produtor_id'),
+        supabase.from('auditorias').select('tecnico_responsavel_id')
+      ]);
+
+      if (!perfisRes.error && perfisRes.data) {
+        const prodCountMap = new Map<string, number>();
+        (propsRes.data || []).forEach((p: any) => {
+          if (p.produtor_id) {
+            prodCountMap.set(p.produtor_id, (prodCountMap.get(p.produtor_id) || 0) + 1);
+          }
+        });
+
+        const techCountMap = new Map<string, number>();
+        (auditsRes.data || []).forEach((a: any) => {
+          if (a.tecnico_responsavel_id) {
+            techCountMap.set(a.tecnico_responsavel_id, (techCountMap.get(a.tecnico_responsavel_id) || 0) + 1);
+          }
+        });
+
+        const enriched = perfisRes.data.map((u: any) => {
+          const realCount = u.role === 'tecnico' 
+            ? (techCountMap.get(u.id) || u.fazendas_vinculadas || 0)
+            : (prodCountMap.get(u.id) || u.fazendas_vinculadas || 0);
+          return {
+            ...u,
+            fazendas_vinculadas: realCount
+          };
+        });
+
+        setUsuarios(enriched);
+      }
+    } catch (err) {
+      console.warn('Erro ao carregar usuários e contagens:', err);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   const handleOpenCreate = () => {
@@ -75,73 +109,129 @@ export default function GestorUsuarios() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const payload = {
-        ...formData,
-        role: activeTab === 'tecnicos' ? 'tecnico' : 'produtor'
-      };
+      const telFormatado = (formData.telefone || formData.whatsapp || '').trim() || null;
+      const cleanRole = activeTab === 'tecnicos' ? 'tecnico' : 'produtor';
+      const cleanNome = formData.nome?.trim() || '';
+      const cleanEmail = formData.email?.trim().toLowerCase() || '';
+
+      if (!cleanNome || !cleanEmail) {
+        error('Informe o nome completo e o e-mail do usuário.');
+        return;
+      }
 
       if (editingUser) {
-        const { error } = await supabase.from('perfis').update(payload).eq('id', editingUser.id);
-        if (error) throw error;
-        setUsuarios(usuarios.map(u => u.id === editingUser.id ? { ...u, ...payload } : u));
-        success('Usuário atualizado com sucesso!');
-      } else {
-        // Criar usuário no Supabase Auth usando cliente isolado (sem sobrescrever a sessão ativa do gestor)
-        let authUserId: string | null = null;
-        try {
-          const isolatedAuth = createIsolatedAuthClient();
-          const { data: signUpData, error: signUpErr } = await isolatedAuth.auth.signUp({
-            email: formData.email,
-            password: 'Senha@123',
-            options: {
-              data: {
-                full_name: formData.nome,
-                role: payload.role
-              }
-            }
-          });
-          if (signUpData?.user?.id) {
-            authUserId = signUpData.user.id;
-          }
-          if (signUpErr) {
-            console.warn('Aviso no signUp Auth do Gestor:', signUpErr.message);
-          }
-        } catch (e) {
-          console.warn('Aviso ao criar conta Auth:', e);
-        }
-
-        // Tentar invocar invite-user como fallback secundário caso exista
-        try {
-          await supabase.functions.invoke('invite-user', {
-            body: {
-              email: formData.email,
-              nome: formData.nome,
-              role: payload.role,
-              regiao: formData.regiao
-            }
-          });
-        } catch (e) {}
-
-        // Inserir ou atualizar na tabela perfis
-        const profilePayload: any = {
-          nome: formData.nome,
-          email: formData.email,
-          role: payload.role,
+        const updatePayload: any = {
+          nome: cleanNome,
+          email: cleanEmail,
+          telefone: telFormatado,
           regiao: formData.regiao || 'Geral, MS',
-          status: formData.status || 'Ativo'
+          status: formData.status || 'Ativo',
+          role: cleanRole
         };
-        if (authUserId) {
-          profilePayload.id = authUserId;
+
+        const { error: err } = await supabase
+          .from('perfis')
+          .update(updatePayload)
+          .eq('id', editingUser.id);
+
+        if (err) throw err;
+
+        // Reconciliar conta Auth, propriedades vinculadas e contagem real de fazendas
+        try {
+          await supabase.rpc('reconciliar_perfil_produtor', {
+            p_auth_id: editingUser.id,
+            p_email: cleanEmail,
+            p_nome: cleanNome,
+            p_telefone: telFormatado,
+            p_regiao: formData.regiao || 'Geral, MS',
+            p_role: cleanRole
+          });
+        } catch (recErr) {
+          console.warn('Aviso ao reconciliar perfil editado:', recErr);
         }
 
-        const { error: profileErr } = await supabase
-          .from('perfis')
-          .upsert([profilePayload]);
+        await fetchUsuarios();
+        success('Usuário atualizado e vínculos sincronizados com sucesso!');
+      } else {
+        // 1. Tentar reconciliar/criar de forma atômica via RPC reconciliar_perfil_produtor (cria auth.users + perfis sem duplicar)
+        let reconciledId: string | null = null;
+        try {
+          const { data: recData, error: recErr } = await supabase.rpc('reconciliar_perfil_produtor', {
+            p_auth_id: null,
+            p_email: cleanEmail,
+            p_nome: cleanNome,
+            p_telefone: telFormatado,
+            p_regiao: formData.regiao || 'Geral, MS',
+            p_role: cleanRole
+          });
+          if (!recErr && recData?.id) {
+            reconciledId = recData.id;
+          }
+        } catch (recErr) {
+          console.warn('Aviso na RPC reconciliar_perfil_produtor:', recErr);
+        }
 
-        if (profileErr) throw profileErr;
+        // 2. Fallback caso a RPC não tenha retornado ID
+        if (!reconciledId) {
+          let authUserId: string | null = null;
+          try {
+            const isolatedAuth = createIsolatedAuthClient();
+            const { data: signUpData, error: signUpErr } = await isolatedAuth.auth.signUp({
+              email: cleanEmail,
+              password: 'Senha@123',
+              options: {
+                data: {
+                  full_name: cleanNome,
+                  role: cleanRole
+                }
+              }
+            });
+            if (signUpData?.user?.id) {
+              authUserId = signUpData.user.id;
+            }
+            if (signUpErr) {
+              console.warn('Aviso no signUp Auth do Gestor:', signUpErr.message);
+            }
+          } catch (e) {
+            console.warn('Aviso ao criar conta Auth:', e);
+          }
 
-        fetchUsuarios();
-        success(`Usuário cadastrado com sucesso! Senha padrão: Senha@123`);
+          // Verificar se já existe perfil por e-mail antes de criar duplicata
+          const { data: existingProf } = await supabase
+            .from('perfis')
+            .select('id')
+            .ilike('email', cleanEmail)
+            .maybeSingle();
+
+          const targetId = existingProf?.id || authUserId;
+          const profilePayload: any = {
+            nome: cleanNome,
+            email: cleanEmail,
+            role: cleanRole,
+            telefone: telFormatado,
+            regiao: formData.regiao || 'Geral, MS',
+            status: formData.status || 'Ativo'
+          };
+          if (targetId) {
+            profilePayload.id = targetId;
+          }
+
+          const { data: savedProf, error: profileErr } = await supabase
+            .from('perfis')
+            .upsert([profilePayload])
+            .select('id')
+            .single();
+
+          if (profileErr) throw profileErr;
+          reconciledId = savedProf?.id || targetId || null;
+        }
+
+        if (reconciledId && formData.status && formData.status !== 'Ativo') {
+          await supabase.from('perfis').update({ status: formData.status }).eq('id', reconciledId);
+        }
+
+        await fetchUsuarios();
+        success('Usuário cadastrado e sincronizado com sucesso! Senha padrão: Senha@123');
       }
       setIsFormOpen(false);
     } catch (err: any) {
@@ -339,7 +429,7 @@ export default function GestorUsuarios() {
                             {activeTab === 'tecnicos' ? 'Perfil' : 'Fazendas'}
                           </span>
                           <span className="inline-block mt-0.5 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-slate-200/70 text-slate-700">
-                            {activeTab === 'tecnicos' ? 'Técnico de Campo' : `${user.fazendas_vinculadas || 1} fazenda(s)`}
+                            {activeTab === 'tecnicos' ? `${user.fazendas_vinculadas || 0} vistoria(s)` : `${user.fazendas_vinculadas || 0} fazenda(s)`}
                           </span>
                         </div>
                       </div>
@@ -396,7 +486,7 @@ export default function GestorUsuarios() {
                           </span>
                         </td>
                         <td className="px-5 py-3 text-muted-foreground">
-                          {activeTab === 'tecnicos' ? 'Técnico de Campo' : `${user.fazendas_vinculadas || 1} fazenda(s)`}
+                          {activeTab === 'tecnicos' ? `${user.fazendas_vinculadas || 0} vistoria(s)` : `${user.fazendas_vinculadas || 0} fazenda(s)`}
                         </td>
                         <td className="px-5 py-3">
                           <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-semibold uppercase tracking-wider border ${

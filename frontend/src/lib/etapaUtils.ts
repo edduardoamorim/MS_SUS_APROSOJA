@@ -27,11 +27,27 @@ export function normalizeEtapa(etapaStr?: string | null): 'Prospecção' | 'Audi
   return 'Prospecção';
 }
 
-export const resolveFarmEtapa = (propId: string, propEtapa?: string | null, auditEtapa?: string | null): 'Prospecção' | 'Auditoria Prévia' | 'Auditoria Oficial' => {
+export const resolveFarmEtapa = (
+  propId: string, 
+  propEtapa?: string | null, 
+  auditEtapa?: string | null
+): 'Prospecção' | 'Auditoria Prévia' | 'Auditoria Oficial' => {
+  // 1. Precedência máxima para a auditoria atual no banco de dados
+  if (auditEtapa && auditEtapa.trim()) {
+    const norm = normalizeEtapa(auditEtapa);
+    setStoredEtapa(propId, norm);
+    return norm;
+  }
+  // 2. Precedência para a propriedade no banco de dados
+  if (propEtapa && propEtapa.trim()) {
+    const norm = normalizeEtapa(propEtapa);
+    setStoredEtapa(propId, norm);
+    return norm;
+  }
+  // 3. Fallback no cache local do dispositivo
   const storedMap = getStoredEtapas();
   if (storedMap[propId]) return normalizeEtapa(storedMap[propId]);
-  if (propEtapa) return normalizeEtapa(propEtapa);
-  if (auditEtapa) return normalizeEtapa(auditEtapa);
+
   return 'Prospecção';
 };
 

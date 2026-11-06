@@ -282,12 +282,28 @@ export default function BaseLayout() {
                   <>
                     <p className="px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">Portal do Produtor</p>
                     <Link
-                      to="/app/produtor"
+                      to="/app/produtor?tab=mapa"
                       onClick={() => setMobileMenuOpen(false)}
                       className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
                     >
-                      <LayoutDashboard className="w-4 h-4 text-emerald-600" />
-                      Painel do Produtor
+                      <MapIcon className="w-4 h-4 text-emerald-600" />
+                      Minha Fazenda & Mapa
+                    </Link>
+                    <Link
+                      to="/app/produtor?tab=pendencias"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                    >
+                      <ClipboardList className="w-4 h-4 text-emerald-600" />
+                      Pendências & Adequação (IA)
+                    </Link>
+                    <Link
+                      to="/app/produtor?tab=documentacao"
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                    >
+                      <FolderOpen className="w-4 h-4 text-emerald-600" />
+                      Documentação & Evidências
                     </Link>
                   </>
                 )}

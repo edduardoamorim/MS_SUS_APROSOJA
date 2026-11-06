@@ -59,57 +59,132 @@ export default function Register() {
     setLoading(true);
 
     try {
-      // 1. Criar a conta de autenticação no Supabase
+      const cleanName = name.trim();
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanPhone = phone.trim();
+      let userId: string | undefined;
+
+      // 1. Criar ou recuperar conta de autenticação no Supabase
       const { data: authData, error: signUpError } = await supabase.auth.signUp({
-        email: email.trim(),
+        email: cleanEmail,
         password,
         options: {
           data: {
-            full_name: name.trim(),
+            full_name: cleanName,
             role: 'produtor',
-            phone: phone.trim()
+            phone: cleanPhone
           }
         }
       });
 
       if (signUpError) {
-        throw signUpError;
+        const isAlreadyRegistered =
+          signUpError.message?.toLowerCase().includes('already registered') ||
+          signUpError.message?.toLowerCase().includes('already exists');
+
+        if (isAlreadyRegistered) {
+          // Caso o produtor tenha sido pré-cadastrado pelo Técnico ou Gestor (com Senha@123) ou já tenha conta
+          let signInRes = await supabase.auth.signInWithPassword({
+            email: cleanEmail,
+            password
+          });
+
+          if (signInRes.error) {
+            signInRes = await supabase.auth.signInWithPassword({
+              email: cleanEmail,
+              password: 'Senha@123'
+            });
+            if (!signInRes.error && signInRes.data.user) {
+              // Atualiza para a senha escolhida pelo produtor no formulário
+              await supabase.auth.updateUser({
+                password,
+                data: { full_name: cleanName, role: 'produtor', phone: cleanPhone }
+              });
+            }
+          }
+
+          if (signInRes.error || !signInRes.data.user) {
+            throw new Error('Este e-mail já possui cadastro ativo. Faça login na tela inicial ou utilize a senha padrão Senha@123.');
+          }
+          userId = signInRes.data.user.id;
+        } else {
+          throw signUpError;
+        }
+      } else {
+        userId = authData.user?.id;
       }
 
-      const userId = authData.user?.id;
       const nowIso = new Date().toISOString();
 
-      // 2. Inserir ou atualizar perfil na tabela 'perfis'
-      if (userId) {
+      // 2. Reconciliar perfil na tabela 'perfis' e herdar fazendas pré-cadastradas pelo Técnico/Gestor
+      let canonicalId = userId;
+      try {
+        const { data: recData, error: recErr } = await supabase.rpc('reconciliar_perfil_produtor', {
+          p_auth_id: userId || null,
+          p_email: cleanEmail,
+          p_nome: cleanName,
+          p_telefone: cleanPhone,
+          p_regiao: null,
+          p_role: 'produtor'
+        });
+        if (!recErr && recData?.id) {
+          canonicalId = recData.id;
+        }
+      } catch (recEx) {
+        console.warn('Aviso ao reconciliar perfil no registro:', recEx);
+      }
+
+      if (canonicalId) {
         await supabase.from('perfis').upsert([{
-          id: userId,
-          nome: name.trim(),
-          email: email.trim(),
-          telefone: phone.trim(),
-          whatsapp: phone.trim(),
+          id: canonicalId,
+          nome: cleanName,
+          email: cleanEmail,
+          telefone: cleanPhone,
           role: 'produtor',
           status: 'Ativo',
-          created_at: nowIso,
           updated_at: nowIso
         }]);
 
         // 3. Inserir fazenda inicial se identificada no formulário
-        if (propertyData && propertyData.nome_fazenda) {
+        if (propertyData && (propertyData.nome_fazenda || propertyData.codigo_car || propertyData.codigo_sigef || propertyData.geom)) {
+          const farmName = propertyData.nome_fazenda?.trim() || `Fazenda ${propertyData.codigo_car || propertyData.codigo_sigef || cleanName}`;
           const newProp = {
-            produtor_id: userId,
-            nome_fazenda: propertyData.nome_fazenda,
+            produtor_id: canonicalId,
+            nome_fazenda: farmName,
             etapa: 'Prospecção',
-            nome_produtor: name.trim(),
+            nome_produtor: cleanName,
             area_soja_ha: areaSojaHa ? parseFloat(areaSojaHa) : null,
             codigo_car: propertyData.origem === 'CAR' ? propertyData.codigo_car : null,
             codigo_sigef: propertyData.origem === 'SIGEF' ? propertyData.codigo_sigef : null,
-            origem_cadastro: propertyData.origem,
+            origem_cadastro: propertyData.origem || 'CAR',
             geom: propertyData.geom || null,
             created_at: nowIso,
             updated_at: nowIso
           };
 
-          await supabase.from('propriedades').insert([newProp]);
+          const { data: insertedProp } = await supabase
+            .from('propriedades')
+            .insert([newProp])
+            .select('id')
+            .maybeSingle();
+
+          if (insertedProp?.id) {
+            try {
+              await supabase.from('auditorias').insert([{
+                propriedade_id: insertedProp.id,
+                status: 'Autoavaliação',
+                etapa: 'Prospecção',
+                data_agendamento: nowIso
+              }]);
+            } catch (e) {}
+
+            try {
+              await supabase.rpc('reconciliar_perfil_produtor', {
+                p_auth_id: canonicalId,
+                p_role: 'produtor'
+              });
+            } catch (e) {}
+          }
         }
       }
 

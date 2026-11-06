@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
-    "build": "vite build",
+    "build": "tsc -p tsconfig.app.json --noEmit && vite build",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist",
     "lint": "eslint .",
@@ -17,6 +17,8 @@
     "@supabase/supabase-js": "^2.108.2",
     "@types/geojson": "^7946.0.16",
     "dexie": "^4.4.6",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.9",
     "jszip": "^3.10.1",
     "lucide-react": "^1.21.0",
     "maplibre-gl": "^5.24.0",
